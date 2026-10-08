@@ -1,0 +1,2 @@
+claim_id,statement,dataset,metric_convention,evidence_file,table_or_figure,scope_words,verified
+C1,"",,"",results/main.csv,Table 1,"",no

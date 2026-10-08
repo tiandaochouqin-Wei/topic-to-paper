@@ -1,0 +1,9 @@
+# required by the gate scripts (t2p.py doctor checks these)
+pyyaml>=6.0
+pymupdf>=1.23
+pillow>=10.0
+numpy>=1.24
+matplotlib>=3.7
+# optional
+# pdflatex / latexmk           compile check of generated tables (make_comparison.py)
+# torch                        only inside your own experiment code; bundle.py's check_env verifies it on the server
