@@ -17,7 +17,7 @@ Claude Code loads skills from either of two folders:
 
 ```bash
 # personal
-git clone https://github.com/<you>/topic-to-paper ~/.claude/skills/topic-to-paper
+git clone https://github.com/tiandaochouqin-Wei/topic-to-paper ~/.claude/skills/topic-to-paper
 pip install -r ~/.claude/skills/topic-to-paper/requirements.txt
 python ~/.claude/skills/topic-to-paper/scripts/t2p.py doctor
 ```
