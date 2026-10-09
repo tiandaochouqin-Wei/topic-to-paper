@@ -1,0 +1,126 @@
+# research-state.yaml — minimal research-branch project that passes every offline gate (tests/fixtures/research_min)
+# Every number here is traceable to runs/<run>/eval.json; every prose sentence the gates look for is mirrored in paper/manuscript.md.
+branch: research
+
+project:
+  title: "Fixture: domain-robust force estimation"
+  topic: "vision-based surgical force estimation under robot-platform shift"
+  started: "2026-10-10"
+  entry: topic_only
+
+target:
+  venue: "Engineering Applications of Artificial Intelligence"
+  deadline: ""
+  guide_file: submission/guide.txt
+  page_limit: null
+  word_limit: 9000
+  abstract_word_limit: 250
+  keyword_max: 6
+  ref_max: 80
+  columns: single
+  min_dpi: 300
+  blind: true
+  field: cv
+  family: cs_journal
+  required_files: [manuscript, title_page, cover_letter, highlights, blind]
+
+resources:
+  gpu: "A2000"
+  gpu_shared_with: ""
+  data:
+    - name: E1
+      path: data/E1
+      size_gb: 1
+      license: internal
+      access_confirmed: true
+    - name: E2
+      path: data/E2
+      size_gb: 1
+      license: internal
+      access_confirmed: true
+
+phase:
+  current: P8
+  history: []
+
+gates:
+  G0: {status: pass, evidence: submission/guide.txt}
+  G1: {status: pending, evidence: ""}
+  G2: {status: pass, evidence: prereg.md, prereg_sha256: "5cab4f602778dd4751e3c609fca4d60abf747d3c879bd4d4ee2d27f3de1f10ad"}
+  G3: {status: pass, evidence: runs/}
+  G4: {status: pass, evidence: results/main.csv}
+  G5: {status: pass, evidence: figures.csv}
+  G6: {status: pass, evidence: gate_report.md}
+  G7: {status: pass, evidence: paper/review_log.md}
+  G8: {status: pass, evidence: submission/}
+
+claim:
+  statement: "a domain-adversarial regularizer removes the platform-specific sensor offset and lowers held-out RMSE"
+  primary_metric: rmse_E1
+  denominator: "number of contact samples per clip, same across datasets"
+  inclusion_window: "contact-window: |F| >= 0.1 N, same across datasets"
+  prediction: "no_dom - ours > 0 on rmse_E1"
+
+audits:
+  runs_dir: runs
+  args_file: args.json
+  log_file: log.json
+  epochs_key: epochs
+  main_table_runs: []
+  leak_flags: [use_target_labels]
+  split_key: subject
+  split_files: {train: splits/train.txt, test: splits/test.txt}
+  min_group_size: 5
+  critical_params: {beta: train_dom}
+  code_dirs: [code]
+  inputs: [frames]
+  smoke_cmd: ""
+  smoke_data: ""
+  hardware_key: hardware
+
+results:
+  main_table: results/main.csv
+  ablation_table: results/ablation.csv
+  runs_dir: runs
+  eval_file: eval.json
+  freshness_ref: log.json
+  metric_map: {rmse_E1: E1.rmse, rmse_E2: E2.rmse}
+  primary_metric: rmse_E1
+  min_seeds: 3
+  seed_waiver: ""
+  group_key: method
+  reference_method: ours
+  predictions:
+    - {a: ours, b: no_dom, metric: rmse_E1, sign: "+"}
+  reproductions: []
+  findings: findings.md
+
+experiments:
+  main_table: results/main.csv
+  repro_table: results/repro.csv
+  ablation_table: results/ablation.csv
+  seeds: [0, 1, 2]
+  total_runs: 11
+  baseline_value: 0.250
+  best_value: 0.202
+  outer_loop: {cycle: 1, last_direction: conclude, note: ""}
+  convention_changes: []
+
+figures:
+  map: figures.csv
+  inspected:
+    - {file: figures/fig_main.png, issues_found: none, fixed: true}
+
+scope_audit: []
+
+review:
+  log: paper/review_log.md
+  round: 1
+  open_major: []
+
+submission:
+  package_dir: submission/
+  checklist: submission/checklist.md
+
+acronym_ok: [EAAI]
+blind_terms: [Zhang, Karolinska]

@@ -1,0 +1,7 @@
+doi,title,decision,reason,screen_pass
+10.1000/fix.a,Study A: image and report fusion for diagnosis,include,two families and a unimodal baseline on the same test set,abstract
+10.1000/fix.b,Study B: records plus imaging for prognosis,include,two families and a unimodal baseline on the same test set,abstract
+10.1000/fix.c,Study C: attention fusion of image and text,include,two families and a unimodal baseline on the same test set,abstract
+10.1000/fix.d,Study D: graph fusion of records and signals,include,two families and a unimodal baseline on the same test set,abstract
+10.1000/fix.e,Study E: multi-sequence MRI fusion,exclude,single data-source family,title
+10.1000/fix.f,Study F: a perspective on fusion,exclude,no quantitative results,title

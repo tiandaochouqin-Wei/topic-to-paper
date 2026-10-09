@@ -1,0 +1,4 @@
+claim_id,statement,dataset,metric_convention,evidence_file,evidence_key,expected,table_or_figure,scope_words,verified
+C1,"the reported fusion gain shrinks as baseline matching gets stricter: the median delta of the M3 group is below 0.03",all,delta_rep,tables/summary.csv,"group=M3,median_delta",<0.03,Table 2,,yes
+C2,"most studies do not report the uncertainty of the gain",all,delta_ci,tables/summary.csv,"group=all,share_delta_ci",<0.5,Table 2,,yes
+C3,"to our knowledge this is the first survey that audits the baseline matching level of every included study",all,n,tables/summary.csv,"group=all,n",>=4,Table 1,first,yes

@@ -1,0 +1,53 @@
+# research-state.yaml — minimal survey-branch project that passes G-S2 / G-S3 / G-S5 offline (tests/fixtures/survey_min)
+branch: survey
+
+project:
+  title: "Fixture: multimodal fusion gain survey"
+  topic: "reported fusion gain versus baseline matching level in clinical multimodal models"
+  started: "2026-10-10"
+  entry: topic_only
+
+target:
+  venue: "Information Fusion"
+  deadline: ""
+  guide_file: submission/guide.txt
+  page_limit: null
+  word_limit: 15000
+  abstract_word_limit: 250
+  keyword_max: 6
+  ref_max: 300
+  columns: single
+  min_dpi: 300
+  blind: false
+  field: medimg
+  family: cs_journal
+  required_files: []
+
+phase:
+  current: S5
+  history: []
+
+gates:
+  G0: {status: pass, evidence: submission/guide.txt}
+  G-S2: {status: pass, evidence: protocol.md, protocol_sha256: "39c110c31294e6220be5f6decbdf79c52735ecffdaa7c3864c651e2692e53f4d"}
+  G-S3: {status: pass, evidence: coding/coded.csv}
+  G-S5: {status: pass, evidence: paper/claims.csv}
+
+survey:
+  scope_in: "studies that feed at least two data-source families into one model and report a unimodal baseline on the same test set"
+  scope_out: "fusion within one family (for example multi-sequence MRI), covered by the prior survey [1]"
+  axis: method-level
+  thesis: "the reported fusion gain shrinks as the baseline matching level gets stricter"
+  screening_sheet: coding/screening_sheet.csv
+  coded: coding/coded.csv
+  codebook: coding/codebook.md
+  prisma: literature/prisma_flow.json
+  kappa: coding/kappa_results.json
+  min_kappa: 0.6
+  tables_dir: tables
+  coverage: coding/coverage.csv
+  prior_surveys: literature/prior_surveys.csv
+  claims: paper/claims.csv
+
+acronym_ok: []
+blind_terms: []

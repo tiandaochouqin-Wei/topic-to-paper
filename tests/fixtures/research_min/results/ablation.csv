@@ -1,0 +1,3 @@
+ablation,run_id,seed,hardware,rmse_E1,rmse_E2
+no_dom,abl_no_dom,0,A2000,0.250,0.355
+no_cons,abl_no_cons,0,A2000,0.203,0.304

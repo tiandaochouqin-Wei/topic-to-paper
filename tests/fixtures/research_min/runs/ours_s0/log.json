@@ -1,0 +1,26 @@
+[
+ {
+  "epoch": 0,
+  "loss": 1.0,
+  "train_dom": 0.1,
+  "train_cons": 0.5,
+  "hardware": "A2000",
+  "n": 1200
+ },
+ {
+  "epoch": 1,
+  "loss": 0.5,
+  "train_dom": 0.05,
+  "train_cons": 0.25,
+  "hardware": "A2000",
+  "n": 1200
+ },
+ {
+  "epoch": 2,
+  "loss": 0.3333,
+  "train_dom": 0.0333,
+  "train_cons": 0.1667,
+  "hardware": "A2000",
+  "n": 1200
+ }
+]

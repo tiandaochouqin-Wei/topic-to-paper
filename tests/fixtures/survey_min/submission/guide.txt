@@ -1,0 +1,3 @@
+Guide for Authors (fixture, Information Fusion review articles)
+- word limit 15000; abstract 250 words; keywords max 6; references max 300
+- single-blind review

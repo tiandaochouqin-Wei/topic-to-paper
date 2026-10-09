@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+# artefacts left behind if the gates are run directly inside a fixture
+tests/fixtures/*/gate_report.md
+tests/fixtures/*/_t2p_stub.md
+tests/fixtures/*/paper/draft_plan.*

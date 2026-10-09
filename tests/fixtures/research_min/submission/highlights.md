@@ -1,0 +1,4 @@
+- Cross-platform error of vision-based force estimation is a label-side sensor offset.
+- A domain-adversarial regularizer behind the prediction head removes the offset.
+- RMSE on the held-out platform drops by 19.2% relative to the strongest baseline.
+- Ablations report which cells are not resolvable within seed noise.

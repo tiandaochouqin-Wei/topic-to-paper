@@ -1,0 +1,4 @@
+group,n,median_delta,share_delta_ci
+M1,2,0.050,0.000
+M3,2,0.015,0.500
+all,4,0.030,0.250

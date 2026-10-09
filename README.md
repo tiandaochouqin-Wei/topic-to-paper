@@ -22,7 +22,7 @@ pip install -r ~/.claude/skills/topic-to-paper/requirements.txt
 python ~/.claude/skills/topic-to-paper/scripts/t2p.py doctor
 ```
 
-`doctor` checks the three required Python packages and that every script answers `--help`. Optional: `pdflatex` (table compile check), a local PDF corpus for the zero-token literature index (see below).
+`doctor` checks the three required Python packages and that every script answers `--help` under a GBK console (the default on Chinese Windows). `python -m pytest tests -q` runs the regression suite: two fixture projects on which every offline gate must PASS, plus one mutation per failure mode each gate exists for (see `tests/README.md`). Optional: `pdflatex` (table compile check), a local PDF corpus for the zero-token literature index (see below).
 
 ## Use
 
@@ -59,7 +59,8 @@ Generators, not just checks: SOTA/multi-dataset/ablation/seed tables with best/s
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual)
-scripts/                 22 gate/generator scripts, all argparse, all `--help`
+scripts/                 24 gate/generator scripts, all argparse, all `--help`
+tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, acronym-norms.csv, validation-*.md
 ```

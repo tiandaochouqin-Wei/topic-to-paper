@@ -1,0 +1,11 @@
+{
+ "data": "data/E1",
+ "exp": "baseB_s0",
+ "model": "baseB",
+ "epochs": 3,
+ "seed": 0,
+ "beta": 0.0,
+ "alpha": 0.0,
+ "use_target_labels": 0,
+ "hardware": "A2000"
+}

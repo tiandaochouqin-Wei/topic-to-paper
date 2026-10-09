@@ -111,4 +111,4 @@ G-S5 = `gate_check.py all` + `survey_check.py claims`：claims.csv 每条主张�
 综述分支：`survey_check.py`（protocol / coding / claims 三个子命令）+ `gate_check.py`。
 输入转换：`tex_to_md.py`（LaTeX）、`pdf_to_md.py`（已发表 PDF）、`jats_to_md.py`（Europe PMC XML）。
 校准：`calibrate.py` `venue_norms.py`（在已发表语料上重算关口阈值与刊物规范）。
-模板在 `templates/`（研究：prereg.md run-card.md；综述：protocol.md codebook.md）。验证记录在 `references/validation-*.md`，失败模式总表 [references/lessons.md](references/lessons.md)，路由 [references/routing.md](references/routing.md)。
+模板在 `templates/`（研究：prereg.md run-card.md；综述：protocol.md codebook.md）。改任何脚本后先跑 `python -m pytest tests -q`（tests/README.md），全绿才算改完。验证记录在 `references/validation-*.md`，失败模式总表 [references/lessons.md](references/lessons.md)，路由 [references/routing.md](references/routing.md)。

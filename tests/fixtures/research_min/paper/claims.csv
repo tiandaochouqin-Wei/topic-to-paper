@@ -1,0 +1,3 @@
+claim_id,statement,dataset,metric_convention,evidence_file,table_or_figure,scope_words,verified
+C1,"ours lowers RMSE on the held-out platform by 19.2% relative to the strongest baseline (baseA)",E1,contact-window,results/summary.csv,Table 1,,yes
+C2,"the gain comes from the adversarial term while the consistency term is not resolvable within seed noise",E1+E2,contact-window,results/ablation.csv,Table 2,,yes

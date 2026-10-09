@@ -1,0 +1,11 @@
+{
+ "data": "data/E1",
+ "exp": "ours_s1",
+ "model": "ours",
+ "epochs": 3,
+ "seed": 1,
+ "beta": 0.1,
+ "alpha": 0.5,
+ "use_target_labels": 0,
+ "hardware": "A2000"
+}

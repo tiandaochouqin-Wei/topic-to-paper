@@ -1,0 +1,5 @@
+Guide for Authors (fixture, Engineering Applications of Artificial Intelligence)
+- word limit 9000; abstract 250 words; keywords max 6; references max 80
+- double-blind review: submit a blinded manuscript without author names, affiliations, e-mails or grant numbers
+- required files: manuscript, title page, cover letter, highlights, blinded manuscript
+- figures: minimum 300 dpi at print width

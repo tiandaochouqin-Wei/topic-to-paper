@@ -1,0 +1,9 @@
+tag,year,venue,question,method,finding,hidden_assumption,failure_scene,limitation,missing_experiment,contradicts,followup_question,potential_innovation,read_depth
+P1,2023,TRO,estimate tool force from video,GeoNet,in-platform RMSE 0.21 N,sensor calibration shared across platforms,no held-out platform,single robot,held-out platform test,,does the error follow the sensor offset,remove offset from representation,全文
+P2,2024,MICCAI,force from video with transformer,ForceFormer,in-platform RMSE 0.19 N,prediction head is platform specific,no held-out platform,single robot,held-out platform test,P1,is the head the leak,shared head with adversarial term,全文
+P3,2024,ICRA,force from kinematics,KinForce,RMSE 0.30 N,joint torques map linearly to force,fails at contact onset,needs robot state,contact-onset slicing,,why does onset fail,onset-aware window,全文
+P4,2022,TBME,force from stereo,StereoForce,RMSE 0.25 N,depth is accurate,no held-out platform,stereo rig only,held-out platform test,,,,全文
+P5,2025,RAL,self-supervised video pretraining for force,VidForce,RMSE 0.22 N,appearance shift dominates,degrades on new sensor,pretraining cost,label-side ablation,P1,is the shift in labels or pixels,label-side diagnosis,全文
+P6,2023,IROS,tactile fusion,TacFuse,RMSE 0.18 N with tactile,tactile sensor available,hardware not available on clinical robots,needs tactile,vision-only ablation,,,,全文
+P7,2024,TMI,force from tissue deformation,DeformNet,RMSE 0.24 N,tissue stiffness constant,fails across tissue types,phantom only,in-vivo test,,does stiffness vary per platform,stiffness-conditioned head,全文
+P8,2025,arXiv,domain adaptation for force,DAForce,RMSE 0.23 N target,shift lives in image statistics,no held-out platform,preprint,held-out platform test,P5,is image alignment enough,label-side adversary,摘要

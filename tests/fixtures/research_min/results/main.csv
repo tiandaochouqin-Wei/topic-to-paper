@@ -1,0 +1,10 @@
+run_id,method,seed,hardware,rmse_E1,rmse_E2
+ours_s0,ours,0,A2000,0.200,0.300
+ours_s1,ours,1,A2000,0.202,0.303
+ours_s2,ours,2,A2000,0.204,0.306
+baseA_s0,baseA,0,A2000,0.247,0.350
+baseA_s1,baseA,1,A2000,0.250,0.352
+baseA_s2,baseA,2,A2000,0.253,0.354
+baseB_s0,baseB,0,A2000,0.266,0.380
+baseB_s1,baseB,1,A2000,0.270,0.383
+baseB_s2,baseB,2,A2000,0.274,0.386

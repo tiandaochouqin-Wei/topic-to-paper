@@ -1,0 +1,5 @@
+doi,year,pair,task,level,mechanism,metric,P_fusion,P_best_uni,delta_rep,delta_ci,M,L,ablation,missing_test,ext_val,n_test,source,notes
+10.1000/fix.a,2021,img|txt,dx,feature,concat,AUROC,0.86,0.80,0.06,no,1,0,yes,no,no,120,methods,
+10.1000/fix.b,2022,ehr|img,prog,decision,attn,Cindex,0.74,0.70,0.04,no,1,1,no,no,yes,300,methods,
+10.1000/fix.c,2023,img|txt,dx,feature,attn,AUROC,0.90,0.88,0.02,yes,3,0,yes,yes,no,200,methods,
+10.1000/fix.d,2024,ehr|sig,prog,mixed,graph,AUPRC,0.61,0.60,0.01,no,3,0,yes,no,yes,150,abstract,

@@ -4,6 +4,8 @@ pymupdf>=1.23
 pillow>=10.0
 numpy>=1.24
 matplotlib>=3.7
+# tests only
+# pytest>=7                    python -m pytest tests -q
 # optional
 # pdflatex / latexmk           compile check of generated tables (make_comparison.py)
 # torch                        only inside your own experiment code; bundle.py's check_env verifies it on the server
