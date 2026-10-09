@@ -23,6 +23,8 @@ Bundle contents:
   manifest.json    sha256 of every code file and of prereg.md; tables step refuses results whose manifest differs
 """
 import argparse, csv, hashlib, io, json, os, re, sys, datetime, tarfile
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 FAILS = 0
 def say(st, g, msg):

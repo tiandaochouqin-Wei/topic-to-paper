@@ -19,6 +19,8 @@ Why three tests (see references/gates.md G1): test 1 is mechanical; tests 2 and 
 "X applied to Y" with no failure point is what reviewers call incremental — the failure point IS the claim.
 """
 import argparse, csv, io, os, re, sys, json, datetime, sqlite3, urllib.parse, urllib.request, time, xml.etree.ElementTree as ET
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 UA = {"User-Agent": "topic-to-paper/2.5 (mailto:" + os.environ.get("T2P_CONTACT_EMAIL", "topic-to-paper@example.org") + ")"}   # set T2P_CONTACT_EMAIL for the OpenAlex/CrossRef polite pool

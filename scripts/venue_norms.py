@@ -7,6 +7,8 @@ Per paper: pages, abstract words, #figures, #tables, #display equations, #refere
 Aggregates by venue -> markdown table, written next to the csv."""
 import sys, os, re, glob, csv, io, statistics, collections
 import fitz
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 DATASETS = r"\b(ImageNet|COCO|CIFAR(?:-?10|-?100)?|KITTI|nuScenes|Waymo|ADE20K|Cityscapes|PASCAL|VOC|LVIS|Kinetics|UCF101|HMDB|MNIST|SVHN|CelebA|FFHQ|LSUN|ShapeNet|ScanNet|NYU|SUN RGB-D|MS-?MARCO|SQuAD|GLUE|WikiText|LibriSpeech|AudioSet|TCGA|UK Biobank|MIMIC|CheXpert|ChestX-?ray|ADNI|BraTS|LIDC|KiTS|AMOS|TotalSegmentator|Mayo|ISIC|HAM10000|CAMELYON|PANDA|GEO|GTEx|PDB|UniProt|ENCODE|TCIA|PhysioNet|eICU|OASIS|HCP|ABIDE|OpenImages|Objects365|YouTube-?VIS|DAVIS|Sintel|FlyingThings|Middlebury|ETH3D|DTU|Tanks and Temples|ScanNet\+\+|Replica|Matterport|Habitat|Gibson|RoboNet|Open X-Embodiment|ERA5|WeatherBench|CMIP|Landsat|Sentinel)\b"
 

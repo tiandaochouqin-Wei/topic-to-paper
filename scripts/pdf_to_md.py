@@ -7,6 +7,8 @@ Numbered [n] citations are kept as-is; author-year citations are left as text.
 """
 import sys, os, re, io, csv
 import fitz
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 def extract(pdf, out):
     doc = fitz.open(pdf)

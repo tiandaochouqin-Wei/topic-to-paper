@@ -14,6 +14,8 @@ missing_experiment, contradicts, followup_question, potential_innovation, read_d
 Gap phrases: short, reusable, ';'-separated — "no held-out sensor; time split only" — so the same phrase recurs across rows.
 """
 import argparse, csv, io, os, re, sys, collections
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 GAP_COLS = ["hidden_assumption", "failure_scene", "missing_experiment", "limitation"]
 REQ = ["tag", "question", "finding"]

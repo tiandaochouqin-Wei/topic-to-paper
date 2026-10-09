@@ -17,6 +17,8 @@ resolve: for every ablation row in results/ablation.csv, compute Δ = ablation �
         resolvable Δ whose sign disagrees with prereg §6's expected sign are flagged. Exit 1 if any ablation row of
         prereg has no run, or any resolvable cell contradicts its expected sign without a convention_changes entry."""
 import argparse, ast, csv, io, os, re, sys, statistics, math, collections
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 # ------------------------------------------------------------------ plan
 def argparse_switches(path):

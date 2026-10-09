@@ -8,6 +8,8 @@ Per paper: top-level section sequence (normalised), words in abstract / intro / 
 Aggregates by venue -> markdown table + csv next to out_csv. Text layer only; Nature two-column PDFs are parsed per page."""
 import sys, os, re, glob, csv, io, statistics, collections
 import fitz
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 CANON = [  # (regex on heading line, canonical name)
     (r"^abstract\b", "abstract"), (r"^(\d+\.?\s*)?introduction\b", "intro"), (r"^(\d+\.?\s*)?(related work|background|prior work|preliminar)", "related"),

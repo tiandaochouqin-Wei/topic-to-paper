@@ -14,10 +14,14 @@ Gate → script mapping (inputs decide whether a gate runs):
   G4  results/main.csv                                     results_check.py + ablation_plan.py resolve
   G5  figures.csv                                          gate_check.py dpi
   G6  paper/manuscript.md                                  gate_check.py floats acronyms scope numbers limits (+refs with --net)
-  G7  paper/review_log.md                                  (no script; file check + G6 rerun)
+  G7  paper/review_log.md                                  review_check.py
   G8  submission/ with cover_letter.md|title_page.md|…     gate_check.py submission
-Exit code = number of gates that FAILed."""
+A gate whose script crashes (traceback, or non-zero exit without a [FAIL] line) is reported as CRASH and counted as a
+FAIL: a gate that did not run must never read as PASS.
+Exit code = number of gates that FAILed or CRASHed."""
 import argparse, io, os, re, shutil, subprocess, sys
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL = os.path.dirname(HERE)
@@ -31,11 +35,26 @@ def load_state(p):
     except ImportError:
         print("需要 pyyaml: pip install pyyaml"); sys.exit(2)
 
+CHILD_ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}   # gate scripts print ✓ ⊆ −; a GBK console must not kill them
+GBK_ENV = {**os.environ, "PYTHONUTF8": "0", "PYTHONIOENCODING": "gbk"}      # doctor: the hostile default of a Chinese Windows console
+_CRASH_NOTES = []
+
 def run(args, cwd):
-    r = subprocess.run([PY] + args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    """Run one gate script -> (returncode, fails, warns, out). A script that crashed (traceback on stderr, or non-zero exit
+    with no [FAIL] line) gets a leading [CRASH] line in `out`, so verdict() reports CRASH and never PASS."""
+    r = subprocess.run([PY] + args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=CHILD_ENV)
     out = r.stdout + r.stderr
     fails = len(re.findall(r"^\[FAIL\]", out, re.M)); warns = len(re.findall(r"^\[WARN\]", out, re.M))
+    if "Traceback (most recent call last)" in r.stderr or (r.returncode != 0 and fails == 0):
+        last = next((l for l in reversed(out.strip().splitlines()) if l.strip()), "")
+        note = f"[CRASH] {os.path.basename(args[0])} exit {r.returncode}: {last[:160]}"
+        _CRASH_NOTES.append(note); out = note + "\n" + out
     return r.returncode, fails, warns, out
+
+def verdict(fails, *outs):
+    """PASS / FAIL / CRASH for one gate, from its fail count and the raw output(s) of the script(s) it ran."""
+    if any(o.startswith("[CRASH]") for o in outs): return "CRASH"
+    return "FAIL" if fails else "PASS"
 
 def exists(root, *parts):
     return os.path.exists(os.path.join(root, *parts))
@@ -51,6 +70,7 @@ def check(root, net):
     board = []   # (gate, status, detail)
     def rec(g, status, detail):
         if survey and g in ("G2", "G3", "G4"): return      # research-only gates are meaningless for a survey
+        if status == "CRASH": detail += "；" + "；".join(_CRASH_NOTES); _CRASH_NOTES.clear()
         board.append((g, status, detail)); print(f"[{status}] {g}: {detail}")
     # G0
     gf = tgt.get("guide_file") or "submission/guide.txt"
@@ -62,83 +82,83 @@ def check(root, net):
         stub = os.path.join(root, "_t2p_stub.md"); io.open(stub, "w", encoding="utf-8").write("# stub\n\n## References\n")
         rc, f, w, out = run([S("gate_check.py"), "refs", "--manuscript", "_t2p_stub.md", "--bib", bib] + ([] if net else ["--no-net"]), root)
         os.remove(stub)
-        if net: rec("G1", "FAIL" if f else "PASS", f"{bib}: {f} FAIL / {w} WARN" + ("" if f else "，DOI 全部解析"))
+        if net: rec("G1", verdict(f, out), f"{bib}: {f} FAIL / {w} WARN" + ("" if f else "，DOI 全部解析"))
         else: rec("G1", "SKIP", f"{bib} 存在；加 --net 才解析 DOI")
     else: rec("G1", "PENDING", "无 literature/refs.bib 或 paper/refs.bib")
     # G1b: gap_map 判定 + transfer_scan（研究分支的 P1 第二产物）
     if not survey and (exists(root, "literature/gap_map.md") or exists(root, "literature/transfer_scan.md")):
         rc, f, w, out = run([S("transfer_scan.py"), "check"], root)
         mv = re.search(r"P1 判定 (no-go|go)", out)
-        rec("G1b", "FAIL" if f else "PASS", f"gap_map/transfer_scan {f} FAIL" + (f"，判定 {mv.group(1)}" if mv else "") + ("；no-go 是合法出口，不进 P2" if mv and mv.group(1) == "no-go" else ""))
+        rec("G1b", verdict(f, out), f"gap_map/transfer_scan {f} FAIL" + (f"，判定 {mv.group(1)}" if mv else "") + ("；no-go 是合法出口，不进 P2" if mv and mv.group(1) == "no-go" else ""))
     elif not survey: rec("G1b", "PENDING", "无 literature/gap_map.md 与 transfer_scan.md（P1 两个必产物）")
     # G2
     pr = os.path.join(root, "prereg.md")
     if exists(root, "prereg.md") and "一句可证伪的话" not in io.open(pr, encoding="utf-8").read():
-        rc, f, w, out = run([S("prereg_check.py")], root); rec("G2", "FAIL" if f else "PASS", f"prereg_check {f} FAIL / {w} WARN")
+        rc, f, w, out = run([S("prereg_check.py")], root); rec("G2", verdict(f, out), f"prereg_check {f} FAIL / {w} WARN")
     else: rec("G2", "PENDING", "prereg.md 不存在或仍是模板")
     # G3
     rd = aud.get("runs_dir", "runs") if aud else "runs"
     if aud and (aud.get("leak_flags") or aud.get("critical_params") or aud.get("inputs")) and exists(root, rd) and os.listdir(os.path.join(root, rd)):
-        rc, f, w, out = run([S("audit_check.py")], root); rec("G3", "FAIL" if f else "PASS", f"audit_check {f} FAIL / {w} WARN")
+        rc, f, w, out = run([S("audit_check.py")], root); rec("G3", verdict(f, out), f"audit_check {f} FAIL / {w} WARN")
     elif st.get("bundle") and (st["bundle"].get("matrix") or {}).get("ref") and (st["bundle"].get("matrix") or {}).get("baselines"):   # template ref alone is not a configured matrix
         rc, f, w, out = run([S("bundle.py"), "check"], root); m = re.search(r"\[INFO\] matrix: (\d+ runs[^\n]*)", out)
-        rec("G3", "FAIL" if f else "PASS", f"bundle check {f} FAIL（远程实验包，runs/ 尚空）" + (f"；{m.group(1)}" if m else "") + "；结果回来后 audit_check 再跑")
+        rec("G3", verdict(f, out), f"bundle check {f} FAIL（远程实验包，runs/ 尚空）" + (f"；{m.group(1)}" if m else "") + "；结果回来后 audit_check 再跑")
     else: rec("G3", "PENDING", "state.audits 的 leak_flags/critical_params/inputs 未填，或 runs/ 为空（远程跑则填 state.bundle.matrix）")
     # G4
     if exists(root, res.get("main_table", "results/main.csv")):
-        rc, f, w, out = run([S("results_check.py")], root); f2 = w2 = 0
+        rc, f, w, out = run([S("results_check.py")], root); f2 = w2 = 0; out2 = ""
         if exists(root, res.get("ablation_table", "results/ablation.csv")):
             rc2, f2, w2, out2 = run([S("ablation_plan.py"), "resolve"], root)
-        rec("G4", "FAIL" if (f or f2) else "PASS", f"results_check {f} FAIL / {w} WARN；ablation resolve {f2} FAIL")
+        rec("G4", verdict(f + f2, out, out2), f"results_check {f} FAIL / {w} WARN；ablation resolve {f2} FAIL")
     else: rec("G4", "PENDING", f"无 {res.get('main_table', 'results/main.csv')}")
     # G5
     fc = os.path.join(root, "figures.csv")
     if exists(root, "figures.csv") and len(io.open(fc, encoding="utf-8").read().strip().splitlines()) > 1 and "figures/fig1.png,90,results/main.csv,no" not in io.open(fc, encoding="utf-8").read():
         rc, f, w, out = run([S("gate_check.py"), "dpi", "--manuscript", manuscript if exists(root, manuscript) else "figures.csv"], root)
-        rec("G5", "FAIL" if f else "PASS", f"dpi {f} FAIL / {w} WARN")
+        rec("G5", verdict(f, out), f"dpi {f} FAIL / {w} WARN")
     else: rec("G5", "PENDING", "figures.csv 为空或仍是模板")
     # G6
     if exists(root, manuscript):
         subs = ["floats", "acronyms", "scope", "numbers", "limits"] + (["refs"] if net and exists(root, "paper/refs.bib") else [])
-        tot_f = 0; parts = []
+        tot_f = 0; parts = []; outs = []
         for g in subs:
             rc, f, w, out = run([S("gate_check.py"), g, "--manuscript", manuscript, "--bib", "paper/refs.bib"] + (["--supplement", "paper/supplement.md"] if exists(root, "paper/supplement.md") else []), root)
-            tot_f += f; parts.append(f"{g}:{f}F/{w}W")
-        rec("G6", "FAIL" if tot_f else "PASS", "  ".join(parts) + ("" if net else "  (refs 需 --net)"))
+            tot_f += f; parts.append(f"{g}:{f}F/{w}W"); outs.append(out)
+        rec("G6", verdict(tot_f, *outs), "  ".join(parts) + ("" if net else "  (refs 需 --net)"))
         # G6b: must-write checklist from P1–P4 artefacts
         if exists(root, "paper/draft_plan.json"):
             rc, f, w, out = run([S("draft_plan.py"), "check"], root); m = re.search(r"(\d+)/(\d+) 项已写", out)
-            rec("G6b", "FAIL" if f else "PASS", f"draft_plan {f} FAIL / {w} WARN" + (f"，{m.group(0)}" if m else ""))
+            rec("G6b", verdict(f, out), f"draft_plan {f} FAIL / {w} WARN" + (f"，{m.group(0)}" if m else ""))
         else: rec("G6b", "PENDING", "无 paper/draft_plan.json：写作前先 `draft_plan.py plan` 生成各节必写清单")
         # G6c: manuscript shape vs. target family (cs_conf | cs_journal | nature)
         rc, f, w, out = run([S("shape_check.py")], root); m = re.search(r"family = (\w+)", out)
-        rec("G6c", "FAIL" if f else "PASS", f"shape {f} FAIL / {w} WARN" + (f"，family={m.group(1)}" if m else ""))
+        rec("G6c", verdict(f, out), f"shape {f} FAIL / {w} WARN" + (f"，family={m.group(1)}" if m else ""))
     else: rec("G6", "PENDING", f"无 {manuscript}")
     # G7
     if exists(root, "paper/review_log.md"):
         rc, f, w, out = run([S("review_check.py")], root)
-        rec("G7", "FAIL" if f else "PASS", f"review_check {f} FAIL / {w} WARN")
+        rec("G7", verdict(f, out), f"review_check {f} FAIL / {w} WARN")
     else: rec("G7", "PENDING", "无 paper/review_log.md")
     # G8
     if any(exists(root, "submission", x) for x in ("cover_letter.md", "title_page.md", "highlights.md", "blind.md")):
-        rc, f, w, out = run([S("gate_check.py"), "submission", "--manuscript", manuscript], root); rec("G8", "FAIL" if f else "PASS", f"submission {f} FAIL / {w} WARN")
+        rc, f, w, out = run([S("gate_check.py"), "submission", "--manuscript", manuscript], root); rec("G8", verdict(f, out), f"submission {f} FAIL / {w} WARN")
     else: rec("G8", "PENDING", "submission/ 无 cover_letter.md / title_page.md / highlights.md / blind.md")
     # survey branch gates (only when state.branch == survey or state.survey is filled)
     sv = st.get("survey") or {}
     sv_filled = any(sv.get(k) for k in ("scope_in", "scope_out", "axis", "thesis"))   # path/threshold keys are template defaults; only content keys make it a survey
     if (st.get("branch") == "survey") or sv_filled:
         if exists(root, "protocol.md") and "锁定日期：\n" not in io.open(os.path.join(root, "protocol.md"), encoding="utf-8").read()[:200]:
-            rc, f, w, out = run([S("survey_check.py"), "protocol", "--codebook", sv.get("codebook", "coding/codebook.md")], root); rec("G-S2", "FAIL" if f else "PASS", f"protocol {f} FAIL / {w} WARN")
+            rc, f, w, out = run([S("survey_check.py"), "protocol", "--codebook", sv.get("codebook", "coding/codebook.md")], root); rec("G-S2", verdict(f, out), f"protocol {f} FAIL / {w} WARN")
         else: rec("G-S2", "PENDING", "protocol.md 不存在或仍是模板")
         if exists(root, sv.get("screening_sheet", "coding/screening_sheet.csv")):
-            rc, f, w, out = run([S("survey_check.py"), "coding"], root); rec("G-S3", "FAIL" if f else "PASS", f"coding {f} FAIL / {w} WARN")
+            rc, f, w, out = run([S("survey_check.py"), "coding"], root); rec("G-S3", verdict(f, out), f"coding {f} FAIL / {w} WARN")
         else: rec("G-S3", "PENDING", f"无 {sv.get('screening_sheet', 'coding/screening_sheet.csv')}")
         if exists(root, sv.get("claims", "paper/claims.csv")) and "C1,\"\"" not in io.open(os.path.join(root, sv.get("claims", "paper/claims.csv")), encoding="utf-8").read():
-            rc, f, w, out = run([S("survey_check.py"), "claims"], root); rec("G-S5", "FAIL" if f else "PASS", f"claims {f} FAIL / {w} WARN")
+            rc, f, w, out = run([S("survey_check.py"), "claims"], root); rec("G-S5", verdict(f, out), f"claims {f} FAIL / {w} WARN")
         else: rec("G-S5", "PENDING", "paper/claims.csv 为空或仍是模板")
-    nf = sum(1 for _, s, _ in board if s == "FAIL")
-    first_bad = next((g for g, s, _ in board if s in ("FAIL", "PENDING")), None)
-    print(f"\n== {nf} 道关口 FAIL；phase.current = {(st.get('phase') or {}).get('current', '?')}；下一步：{'修 ' + first_bad if first_bad else '全部通过，可投稿'} ==")
+    nf = sum(1 for _, s, _ in board if s in ("FAIL", "CRASH"))
+    first_bad = next((g for g, s, _ in board if s in ("FAIL", "CRASH", "PENDING")), None)
+    print(f"\n== {nf} 道关口 FAIL/CRASH；phase.current = {(st.get('phase') or {}).get('current', '?')}；下一步：{'修 ' + first_bad if first_bad else '全部通过，可投稿'} ==")
     print("逐条明细：对应脚本加 --project 单独跑；gate_report.md 保存最近一次 gate_check 输出")
     return nf
 
@@ -178,8 +198,8 @@ def doctor():
     import glob
     for f in sorted(glob.glob(os.path.join(HERE, "*.py"))):
         if os.path.basename(f) == "t2p.py": continue
-        r = subprocess.run([PY, f, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace")
-        print(f"[{'ok' if r.returncode == 0 else 'BROKEN'}] {os.path.basename(f)} --help")
+        r = subprocess.run([PY, f, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=GBK_ENV)
+        print(f"[{'ok' if r.returncode == 0 else 'BROKEN'}] {os.path.basename(f)} --help (GBK console)")
         ok &= r.returncode == 0
     for f in ("acronym-norms.csv", "venue-norms.csv", "gates.md", "lessons.md"):
         print(f"[{'ok' if exists(SKILL, 'references', f) else 'MISSING'}] references/{f}")

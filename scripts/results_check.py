@@ -24,6 +24,8 @@ convention string from prereg §4 appears in the table header/note; (3) seeds �
 set across methods; (4) ablation rows ⊇ prereg §6 items, baselines ⊇ prereg §5 items (fuzzy token match); (5) sign of each
 pre-stated prediction. Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections, statistics
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 FAILS = 0
 def say(st, g, msg):

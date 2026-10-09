@@ -15,6 +15,8 @@ Checks:
   5. edits named in dispositions ("§5.6", "Table 8", "L123") exist in manuscript -> WARN
 """
 import argparse, io, os, re, sys
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 FAILS = 0
 def say(st, msg):

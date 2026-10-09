@@ -17,6 +17,8 @@ gate_check.py — topic-to-paper 的机械关口。
 输出 gate_report.md；任一 FAIL 返回 1。只用标准库；dpi 需 Pillow，refs 需联网。
 """
 import argparse, csv, json, os, re, sys, time, urllib.request, urllib.parse, difflib
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 REPORT = []
 FAILS = 0

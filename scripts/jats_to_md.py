@@ -7,6 +7,8 @@
 """
 import re, sys, os, csv, io
 import xml.etree.ElementTree as ET
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 def txt(el):
     """flatten an element to text, keeping [n] for xref bibr and plain text for everything else."""

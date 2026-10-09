@@ -18,6 +18,8 @@ Conventions (IEEE/TGRS style, matched against SKYDET TGRS 2026 Tables II–V and
   * writes <out>.source.csv next to every artefact so numbers.csv can point at it (G6 numbers gate)
 """
 import argparse, csv, io, os, sys, math, collections
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 def read_csv(p):
     rows = list(csv.DictReader(open(p, encoding="utf-8-sig")))

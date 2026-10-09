@@ -19,6 +19,8 @@ state.survey:
   claims: paper/claims.csv                         # claim_id, statement, evidence_file, evidence_key, scope_words, verified
 Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 FAILS = 0
 def say(st, g, msg):

@@ -27,6 +27,8 @@ Configuration lives in research-state.yaml under `audits:` (see templates/resear
 Every FAIL carries the run name or file:line. Exit 1 on any FAIL. Checks were calibrated on the project where all three
 incidents happened (use_B_train leak, beta gated by is_ours, frames/ vs frames_256.npy): the gate must rediscover all three."""
 import argparse, ast, csv, glob, io, json, os, re, shutil, subprocess, sys, tempfile, collections
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 FAILS = 0
 def say(st, gate, msg):

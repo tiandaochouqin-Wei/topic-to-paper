@@ -24,6 +24,8 @@ vs learned readout; small-lesion Dice). Doing this mechanically at P1 (baseline 
 """
 import argparse, csv, io, os, sys, math
 import numpy as np
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 def load(a):
     if a.pred.endswith(".npz") or a.pred.endswith(".npy"):

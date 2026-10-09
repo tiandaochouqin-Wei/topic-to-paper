@@ -11,6 +11,8 @@ Checks:
   7. prereg.md sha256 matches research-state.yaml gates.G2.prereg_sha256 (lock), and no experiment has started before the lock
 Exit 1 on any FAIL. Prints the venue norm row so the user sees what the target venue typically reports."""
 import argparse, hashlib, io, os, re, sys, csv
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 SECTIONS = ["hypothesis", "primary_metric", "denominator", "inclusion_window", "baselines", "ablations", "success", "failure"]
 FAILS = 0

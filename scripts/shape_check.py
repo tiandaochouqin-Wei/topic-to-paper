@@ -15,6 +15,8 @@ Common: body-word count vs. family median ±60 % (WARN); reference count vs. sta
 Exit = #FAIL.
 """
 import argparse, io, os, re, sys
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 FAILS = 0
 def say(st, msg):

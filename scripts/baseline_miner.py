@@ -20,6 +20,8 @@ Calibrated on 13 nowcasting papers (2026-10-07): precision of the baselines list
 metrics/datasets/column headers are filtered by METRIC/DATASET/STOP tables below."""
 import sys, os, re, io, csv, glob, collections, argparse
 import fitz
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 METRIC = {"mse", "mae", "rmse", "csi", "pod", "far", "hss", "ets", "fss", "psnr", "ssim", "lpips", "fvd", "fid", "crps", "bias", "acc", "accuracy", "auc", "auroc", "f1", "dice", "iou", "miou", "map", "bleu", "nll", "ece", "brier", "mape", "r2", "corr", "spearman", "pearson", "precision", "recall", "top-1", "top-5", "flops", "params", "latency", "time", "memory", "throughput", "fps", "mean", "avg", "average", "std", "total", "overall"}
 DATASET_HINT = re.compile(r"\b(SEVIR|HKO-?7|MeteoNet|Shanghai|MRMS|ERA5|WeatherBench|IMERG|CORRA|GPM|KITTI|COCO|ImageNet|CIFAR|MNIST|Moving ?MNIST|N-body|TaxiBJ|BAIR|KTH|Human3\.6M|UCF|Kinetics|nuScenes|Waymo|ADNI|BraTS|MIMIC|ChestX|TCGA|MICCAI|LIDC|OASIS|HCP|SST|OPERA|RRQPE|JMA|KNMI|DWD|NEXRAD|FY-?4|GOES|Himawari|Meteosat|ABI|AHI|AGRI|SEVIRI|FCI)\b", re.I)

@@ -6,6 +6,8 @@ Each floats FAIL is re-verified against the raw PDF text (grouped references exp
 the report separates converter artefacts from genuine orphan floats."""
 import sys, os, re, io, csv, json, subprocess, glob, collections
 import fitz
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PDF2MD = os.path.join(HERE, "pdf_to_md.py")

@@ -18,6 +18,8 @@ Verification is token overlap inside the right section (≥ 60 % of content word
 It catches "forgot to say it" and "said it in the wrong section"; it cannot catch "said it wrong" — G6 numbers/scope do that.
 """
 import argparse, csv, io, json, os, re, sys, statistics, collections
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAILS = 0

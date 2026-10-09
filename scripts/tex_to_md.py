@@ -13,6 +13,9 @@ Writes out_dir/paper/manuscript.md with:
   - comments, \\begin{document} preamble, bibliography block stripped; math left inline between $...$
 It is a text-level converter: it does not run LaTeX, so macros defined in the preamble are not expanded."""
 import argparse, io, os, re, csv, shutil
+import sys
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 def strip_comments(s):
     return re.sub(r"(?<!\\)%[^\n]*", "", s)

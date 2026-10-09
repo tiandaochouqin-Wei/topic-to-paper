@@ -16,6 +16,8 @@ Style: serif 7.5 pt, no top/right spines, NMI-pastel blues + one red accent (sam
 import argparse, csv, io, os, sys, statistics, collections
 import numpy as np
 import matplotlib
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 

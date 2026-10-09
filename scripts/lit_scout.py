@@ -10,6 +10,8 @@ and nature/metadata/journals.csv (Nature/Science/PNAS family with abstracts) int
 scout ranks by BM25 over title+abstract, prints per-year counts (saturation signal), top hits with local PDF path when present,
 and the 18-month count that P1/G1 of topic-to-paper asks for."""
 import sys, os, re, csv, sqlite3, argparse, collections, datetime
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
+    if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 csv.field_size_limit(10**9)
 
