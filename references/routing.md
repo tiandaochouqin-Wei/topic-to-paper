@@ -67,6 +67,7 @@
 | 配色与可读性 | skill `dataviz` |
 | 图 → 可编辑 PPT | skill `image2pptx` |
 | 组合图：每面板一个 PDF，生成 subfigure/subfloat 块 | `scripts/latex_check.py figure --panels a.pdf,b.pdf --labels ... --caption ... --label fig:x` → paper/latex/figs/fig_x.tex |
+| 目标刊 / 家族 / 主题通常放哪些图（选图单依据） | `references/figure-norms.md`（`scripts/figure_norms.py` 对本地论文库抽样、按题注归类）；重算：`figure_norms.py sample --papers <库>` 再 `figure_norms.py report` |
 
 ## P6 WRITE
 | 动作 | 工具 |
