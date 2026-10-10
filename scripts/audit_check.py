@@ -119,7 +119,12 @@ def check_split(cfg, root):
         if ov: say("FAIL", "leakage", f"split_files: train/test 共享 {len(ov)} 个 {key}: {sorted(ov)[:8]}")
         else: say("PASS", "leakage", f"split_files: train {len(tr)} / test {len(te)} 个 {key}，无重叠")
     elif key:
-        say("WARN", "leakage", f"split_key={key} 但未提供 split_files，无法机械核对划分重叠；请导出 train/test 的 {key} 列表")
+        # 「配了路径但文件还不在」与「根本没配」是两件事：前者多半是数据还没准备好，后者是漏填
+        miss = [f"{k}={sf[k]}" for k in ("train", "test") if (sf.get(k) or "").strip() and not os.path.exists(os.path.join(root, sf[k]))]
+        if miss:
+            say("WARN", "leakage", f"split_key={key}，split_files 已配但文件不存在: {miss} —— 先跑数据准备脚本导出 {key} 列表，再重跑本关口")
+        else:
+            say("WARN", "leakage", f"split_key={key} 但未提供 split_files，无法机械核对划分重叠；请导出 train/test 的 {key} 列表")
     # static: sample-level splits in code
     for f in py_files(cfg, root):
         src = io.open(f, encoding="utf-8", errors="replace").read()
@@ -198,10 +203,29 @@ def _raises(node):
         if isinstance(n, ast.Call) and getattr(n.func, "id", "") in ("exit", "quit"): return True
     return False
 
-def _str_literals(node):
-    return {n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str) and 1 < len(n.value) < 60}
+RE_FUNCS = {"search", "match", "fullmatch", "compile", "sub", "subn", "findall", "finditer", "split"}
 
-OPTIONAL = re.compile(r"(log|ckpt|checkpoint|best\.pt|last\.pt|resume|cache|out|output|eval\.json|args\.json|meta\.json|results?\.json|\.png|\.pdf|\.csv)", re.I)
+def _regex_literals(node):
+    """字符串字面量里其实是**正则**的（re.search(r"(a|b)", …)）：不是路径，不能算进"检查过的文件"。"""
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(getattr(n, "func", None), ast.Attribute) and n.func.attr in RE_FUNCS:
+            if getattr(n.func.value, "id", "") in ("re", "regex") or n.func.attr in ("search", "findall", "finditer"):
+                for arg in n.args[:1]:
+                    out |= {x.value for x in ast.walk(arg) if isinstance(x, ast.Constant) and isinstance(x.value, str)}
+    return out
+
+def _str_literals(node, drop_regex=True):
+    lits = {n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str) and 1 < len(n.value) < 60}
+    return (lits - _regex_literals(node)) if drop_regex else lits
+
+def _is_write(seg):
+    """open(..., "w"/"a"/"x")、to_csv、savez 之类是**写**：生产输入文件的脚本不该因为"写了却没先检查存在"被判成判一个读一个。"""
+    if re.search(r"\b(savez|savez_compressed|to_csv|imwrite|DictWriter|writer)\s*\(", seg): return True
+    # open(...) 的 mode 实参可能被 os.path.join(...) 隔开，所以不能用 [^)]*：直接在整段里找写模式字面量
+    return bool(re.search(r"\bopen\s*\(", seg) and re.search(r"""["'][wax][btx+]*["']""", seg))
+
+OPTIONAL = re.compile(r"(log|ckpt|checkpoint|best\.pt|last\.pt|\.pt\b|\.pth\b|resume|cache|\bout\b|output|eval\.json|args\.json|meta\.json|results?\.json|\.png|\.pdf|\.csv)", re.I)
 
 def check_silent_fallback(cfg, root):
     inputs = set(cfg.get("inputs") or [])
@@ -245,7 +269,8 @@ def check_silent_fallback(cfg, root):
             seg = ast.get_source_segment(src, node) if isinstance(node, (ast.Call, ast.Compare, ast.BoolOp)) else None
             if not seg: continue
             if EXIST.search(seg): checked |= _str_literals(node)
-            if re.search(r"\b(open|np\.load|load|Image\.open|read_csv|imread|loadtxt|h5py\.File|torch\.load)\s*\(", seg): read |= _str_literals(node)
+            if re.search(r"\b(open|np\.load|load|Image\.open|read_csv|imread|loadtxt|h5py\.File|torch\.load)\s*\(", seg) and not _is_write(seg):
+                read |= _str_literals(node)          # 只算读；写出同名文件的生产脚本不该被判成"判一个读一个"
         for i in inputs:
             c = {l for l in checked if i in l}; r_ = {l for l in read if i in l}
             others_checked = {l for l in checked if any(j in l for j in inputs) and i not in l}

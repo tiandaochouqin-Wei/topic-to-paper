@@ -93,7 +93,7 @@ def mine(pdf_dir, out_dir, min_papers):
             for r in rows:
                 first = norm(r[0])
                 am = ABL.match(first)
-                if am or (is_abl_table and re.match(r"^\s*(?:w/o|without|−|-|no)", first, re.I)):
+                if am or (is_abl_table and re.match(r"^\s*(?:w/o|without|−|-|no)\b", first, re.I)):
                     comp = norm(am.group(1)) if am else norm(re.sub(r"^\s*(?:w/o|without|−|-|no)\s*", "", first, flags=re.I))
                     if is_name(comp): add(abl, abl_ex, comp, paper, first)
                 elif is_name(first) and not is_abl_table:
@@ -107,7 +107,7 @@ def mine(pdf_dir, out_dir, min_papers):
                 comp = norm(am.group(1))
                 if is_name(comp) and len(comp.split()) <= 5: add(abl, abl_ex, comp, paper, l)
             # "Model w/o X" and "Model (no X)" inline variants
-            for im in re.finditer(r"(?:w/o|without)\s+([A-Za-z][\w\-]*(?:\s+[A-Za-z][\w\-]*){0,3})", l):
+            for im in re.finditer(r"\b(?:w/o|without)\s+([A-Za-z][\w\-]*(?:\s+[A-Za-z][\w\-]*){0,3})", l):
                 comp = norm(im.group(1))
                 if is_name(comp): add(abl, abl_ex, comp, paper, l)
         for pm in re.finditer(r"(?:compared? (?:with|against|to)|baselines? (?:include|are|:)|competitors? (?:include|are|:))\s+([A-Z][^.;]{3,160})", flat):
