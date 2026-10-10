@@ -81,6 +81,30 @@ audits:
   smoke_data: ""
   hardware_key: hardware
 
+bundle:                     # 远程实验包（bundle.py make|check|tables）。entry/eval/post/env 都相对 code_dir
+  code_dir: code
+  entry: "python train.py --exp {run} {args}"
+  eval: "python eval.py --exp {runs}"
+  post: ""
+  env: requirements.txt
+  python_min: "3.9"
+  import_check: [numpy]
+  min_vram_gb: 8
+  min_disk_gb: 10
+  data:
+    - {name: E1, remote: /data/E1, inputs: [frames], clip_glob: "*"}
+  scheduler: bash
+  slurm: {partition: gpu, gres: "gpu:1", time: "12:00:00", mem: 32G, cpus: 8, max_parallel: 2, modules: [], conda: ""}
+  smoke: {args: "--epochs 1", runs: [], eval: ""}
+  matrix:
+    seeds: [0, 1, 2]
+    seed_flag: "--seed {seed}"
+    seeded: [ours, baseA, baseB, no_dom, no_cons]
+    ref: {name: ours, args: "--model ours"}
+    baselines: {baseA: "--model baseA", baseB: "--model baseB"}
+    ablations: {no_dom: "--model ours --beta 0", no_cons: "--model ours --alpha 0"}
+    extra: {}
+
 results:
   main_table: results/main.csv
   ablation_table: results/ablation.csv

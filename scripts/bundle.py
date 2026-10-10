@@ -117,6 +117,8 @@ try:
 except Exception as ex: ok(False, f"torch/cuda: {{ex}}")
 free = shutil.disk_usage(".").free / 2**30; ok(free >= {b.get('min_disk_gb', 20)}, f"free disk {{free:.0f}} GB (need >= {b.get('min_disk_gb', 20)})")
 DATA = {json.dumps([{"name": d.get("name"), "path": d.get("remote"), "inputs": d.get("inputs") or inputs, "clip_glob": d.get("clip_glob", "*")} for d in data], ensure_ascii=False)}
+for d in DATA:   # remote 里的 ~ 与 $VAR 要在服务器上展开，否则路径存在也会报 MISS
+    d["path"] = os.path.expanduser(os.path.expandvars(d["path"] or ""))
 for d in DATA:
     ok(os.path.isdir(d["path"]), f"data {{d['name']}} at {{d['path']}}")
     if os.path.isdir(d["path"]):
@@ -132,7 +134,8 @@ sys.exit(0 if bad == 0 else 1)
     io.open(os.path.join(out, "check_env.py"), "w", encoding="utf-8").write(chk)
     # run_one.sh
     entry = b.get("entry", "python train.py --exp {run} {args}"); ev = b.get("eval", ""); post = b.get("post", "")
-    data_env = "\n".join(f'export {d["name"].upper()}_PATH="{d.get("remote", "")}"' for d in data)
+    # 路径里的 ~ 在双引号里不会被 bash 展开，所以生成时换成 ${HOME}；训练脚本可以直接用这些环境变量当默认值
+    data_env = "\n".join(f'export {d["name"].upper()}_PATH="{re.sub(r"^~(?=/|$)", "${HOME}", str(d.get("remote", "")))}"' for d in data)
     r1 = f'''#!/usr/bin/env bash
 # one run: $1 = run_id, $2.. = args. Records hardware + manifest before training; eval + post after.
 set -euo pipefail
@@ -250,6 +253,16 @@ def check(a):
     if not b: say("FAIL", "bundle", "state 无 bundle: 段"); sys.exit(1)
     rows = build_matrix(b); names = [r["name"] for r in rows]
     aud = st.get("audits") or {}; res = st.get("results") or {}
+    # entry/eval/post/env 都相对 code_dir（run_one.sh 先 cd 进去），写成 "code/train.py" 会变成 code/code/train.py
+    cd = (b.get("code_dir") or "code").strip("/\\")
+    bad_rel = [k for k in ("entry", "eval", "post", "env") if re.search(r"(?<![\w./])" + re.escape(cd) + r"/", str(b.get(k) or ""))]
+    if bad_rel:
+        say("FAIL", "paths", f"bundle 的 {bad_rel} 里带了 '{cd}/' 前缀：这几项相对 code_dir，run_one.sh 会先 cd 进 {cd}/，"
+                             f"结果变成 {cd}/{cd}/…。去掉前缀（例如 entry: \"python train.py --exp {{run}} {{args}}\"）")
+    for k in ("entry", "eval"):
+        v = str(b.get(k) or "")
+        if k == "entry" and "{run}" not in v: say("FAIL", "paths", "bundle.entry 里必须有 {run}")
+        if k == "eval" and v and "{runs}" not in v and "{run}" not in v: say("FAIL", "paths", "bundle.eval 里必须有 {runs} 或 {run}")
     pr = os.path.join(root, "prereg.md"); md = io.open(pr, encoding="utf-8").read() if os.path.exists(pr) else ""
     if md:
         base = table_first_col(section(md, "baselines")); abl = table_first_col(section(md, "ablations"))
