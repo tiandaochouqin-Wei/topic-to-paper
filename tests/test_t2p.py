@@ -58,7 +58,7 @@ def test_crashed_gate_shows_as_crash_on_the_board(research):
 def test_survey_board_all_pass(survey):
     r = run("t2p.py", "check", "--project", ".", cwd=survey)
     assert "[FAIL]" not in r.out and "[CRASH]" not in r.out, r.out
-    for g in ("G0", "G-S2", "G-S3", "G-S5"):
+    for g in ("G0", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5"):
         assert f"[PASS] {g}:" in r.out, f"{g} not PASS\n{r.out}"
     assert "] G2:" not in r.out and "] G3:" not in r.out and "] G4:" not in r.out    # research-only gates are hidden for a survey
     assert r.returncode == 0, r.out

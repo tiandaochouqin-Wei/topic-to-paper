@@ -80,6 +80,82 @@ def test_claims_evidence_cell_missing(survey):
     assert r.fails >= 1 and "取不到" in r.out
 
 
+# ------------------------------------------------------------------ G-S0  scope
+def test_scope_pass(survey):
+    r = run("survey_check.py", "scope", cwd=survey); assert r.fails == 0, r.out
+
+
+def test_scope_thesis_is_a_table_of_contents(survey):
+    edit(survey / "research-state.yaml", 'thesis: "the reported fusion gain shrinks as the baseline matching level gets stricter"', 'thesis: "we review multimodal fusion in clinical models"')
+    r = run("survey_check.py", "scope", cwd=survey)
+    assert r.fails >= 1 and "论点" in r.out
+
+
+def test_scope_invalid_axis(survey):
+    edit(survey / "research-state.yaml", "axis: method-level", "axis: everything")
+    assert run("survey_check.py", "scope", cwd=survey).fails >= 1
+
+
+def test_scope_missing_scope_out(survey):
+    edit(survey / "research-state.yaml", 'scope_out: "fusion within one family (for example multi-sequence MRI), covered by the prior survey [1]"', 'scope_out: ""')
+    r = run("survey_check.py", "scope", cwd=survey)
+    assert r.fails >= 1 and "scope_out" in r.out
+
+
+# ------------------------------------------------------------------ G-S1  search
+def test_search_pass(survey):
+    r = run("survey_check.py", "search", cwd=survey); assert r.fails == 0, r.out
+
+
+def test_search_source_without_date(survey):
+    edit(survey / "literature" / "search_log.json", '"date": "2026-09-20", "count": 9', '"count": 9')
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails >= 1 and "arxiv" in r.out
+
+
+def test_search_candidate_without_identifier(survey):
+    edit(survey / "literature" / "candidates.csv", "arxiv,,,2401.00001,", "arxiv,,,,")
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails >= 1 and "标识符" in r.out
+
+
+def test_search_duplicate_doi(survey):
+    p = survey / "literature" / "candidates.csv"
+    write(p, read(p) + "pubmed,10.1000/fix.a,30000099,,Study A again,2021,Medical Image Analysis\n")
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails >= 1 and "重复" in r.out
+
+
+def test_search_prior_surveys_missing(survey):
+    (survey / "literature" / "prior_surveys.csv").unlink()
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails >= 1 and "prior_surveys" in r.out
+
+
+# ------------------------------------------------------------------ G-S4  tables
+def test_tables_pass(survey):
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert r.fails == 0 and "格子合计" in r.out, r.out
+
+
+def test_tables_coverage_sum_mismatch(survey):
+    edit(survey / "coding" / "coverage.csv", "graph,0,1", "graph,0,2")
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert r.fails >= 1 and "纳入篇数" in r.out
+
+
+def test_tables_summary_not_rederivable(survey):
+    edit(survey / "tables" / "summary.csv", "M1,2,0.050,0.000", "M1,2,0.060,0.000")
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert r.fails >= 1 and "--verify" in r.out
+
+
+def test_tables_no_generator_script(survey):
+    (survey / "coding" / "audit_summary.py").unlink()
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert r.fails >= 1 and "summary" in r.out
+
+
 # ------------------------------------------------------------------ S4  summary table re-derivable from coded.csv
 def test_summary_table_verifies(survey):
     r = subprocess.run([PY, "coding/audit_summary.py", "--verify"], cwd=str(survey), capture_output=True, text=True, encoding="utf-8", env=ENV)

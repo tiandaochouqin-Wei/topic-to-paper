@@ -2,6 +2,25 @@
 
 本 skill 只编排。下面每一行是"本阶段的某个动作 → 调哪个本地 skill 或工具"。全部在当前会话内调用，不开子代理。
 
+## 外部 skill：必需 / 可选 / 缺失时怎么办
+
+**全部关口只依赖 `scripts/` 和三个 Python 包（pyyaml、pymupdf、pillow）；没有任何外部 skill 是必需的。** 下面各表路由到的外部 skill 都是"有则用，无则 Claude 在本会话内自己做同样的事，产物格式不变"。`t2p.py doctor --skills` 列出本机哪些可见。缺 skill 不是停下来问用户的理由（可问的四种情形见 SKILL.md）。
+
+| 缺失的 skill | Claude 自己怎么做 |
+|---|---|
+| `academic-paper-reviewer`、`rigor-reviewer` | 按 [review-seats.md](review-seats.md) 的五席逐席审，写 review_log.md 的固定格式；`review_check.py` 照常 |
+| `nature-writing`、`academic-intro-writing`、`nature-polishing` | 直接写：骨架 `templates/skeleton-<family>.md`，画像 [venue-profiles.md](venue-profiles.md)，必写清单 `draft_plan.py plan`；G6 / G6b / G6c 照常 |
+| `nature-figure`、`cs-experiment-figure-studio`、`academic-plotting`、`dataviz` | 主结果 / 消融 / seed 图已由 `make_figure.py` 生成；其它数据图用 matplotlib（serif 7.5 pt，≥300 dpi@印刷宽度，同时写 .source.csv），登记 figures.csv |
+| `scientific-schematics`、`image2pptx` | 示意图先用文字框图占位，不阻塞 G5；投稿前再补 |
+| `nature-response` | 逐条回复表：意见 / 回应 / 改在哪，一条一行，与 review_log.md 的处置对齐 |
+| `nature-data` | 数据可用性声明三句：数据在哪（仓库 / 访问条件）、代码在哪、结果文件在哪 |
+| `nature-citation`、`citation-management`、`nature-academic-search`、`bgpt-paper-search`、MCP `academic-search` | CrossRef / OpenAlex / arXiv / PubMed 原生 API（`transfer_scan.py`、`lit_scout.py` 已封装常用调用）；`gate_check.py refs` 核 DOI |
+| `deep-research`、`scientific-brainstorming`、`hypothesis-generation`、`scientific-critical-thinking` | 不用；P1 的 problem_table / gap_map / transfer_scan 流程本身就是替代 |
+| `experimental-design`、`statistical-power`、`statistical-analysis`、`exploratory-data-analysis` | 统计判据按 [venue-norms.md](venue-norms.md)；检验用 scipy / statsmodels 直接写 |
+| `arbor`、`0-autoresearch-skill`、`mlflow`、`weights-and-biases`、`swanlab` | 不用也不影响任何关口；run_card + runs/*/log.json 就是实验跟踪 |
+| `venue-templates`、`academic-paper`、`docx` | LaTeX / DOCX 排版放到投稿前；关口只看 paper/manuscript.md |
+| `nature-paper2ppt` | 投稿后才用，无需替代 |
+
 ## P1 SCOUT
 | 动作 | 工具 |
 |---|---|

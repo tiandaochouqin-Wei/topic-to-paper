@@ -215,12 +215,20 @@ def check(root, net, write=True):
     sv = st.get("survey") or {}
     sv_filled = any(sv.get(k) for k in ("scope_in", "scope_out", "axis", "thesis"))   # path/threshold keys are template defaults; only content keys make it a survey
     if (st.get("branch") == "survey") or sv_filled:
+        rc, f, w, out = run([S("survey_check.py"), "scope"], root); rec("G-S0", verdict(f, out), f"scope {f} FAIL / {w} WARN")
+        if exists(root, sv.get("search_log", "literature/search_log.json")) or exists(root, sv.get("candidates", "literature/candidates.csv")):
+            rc, f, w, out = run([S("survey_check.py"), "search"], root); rec("G-S1", verdict(f, out), f"search {f} FAIL / {w} WARN")
+        else: rec("G-S1", "PENDING", "无 literature/search_log.json 与 candidates.csv（S1 产物：每源检索式+日期+计数，候选表带标识符）")
         if exists(root, "protocol.md") and not templated(root, "protocol.md", "protocol.md"):
             rc, f, w, out = run([S("survey_check.py"), "protocol", "--codebook", sv.get("codebook", "coding/codebook.md")], root); rec("G-S2", verdict(f, out), f"protocol {f} FAIL / {w} WARN")
         else: rec("G-S2", "PENDING", "protocol.md 不存在或仍是模板")
         if exists(root, sv.get("screening_sheet", "coding/screening_sheet.csv")):
             rc, f, w, out = run([S("survey_check.py"), "coding"], root); rec("G-S3", verdict(f, out), f"coding {f} FAIL / {w} WARN")
         else: rec("G-S3", "PENDING", f"无 {sv.get('screening_sheet', 'coding/screening_sheet.csv')}")
+        td = os.path.join(root, sv.get("tables_dir", "tables"))
+        if os.path.isdir(td) and any(x.endswith(".csv") for x in os.listdir(td)):
+            rc, f, w, out = run([S("survey_check.py"), "tables"], root); rec("G-S4", verdict(f, out), f"tables {f} FAIL / {w} WARN")
+        else: rec("G-S4", "PENDING", f"{sv.get('tables_dir', 'tables')}/ 无 csv（S4 产物：汇总表落盘 + coding/*summary*.py --verify + coverage.csv）")
         cl = sv.get("claims", "paper/claims.csv")
         if data_rows(root, cl) >= 1 and not templated(root, cl, "claims.csv"):
             rc, f, w, out = run([S("survey_check.py"), "claims"], root); rec("G-S5", verdict(f, out), f"claims {f} FAIL / {w} WARN")
@@ -280,7 +288,31 @@ def init(root, venue, field, branch, entry="topic_only"):
     print(f"工作区已建: {root}（branch={branch}, entry={entry}, phase={ENTRY_PHASE[entry]}）\n下一步: {NEXT_BY_ENTRY[entry]}")
     return 0
 
-def doctor():
+def routed_skills():
+    """External skills named in references/routing.md (hyphenated lower-case tokens in backticks, e.g. `nature-figure`)."""
+    p = os.path.join(SKILL, "references", "routing.md")
+    if not os.path.exists(p): return []
+    toks = set(re.findall(r"`([a-z0-9]+(?:-[a-z0-9]+)+)`", io.open(p, encoding="utf-8").read()))
+    return sorted(t for t in toks if not t.startswith("-") and "." not in t and t not in ("topic-to-paper", "no-net", "topic-to"))
+
+def installed_skills(project):
+    """Directories that contain a SKILL.md under the user-level and project-level skill folders Claude Code loads from."""
+    import glob
+    roots = [os.path.join(os.path.expanduser("~"), ".claude", "skills"), os.path.join(os.path.expanduser("~"), ".claude", "plugins")]
+    d = os.path.abspath(project)
+    while True:
+        roots.append(os.path.join(d, ".claude", "skills"))
+        nd = os.path.dirname(d)
+        if nd == d: break
+        d = nd
+    found = {}
+    for r in roots:
+        if not os.path.isdir(r): continue
+        for sk in glob.glob(os.path.join(r, "**", "SKILL.md"), recursive=True):
+            found.setdefault(os.path.basename(os.path.dirname(sk)), os.path.dirname(sk))
+    return found
+
+def doctor(skills=False, project="."):
     ok = True
     for mod, pipname in (("yaml", "pyyaml"), ("fitz", "pymupdf"), ("PIL", "pillow")):
         try: __import__(mod); print(f"[ok] {mod}")
@@ -291,8 +323,14 @@ def doctor():
         r = subprocess.run([PY, f, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=GBK_ENV)
         print(f"[{'ok' if r.returncode == 0 else 'BROKEN'}] {os.path.basename(f)} --help (GBK console)")
         ok &= r.returncode == 0
-    for f in ("acronym-norms.csv", "venue-norms.csv", "gates.md", "lessons.md"):
+    for f in ("acronym-norms.csv", "venue-norms.csv", "gates.md", "lessons.md", "routing.md"):
         print(f"[{'ok' if exists(SKILL, 'references', f) else 'MISSING'}] references/{f}")
+    if skills:   # informational: which external skills routing.md points at are installed where this project runs
+        have = installed_skills(project); names = routed_skills(); miss = []
+        for n in names:
+            if n in have: print(f"[skill ok]      {n:32s} {have[n]}")
+            else: miss.append(n); print(f"[skill absent]  {n:32s} -> 按 references/routing.md 的替代做法由 Claude 自己做")
+        print(f"\n{len(names) - len(miss)}/{len(names)} 个路由到的外部 skill 在本机可见（用户级 ~/.claude/skills、~/.claude/plugins 与项目级 .claude/skills）；缺失不阻塞任何关口")
     return 0 if ok else 1
 
 if __name__ == "__main__":
@@ -304,8 +342,8 @@ if __name__ == "__main__":
         if name == "init":
             p.add_argument("--venue", default=""); p.add_argument("--field", default=""); p.add_argument("--branch", choices=["research", "survey"], default="research")
             p.add_argument("--entry", choices=list(ENTRIES), default="topic_only", help="项目从哪里开始：have_draft/have_reviews 时 G1b–G5 显示 N/A 而非 PENDING")
-    sub.add_parser("doctor")
+    d = sub.add_parser("doctor"); d.add_argument("--skills", action="store_true", help="也列出 routing.md 路由到的外部 skill 哪些在本机可见"); d.add_argument("--project", default=".")
     a = ap.parse_args()
-    if a.cmd == "doctor": sys.exit(doctor())
+    if a.cmd == "doctor": sys.exit(doctor(a.skills, a.project))
     root = os.path.abspath(a.project)
     sys.exit({"status": lambda: status(root), "check": lambda: check(root, a.net, not a.no_write), "init": lambda: init(root, a.venue, a.field, a.branch, a.entry)}[a.cmd]())

@@ -1,0 +1,9 @@
+source,doi,pmid,arxiv_id,title,year,venue
+pubmed,10.1000/fix.a,30000001,,Study A: image and report fusion for diagnosis,2021,Medical Image Analysis
+pubmed,10.1000/fix.b,30000002,,Study B: records plus imaging for prognosis,2022,Nature Medicine
+openalex,10.1000/fix.c,,,Study C: attention fusion of image and text,2023,MICCAI
+arxiv,,,2401.00001,Study D: graph fusion of records and signals,2024,arXiv
+pubmed,10.1000/fix.e,30000005,,Study E: multi-sequence MRI fusion,2020,Radiology
+openalex,10.1000/fix.f,,,Study F: a perspective on fusion,2019,Lancet Digital Health
+openalex,10.1000/fix.g,,,Study G: imaging only transformer,2023,TMI
+arxiv,,,2305.00007,Study H: text only clinical model,2023,arXiv

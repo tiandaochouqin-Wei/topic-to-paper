@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Survey-branch gates (S2, S3, S5). Run by Claude, never by the user.
+"""Survey-branch gates (S0–S5). Run by Claude, never by the user.
 
-  python survey_check.py protocol [--protocol protocol.md] [--codebook coding/codebook.md] [--state research-state.yaml]
-  python survey_check.py coding   [--state research-state.yaml] [--project .]
-  python survey_check.py claims   [--state research-state.yaml] [--project .]
+  python survey_check.py scope    [--state research-state.yaml] [--project .]   G-S0: scope_in/scope_out/axis/thesis + guide
+  python survey_check.py search   [--state ...] [--project .]                   G-S1: search_log.json, candidates.csv, prior_surveys.csv
+  python survey_check.py protocol [--protocol protocol.md] [--codebook coding/codebook.md] [--state research-state.yaml]   G-S2
+  python survey_check.py coding   [--state research-state.yaml] [--project .]   G-S3
+  python survey_check.py tables   [--state ...] [--project .]                   G-S4: *summary*.py --verify, coverage.csv sums, figures.csv
+  python survey_check.py claims   [--state research-state.yaml] [--project .]   G-S5
 
 state.survey:
   scope_in: ""              scope_out: ""          axis: ""              thesis: ""
@@ -215,14 +218,130 @@ def check_claims(cfg, root):
         say("PASS" if gen else "WARN", "claims", f"tables/ 有 {len([f for f in os.listdir(td) if f.endswith('.csv')])} 张 csv" + ("，coding/ 有生成脚本" if gen else "，但 coding/ 无 *summary*.py 生成脚本：汇总表必须能从 coded.csv 重算"))
     if bad == 0: say("PASS", "claims", f"{len(rows)} 条主张全部能回到证据文件的具体行且满足判据")
 
+# ------------------------------------------------------------------ scope (S0)
+AXES = {"method-level", "method", "task", "data", "time", "方法层级", "任务", "数据", "时间"}
+NOT_A_THESIS = re.compile(r"^\s*(we (review|survey|summari[sz]e)|this (survey|review)|a (survey|review) of|an overview of|我们综述|本文综述|本综述|综述了)", re.I)
+
+def check_scope(cfg, root, st):
+    """G-S0: state.survey has the four scoping answers and the guide file is in place."""
+    for k in ("scope_in", "scope_out", "axis", "thesis"):
+        v = str(cfg.get(k) or "").strip()
+        if len(v) < 8: say("FAIL", "scope", f"state.survey.{k} 为空或太短（{v!r}）：范围边界/组织轴/论点在 S0 就要写出来")
+    axis = str(cfg.get("axis") or "").strip().lower()
+    if axis and axis not in AXES: say("FAIL", "scope", f"state.survey.axis={axis!r} 不是 method-level | task | data | time 之一（只选一个主轴）")
+    thesis = str(cfg.get("thesis") or "")
+    if thesis and NOT_A_THESIS.match(thesis): say("FAIL", "scope", f"state.survey.thesis 是目录句不是论点：{thesis[:60]!r}（要一句可证伪的话，如\"报告的融合增益随基线匹配严格度缩小\"）")
+    gf = ((st.get("target") or {}).get("guide_file")) or "submission/guide.txt"
+    if not os.path.exists(os.path.join(root, gf)): say("FAIL", "scope", f"{gf} 不存在（S0 同 P0：先下载 Guide for Authors）")
+    if FAILS == 0: say("PASS", "scope", f"scope_in / scope_out / axis={axis} / thesis 四项齐，论点是可证伪句，guide 在")
+
+# ------------------------------------------------------------------ search (S1)
+ID_COLS = ("doi", "pmid", "arxiv_id", "openalex_id", "s2_id")
+
+def _sources(log):
+    """search_log.json: {"sources": [{source, query, date, count}, ...]} or {source: {query, date, count}}; keys may be Chinese."""
+    if isinstance(log, dict) and isinstance(log.get("sources"), list): items = [(s.get("source") or s.get("name") or f"#{i}", s) for i, s in enumerate(log["sources"])]
+    elif isinstance(log, list): items = [(s.get("source") or s.get("name") or f"#{i}", s) for i, s in enumerate(log)]
+    elif isinstance(log, dict): items = [(k, v) for k, v in log.items() if isinstance(v, dict) and k not in ("dedup_total", "meta")]
+    else: items = []
+    norm = []
+    for name, s in items:
+        q = s.get("query") or s.get("检索式") or s.get("q") or ""
+        d = s.get("date") or s.get("日期") or s.get("run_at") or ""
+        n = s.get("count") if s.get("count") is not None else (s.get("n") if s.get("n") is not None else s.get("hits", s.get("命中数")))
+        norm.append((str(name), str(q).strip(), str(d).strip(), n))
+    return norm
+
+def check_search(cfg, root):
+    """G-S1: every source has a query, a date and a count; every candidate has an identifier; prior surveys each say how this one differs."""
+    lp = os.path.join(root, cfg.get("search_log", "literature/search_log.json"))
+    cp = os.path.join(root, cfg.get("candidates", "literature/candidates.csv"))
+    if not os.path.exists(lp): say("FAIL", "search", f"{os.path.relpath(lp, root)} 不存在：每个检索源的检索式、日期、命中数要落盘，审稿人会问检索可否复现")
+    else:
+        try: srcs = _sources(json.load(open(lp, encoding="utf-8")))
+        except Exception as ex: srcs = []; say("FAIL", "search", f"search_log.json 不可解析: {ex}")
+        if not srcs: say("FAIL", "search", "search_log.json 没有任何检索源记录")
+        bad = [(n, [k for k, v in (("query", q), ("date", d), ("count", c)) if v in ("", None)]) for n, q, d, c in srcs]
+        bad = [(n, m) for n, m in bad if m]
+        for n, m in bad: say("FAIL", "search", f"检索源 {n} 缺 {m}（检索式 / 日期 / 命中数三项都要）")
+        nodate = [n for n, q, d, c in srcs if d and not re.match(r"\d{4}-\d{2}(-\d{2})?", d)]
+        if nodate: say("WARN", "search", f"检索源 {nodate} 的日期不是 YYYY-MM-DD")
+        if srcs and not bad: say("PASS", "search", f"{len(srcs)} 个检索源各有检索式、日期、命中数: " + ", ".join(f"{n}={c}" for n, q, d, c in srcs))
+    if not os.path.exists(cp): say("FAIL", "search", f"{os.path.relpath(cp, root)} 不存在")
+    else:
+        rows = list(csv.DictReader(open(cp, encoding="utf-8-sig")))
+        cols = set(rows[0].keys()) if rows else set()
+        have_id = [c for c in ID_COLS if c in cols]
+        if not rows: say("FAIL", "search", "candidates.csv 为空")
+        elif not have_id: say("FAIL", "search", f"candidates.csv 没有标识符列（需 {ID_COLS} 之一）")
+        else:
+            noid = [i for i, r in enumerate(rows, 2) if not any((r.get(c) or "").strip() for c in have_id)]
+            if noid: say("FAIL", "search", f"candidates.csv {len(noid)} 行无任何标识符（行 {noid[:6]}）：没有 DOI/PMID/arXiv 的候选无法去重与核实")
+            else: say("PASS", "search", f"candidates.csv {len(rows)} 行全部有标识符")
+            dois = [(r.get("doi") or "").strip().lower() for r in rows if (r.get("doi") or "").strip()]
+            dup = len(dois) - len(set(dois))
+            if dup: say("FAIL", "search", f"candidates.csv 有 {dup} 个重复 DOI：三源去重没做完")
+    tp = os.path.join(root, cfg.get("prior_surveys", "literature/prior_surveys.csv"))
+    if not os.path.exists(tp): say("FAIL", "search", f"{os.path.relpath(tp, root)} 不存在：S1 先查已有综述，每行写 how_this_differs")
+    else:
+        ps = list(csv.DictReader(open(tp, encoding="utf-8-sig")))
+        nodiff = [p.get("title", "")[:40] for p in ps if not (p.get("how_this_differs") or "").strip()]
+        if not ps: say("FAIL", "search", "prior_surveys.csv 为空：查过没有同主题综述也要写一行说明（title 填 none，how_this_differs 写检索式）")
+        elif nodiff: say("FAIL", "search", f"prior_surveys.csv {len(nodiff)} 行未写本文差异: {nodiff[:3]}")
+        else: say("PASS", "search", f"已有综述 {len(ps)} 篇，每篇写了本文差异")
+
+# ------------------------------------------------------------------ tables (S4)
+def check_tables(cfg, root):
+    """G-S4: every summary table is re-derivable (generator --verify passes), coverage cells sum to the included count, figures registered."""
+    import subprocess
+    td = os.path.join(root, cfg.get("tables_dir", "tables"))
+    csvs = sorted(f for f in os.listdir(td) if f.endswith(".csv")) if os.path.isdir(td) else []
+    if not csvs: say("FAIL", "tables", f"{os.path.relpath(td, root)}/ 没有 csv：汇总表必须落盘（正文数字要指向它的行）")
+    gens = sorted(f for f in os.listdir(os.path.join(root, "coding")) if f.endswith(".py") and "summary" in f) if os.path.isdir(os.path.join(root, "coding")) else []
+    if not gens: say("FAIL", "tables", "coding/ 无 *summary*.py 生成脚本：tables/*.csv 必须能从 coded.csv 重算（脚本带 --verify）")
+    for g in gens:
+        r = subprocess.run([sys.executable, os.path.join("coding", g), "--verify"], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0 or "Traceback" in (r.stderr or ""):
+            say("FAIL", "tables", f"coding/{g} --verify 退出码 {r.returncode}：汇总表与 coded.csv 不一致或脚本不可运行 | " + ((r.stdout + r.stderr).strip().splitlines() or ["(无输出)"])[-1][:120])
+        else: say("PASS", "tables", f"coding/{g} --verify 通过：{len(csvs)} 张表可从 coded.csv 重算")
+    # included count: PRISMA first, screening sheet second
+    inc = None
+    pp = os.path.join(root, cfg.get("prisma", "literature/prisma_flow.json"))
+    if os.path.exists(pp):
+        try: inc = int(json.load(open(pp, encoding="utf-8")).get("included"))
+        except Exception: inc = None
+    if inc is None:
+        sp = os.path.join(root, cfg.get("screening_sheet", "coding/screening_sheet.csv"))
+        if os.path.exists(sp): inc = sum(1 for r in csv.DictReader(open(sp, encoding="utf-8-sig")) if (r.get("decision") or "").strip().lower() == "include")
+    cv = os.path.join(root, cfg.get("coverage", "coding/coverage.csv"))
+    if not os.path.exists(cv): say("FAIL", "tables", f"{os.path.relpath(cv, root)} 不存在：覆盖矩阵（轴 × 任务/数据的篇数）找空白格，也是路线图节的依据")
+    else:
+        rows = [r for r in csv.reader(open(cv, encoding="utf-8-sig")) if any(c.strip() for c in r)]
+        hdr, body = rows[0], rows[1:]
+        cells = []
+        for r in body:
+            if r[0].strip().lower() in ("total", "合计", "sum"): continue
+            for j, c in enumerate(r[1:], 1):
+                if j < len(hdr) and hdr[j].strip().lower() in ("total", "合计", "sum"): continue
+                try: cells.append(int(float(c)))
+                except Exception: pass
+        tot = sum(cells)
+        if inc is None: say("WARN", "tables", f"coverage.csv 格子合计 {tot}，但找不到纳入篇数（prisma_flow.json 的 included 或 screening 的 include 行）来核对")
+        elif tot != inc: say("FAIL", "tables", f"coverage.csv 格子合计 {tot} ≠ 纳入篇数 {inc}：每篇纳入文献在矩阵里应恰好计一次")
+        else: say("PASS", "tables", f"coverage.csv {len(body)} 行 × {len(hdr)-1} 列，格子合计 = 纳入篇数 {inc}；空白格 {sum(1 for c in cells if c == 0)} 个")
+    fp = os.path.join(root, cfg.get("figures", "figures.csv"))
+    nfig = max(len([l for l in open(fp, encoding="utf-8-sig").read().splitlines() if l.strip()]) - 1, 0) if os.path.exists(fp) else 0
+    say("PASS" if nfig else "WARN", "tables", f"figures.csv {nfig} 张图" + ("" if nfig else "（时间线 / 覆盖热图还没登记；S4 末至少一张）"))
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("protocol"); p.add_argument("--protocol", default="protocol.md"); p.add_argument("--codebook", default="coding/codebook.md"); p.add_argument("--state", default="research-state.yaml")
-    for n in ("coding", "claims"):
+    for n in ("scope", "search", "coding", "tables", "claims"):
         q = sub.add_parser(n); q.add_argument("--state", default="research-state.yaml"); q.add_argument("--project", default=".")
     a = ap.parse_args()
     if a.cmd == "protocol": check_protocol(a.protocol, a.codebook, a.state)
     else:
         root = os.path.abspath(a.project); st = load_state(os.path.join(root, a.state)); cfg = st.get("survey") or {}
-        (check_coding if a.cmd == "coding" else check_claims)(cfg, root)
+        if a.cmd == "scope": check_scope(cfg, root, st)
+        else: {"search": check_search, "coding": check_coding, "tables": check_tables, "claims": check_claims}[a.cmd](cfg, root)
     print("\n" + ("ALL PASS" if FAILS == 0 else f"{FAILS} FAIL")); sys.exit(0 if FAILS == 0 else 1)

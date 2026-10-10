@@ -149,6 +149,8 @@ survey:                     # 综述分支（branch: survey 时填），scripts/
   scope_out: ""             # 哪些明确排除，一条判据
   axis: ""                  # 组织主轴：method-level | task | data | time（只选一个）
   thesis: ""                # 综述的可证伪论点（不是"我们综述了 X"）
+  search_log: literature/search_log.json   # S1: {sources: [{source, query, date, count}]}
+  candidates: literature/candidates.csv     # S1: one row per deduplicated candidate, with doi|pmid|arxiv_id
   screening_sheet: coding/screening_sheet.csv
   coded: coding/coded.csv
   codebook: coding/codebook.md

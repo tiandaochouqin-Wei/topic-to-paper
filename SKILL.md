@@ -30,6 +30,7 @@ license: MIT
 1. **单会话、不开子代理。** 每阶段末更新 `research-state.yaml`；上下文满了告诉用户"说 resume 继续"。
 2. **每个数字有出处。** 研究稿的数字回溯到 `results/` 文件；综述的数字回溯到编码表的行。写作时登记到 `paper/numbers.csv`，不登记过不了关口。
 3. **先注册再动手。** 研究稿锁 `prereg.md`；综述锁 `protocol.md`（检索式、纳入/排除规则、编码表字段、主张清单）。事后改口径必须在 state 的 `convention_changes` 留记录。
+4. **外部 skill 缺则自己做。** 路由到的任何外部 skill 不在本机时，按 [references/routing.md](references/routing.md) 开头的替代做法在本会话内做同样的事，产物格式不变，不为此停下来问用户（`t2p.py doctor --skills` 可查哪些在）。关口只依赖 `scripts/`。
 
 ## 工作区（两条分支共用骨架）
 

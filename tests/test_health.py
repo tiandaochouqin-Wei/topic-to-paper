@@ -15,6 +15,14 @@ def test_doctor_is_clean():
     assert "BROKEN" not in r.out and "MISSING" not in r.out, r.out
 
 
+def test_doctor_skills_lists_every_routed_skill():
+    r = run("t2p.py", "doctor", "--skills", "--project", str(SKILL), cwd=SKILL)
+    assert r.returncode == 0, r.out
+    for name in ("academic-paper-reviewer", "nature-figure", "nature-writing", "nature-response"):
+        assert name in r.out, f"{name} not listed\n{r.out}"
+    assert "个路由到的外部 skill 在本机可见" in r.out
+
+
 @pytest.mark.parametrize("script", SCRIPT_NAMES)
 def test_help_survives_a_gbk_console(script):
     """Regression: make_comparison.py and survey_check.py used to die with UnicodeEncodeError on 'gbk' before printing help."""

@@ -1,0 +1,8 @@
+{
+ "sources": [
+  {"source": "pubmed", "query": "(multimodal[tiab] OR \"data fusion\"[tiab]) AND (imaging[tiab] OR radiolog*[tiab]) AND (\"electronic health record*\"[tiab] OR report*[tiab] OR genomic*[tiab]) AND 2015:2026[dp]", "date": "2026-09-20", "count": 18},
+  {"source": "arxiv", "query": "all:multimodal AND all:fusion AND (all:clinical OR all:medical) AND (all:baseline OR all:unimodal)", "date": "2026-09-20", "count": 9},
+  {"source": "openalex", "query": "multimodal fusion clinical unimodal baseline", "date": "2026-09-20", "count": 13}
+ ],
+ "dedup_total": 30
+}
