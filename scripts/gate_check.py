@@ -16,7 +16,7 @@ gate_check.py — topic-to-paper 的机械关口。
 
 输出 gate_report.md；任一 FAIL 返回 1。只用标准库；dpi 需 Pillow，refs 需联网。
 """
-import argparse, csv, json, os, re, sys, time, urllib.request, urllib.parse, difflib
+import argparse, csv, json, os, re, sys, time, urllib.request, urllib.parse, urllib.error, difflib
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -81,16 +81,36 @@ def parse_bib(bibtext):
                         "pmid": fields.get("pmid", ""), "arxiv": am.group(1) if am else ""})
     return entries
 
+UA_MAIL = os.environ.get("T2P_CONTACT_EMAIL", "gate@example.org")
+
+def _get_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": f"gate_check/1.1 (mailto:{UA_MAIL})"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+def strip_markup(s):
+    """Registered titles carry publisher markup: D<sup>2</sup>FT-Net, <i>in vivo</i>, &amp;. Left in place those tags
+    become spurious tokens in norm() and drag the similarity ratio below the threshold (false FAIL on a correct DOI)."""
+    s = re.sub(r"(?is)</?(mml:|xmlns:)?\w+(\s+[^<>]*)?/?>", " ", s)
+    s = re.sub(r"&[a-zA-Z]{2,8};|&#x?[0-9A-Fa-f]{2,5};", " ", s)
+    return s
+
 def crossref_title(doi):
-    url = "https://api.crossref.org/works/" + urllib.parse.quote(doi)
-    req = urllib.request.Request(url, headers={"User-Agent": "gate_check/1.0 (mailto:gate@example.org)"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        d = json.load(r)
-    t = d["message"].get("title") or [""]
-    return t[0]
+    """Registered title for a DOI: CrossRef first, DataCite for DOIs CrossRef does not hold (KITopen, Zenodo, Figshare, …)."""
+    try:
+        d = _get_json("https://api.crossref.org/works/" + urllib.parse.quote(doi))
+        t = d["message"].get("title") or [""]
+        if t and t[0].strip():
+            return t[0]
+    except urllib.error.HTTPError as ex:
+        if ex.code != 404:
+            raise
+    d = _get_json("https://api.datacite.org/dois/" + urllib.parse.quote(doi))
+    titles = ((d.get("data") or {}).get("attributes") or {}).get("titles") or [{}]
+    return titles[0].get("title", "")
 
 def norm(s):
-    return re.sub(r"[^a-z0-9 ]", " ", s.lower())
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", strip_markup(s).lower())).strip()
 
 def gate_refs(a):
     if not os.path.exists(a.bib):
