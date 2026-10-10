@@ -1,0 +1,43 @@
+<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle>
+  <MedlineCitation Status="MEDLINE" Owner="NLM">
+    <PMID Version="1">30000001</PMID>
+    <Article PubModel="Print">
+      <Journal><Title>Medical Image Analysis</Title><JournalIssue><PubDate><Year>2021</Year><Month>Apr</Month></PubDate></JournalIssue></Journal>
+      <ArticleTitle>Study A: image and report fusion for diagnosis</ArticleTitle>
+      <Abstract><AbstractText Label="BACKGROUND">Fusion of images and radiology reports.</AbstractText><AbstractText Label="RESULTS">The unimodal baseline is reported on the same test set.</AbstractText></Abstract>
+    </Article>
+  </MedlineCitation>
+  <PubmedData>
+    <ArticleIdList><ArticleId IdType="pubmed">30000001</ArticleId><ArticleId IdType="doi">10.1000/fix.a</ArticleId></ArticleIdList>
+    <ReferenceList><Reference><Citation>Some other paper</Citation><ArticleIdList><ArticleId IdType="doi">10.9999/other.paper</ArticleId></ArticleIdList></Reference></ReferenceList>
+  </PubmedData>
+</PubmedArticle>
+<PubmedArticle>
+  <MedlineCitation Status="MEDLINE" Owner="NLM">
+    <PMID Version="1">30000002</PMID>
+    <Article PubModel="Print">
+      <Journal><Title>Nature Medicine</Title><JournalIssue><PubDate><MedlineDate>2022 Jan-Feb</MedlineDate></PubDate></JournalIssue></Journal>
+      <ArticleTitle>Study B: records plus imaging for prognosis</ArticleTitle>
+      <Abstract><AbstractText>Electronic health records and imaging fused for prognosis with a unimodal baseline.</AbstractText></Abstract>
+    </Article>
+  </MedlineCitation>
+  <PubmedData>
+    <ArticleIdList><ArticleId IdType="pubmed">30000002</ArticleId><ArticleId IdType="doi">10.1000/fix.b</ArticleId></ArticleIdList>
+  </PubmedData>
+</PubmedArticle>
+<PubmedArticle>
+  <MedlineCitation Status="MEDLINE" Owner="NLM">
+    <PMID Version="1">30000005</PMID>
+    <Article PubModel="Print">
+      <Journal><Title>Radiology</Title><JournalIssue><PubDate><Year>2020</Year></PubDate></JournalIssue></Journal>
+      <ArticleTitle>Study E: multi-sequence MRI fusion</ArticleTitle>
+    </Article>
+  </MedlineCitation>
+  <PubmedData>
+    <ArticleIdList><ArticleId IdType="pubmed">30000005</ArticleId></ArticleIdList>
+    <ReferenceList><Reference><ArticleIdList><ArticleId IdType="doi">10.9999/not.this.one</ArticleId></ArticleIdList></Reference></ReferenceList>
+  </PubmedData>
+</PubmedArticle>
+</PubmedArticleSet>

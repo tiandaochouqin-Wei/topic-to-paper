@@ -1,0 +1,15 @@
+{"meta": {"count": 3, "db_response_time_ms": 12, "page": null, "per_page": 200, "next_cursor": null},
+ "results": [
+  {"id": "https://openalex.org/W1000000001", "doi": "https://doi.org/10.1000/fix.a", "title": "Study A: image and report fusion for diagnosis", "publication_year": 2021,
+   "ids": {"openalex": "https://openalex.org/W1000000001", "doi": "https://doi.org/10.1000/fix.a", "pmid": "https://pubmed.ncbi.nlm.nih.gov/30000001"},
+   "primary_location": {"source": {"display_name": "Medical Image Analysis"}},
+   "abstract_inverted_index": {"Fusion": [0], "of": [1], "images": [2], "and": [3], "reports.": [4]}},
+  {"id": "https://openalex.org/W1000000003", "doi": "https://doi.org/10.1000/fix.c", "title": "Study C: attention fusion of image and text", "publication_year": 2023,
+   "ids": {"openalex": "https://openalex.org/W1000000003", "doi": "https://doi.org/10.1000/fix.c"},
+   "primary_location": {"source": {"display_name": "MICCAI"}},
+   "abstract_inverted_index": {"Attention": [0], "fusion": [1], "with": [2], "a": [3], "unimodal": [4], "baseline.": [5]}},
+  {"id": "https://openalex.org/W1000000007", "doi": null, "title": "Study G: imaging only transformer", "publication_year": 2023,
+   "ids": {"openalex": "https://openalex.org/W1000000007"},
+   "primary_location": {"source": {"display_name": "IEEE Transactions on Medical Imaging"}},
+   "abstract_inverted_index": null}
+ ]}

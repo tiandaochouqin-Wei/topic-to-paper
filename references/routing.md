@@ -112,9 +112,9 @@
 | 动作 | 工具 |
 |---|---|
 | 已有综述检索 | `scripts/lit_scout.py scout '<主题> survey OR review'` + OpenAlex |
-| 系统检索（PubMed 按年切片 / arXiv / OpenAlex）与去重 | 项目内 `lit/search_literature.py`（InfoFusion 模板），写 search_log.json + candidates.csv |
-| 滚雪球 | Semantic Scholar 正反向一层，`lit/snowball.py` |
-| 规则预筛 / 去重 / DOI 修复 | `lit/triage.py`、`lit/fix_pubmed_dois.py`（efetch 限定 PubmedData） |
+| 系统检索（PubMed 按年切片 / arXiv / OpenAlex）与三源去重，写 search_log.json + candidates.csv | `scripts/survey_search.py search --query "<q>" [--pubmed-query/--arxiv-query/--openalex-query] --since 2015 [--abstracts]`（原项目内 lit/search_literature.py 的通用版） |
+| 滚雪球 | `scripts/survey_search.py snowball --dois <种子 DOI> [--direction both\|references\|citations]`（Semantic Scholar 一层） |
+| 规则预筛 / PRISMA 计数 / DOI 修复 | `scripts/survey_search.py triage --include-any ... --exclude ... --since ...`（写 screening_sheet.csv，不覆盖 Claude 已决的行，更新 prisma_flow.json）；`fix-dois`（efetch 只取 PubmedData 的 DOI） |
 | 标题级与摘要级筛选 | Claude 本会话内按批做，写回 screening_sheet.csv |
 | 编码 | Claude 按 codebook 本会话内按批做，写 coded.csv；κ 样本盲编 |
 | 汇总表 | 项目内 `coding/audit_summary.py --verify` → tables/*.csv |

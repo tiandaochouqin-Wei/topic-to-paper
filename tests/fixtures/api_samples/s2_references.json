@@ -1,0 +1,4 @@
+{"offset": 0, "data": [
+ {"citedPaper": {"paperId": "aaa", "title": "Study C: attention fusion of image and text", "year": 2023, "venue": "MICCAI", "externalIds": {"DOI": "10.1000/fix.c"}}},
+ {"citedPaper": {"paperId": "bbb", "title": "Study R: an early fusion review", "year": 2019, "venue": "Information Fusion", "externalIds": {"DOI": "10.1000/fix.r", "PubMed": "29000001"}}}
+]}
