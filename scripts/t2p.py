@@ -1,10 +1,20 @@
 # -*- coding: utf-8 -*-
 """topic-to-paper front door. One command, reads research-state.yaml, runs every gate that applies, prints a status board.
 
-  python t2p.py status  [--project .]          where am I: phase, gates passed/failed/pending, what to do next
-  python t2p.py check   [--project .] [--net]  run every gate whose inputs exist; --net also resolves DOIs via CrossRef
-  python t2p.py init    [--project .] [--venue V] [--field F]   create the workspace from templates
+  python t2p.py status  [--project .]          where am I: last check time, every gate's status, what to do next (reads state.gates)
+  python t2p.py check   [--project .] [--net] [--no-write]
+                                               run every gate whose inputs exist and WRITE the board back into state.gates
+                                               (--net also resolves DOIs via CrossRef; --no-write for a dry run)
+  python t2p.py init    [--project .] [--venue V] [--field F] [--branch research|survey]
+                        [--entry topic_only|topic_plus_data|have_results|have_draft|have_reviews]
+                                               create the workspace from templates; --entry says where the project starts
   python t2p.py doctor                         verify python deps and the scripts themselves
+
+Entry points: a project that starts from an existing draft (have_draft) or from reviews (have_reviews) has no P1–P5
+artefacts, so G1b/G2/G3/G4/G5 are shown as N/A instead of PENDING while their inputs are absent and never become the
+"next step"; the moment the inputs appear (prereg.md, runs/, results/, figures.csv) the gate runs normally. have_results
+only waives G1b. A template that was copied by init and never edited counts as absent (compared with templates/, not by
+magic substrings).
 
 Gate → script mapping (inputs decide whether a gate runs):
   G0  state.target.guide_file exists                       (no script; file check)
@@ -59,7 +69,64 @@ def verdict(fails, *outs):
 def exists(root, *parts):
     return os.path.exists(os.path.join(root, *parts))
 
-def check(root, net):
+ENTRIES = ("topic_only", "topic_plus_data", "have_results", "have_draft", "have_reviews")
+# gates whose inputs an entry point legitimately lacks: N/A (not PENDING) while the inputs are absent; run normally once they exist
+SKIP_BY_ENTRY = {"have_results": {"G1b"}, "have_draft": {"G1b", "G2", "G3", "G4", "G5"}, "have_reviews": {"G1b", "G2", "G3", "G4", "G5"}}
+ENTRY_PHASE = {"topic_only": "P0", "topic_plus_data": "P0", "have_results": "P4", "have_draft": "P6", "have_reviews": "P7"}
+GATE_ORDER = ["G0", "G1", "G1b", "G2", "G3", "G4", "G5", "G6", "G6b", "G6c", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
+SURVEY_GATES = ["G0", "G1", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
+
+def gate_key(g):
+    return (GATE_ORDER.index(g) if g in GATE_ORDER else len(GATE_ORDER), g)
+
+def _norm(s):
+    return "\n".join(l.rstrip() for l in s.replace("\r\n", "\n").split("\n")).strip()
+
+def templated(root, rel, tpl):
+    """True when <root>/<rel> is still a verbatim copy of templates/<tpl> (line endings and trailing blanks ignored)."""
+    fp, tp = os.path.join(root, rel), os.path.join(SKILL, "templates", tpl)
+    if not (os.path.exists(fp) and os.path.exists(tp)): return False
+    return _norm(io.open(fp, encoding="utf-8").read()) == _norm(io.open(tp, encoding="utf-8").read())
+
+def data_rows(root, rel):
+    """number of non-empty lines after the header of a csv; 0 when the file is missing"""
+    p = os.path.join(root, rel)
+    if not os.path.exists(p): return 0
+    return max(len([l for l in io.open(p, encoding="utf-8-sig").read().splitlines() if l.strip()]) - 1, 0)
+
+def dump_inline(d):
+    import yaml
+    return yaml.safe_dump(d, default_flow_style=True, allow_unicode=True, width=10**6, sort_keys=False).strip()
+
+def write_gates(sp, board):
+    """Write the board into the `gates:` block of research-state.yaml in place, one inline dict per gate. Every comment
+    and every extra key (prereg_sha256, protocol_sha256, ...) is kept; gates not yet listed are appended to the block."""
+    import yaml, datetime
+    txt = io.open(sp, encoding="utf-8").read(); eol = "\r\n" if "\r\n" in txt else "\n"
+    lines = txt.replace("\r\n", "\n").split("\n")
+    stamp = datetime.datetime.now().isoformat(timespec="seconds")
+    gi = next((i for i, l in enumerate(lines) if re.match(r"^gates:\s*(#.*)?$", l)), None)
+    if gi is None:
+        while lines and lines[-1] == "": lines.pop()
+        lines += ["", "gates:"]; gi = len(lines) - 1
+    pat = re.compile(r"^(\s+)(G[\w-]+):\s*(\{.*\})\s*(#.*)?$")
+    at = {}; indent = "  "; last = gi; j = gi + 1
+    while j < len(lines) and (lines[j].strip() == "" or lines[j][:1] in (" ", "\t")):
+        m = pat.match(lines[j])
+        if m: at[m.group(2)] = j; indent = m.group(1); last = j
+        j += 1
+    for g, status, detail in board:
+        new = {"status": status.lower(), "evidence": detail[:140], "checked": stamp}
+        if g in at:
+            m = pat.match(lines[at[g]]); old = yaml.safe_load(m.group(3)) or {}
+            for k, v in old.items():
+                if k not in new: new[k] = v
+            lines[at[g]] = f"{indent}{g}: {dump_inline(new)}" + (f"  {m.group(4)}" if m.group(4) else "")
+        else:
+            last += 1; lines.insert(last, f"{indent}{g}: {dump_inline(new)}"); at[g] = last
+    io.open(sp, "w", encoding="utf-8", newline="").write(eol.join(lines))
+
+def check(root, net, write=True):
     st = load_state(os.path.join(root, "research-state.yaml"))
     if st is None:
         print("[FAIL] research-state.yaml 不存在：先 `t2p.py init`"); return 1
@@ -67,9 +134,12 @@ def check(root, net):
     tgt = st.get("target") or {}; aud = st.get("audits") or {}; res = st.get("results") or {}
     manuscript = "paper/manuscript.md"
     survey = (st.get("branch") == "survey")
+    entry = (st.get("project") or {}).get("entry") or "topic_only"
+    na = SKIP_BY_ENTRY.get(entry, set())
     board = []   # (gate, status, detail)
     def rec(g, status, detail):
         if survey and g in ("G2", "G3", "G4"): return      # research-only gates are meaningless for a survey
+        if status == "PENDING" and g in na: status, detail = "N/A", f"entry={entry}：无此阶段产物，不要求（文件出现即照常检查）；" + detail
         if status == "CRASH": detail += "；" + "；".join(_CRASH_NOTES); _CRASH_NOTES.clear()
         board.append((g, status, detail)); print(f"[{status}] {g}: {detail}")
     # G0
@@ -92,8 +162,7 @@ def check(root, net):
         rec("G1b", verdict(f, out), f"gap_map/transfer_scan {f} FAIL" + (f"，判定 {mv.group(1)}" if mv else "") + ("；no-go 是合法出口，不进 P2" if mv and mv.group(1) == "no-go" else ""))
     elif not survey: rec("G1b", "PENDING", "无 literature/gap_map.md 与 transfer_scan.md（P1 两个必产物）")
     # G2
-    pr = os.path.join(root, "prereg.md")
-    if exists(root, "prereg.md") and "一句可证伪的话" not in io.open(pr, encoding="utf-8").read():
+    if exists(root, "prereg.md") and not templated(root, "prereg.md", "prereg.md"):
         rc, f, w, out = run([S("prereg_check.py")], root); rec("G2", verdict(f, out), f"prereg_check {f} FAIL / {w} WARN")
     else: rec("G2", "PENDING", "prereg.md 不存在或仍是模板")
     # G3
@@ -112,11 +181,10 @@ def check(root, net):
         rec("G4", verdict(f + f2, out, out2), f"results_check {f} FAIL / {w} WARN；ablation resolve {f2} FAIL")
     else: rec("G4", "PENDING", f"无 {res.get('main_table', 'results/main.csv')}")
     # G5
-    fc = os.path.join(root, "figures.csv")
-    if exists(root, "figures.csv") and len(io.open(fc, encoding="utf-8").read().strip().splitlines()) > 1 and "figures/fig1.png,90,results/main.csv,no" not in io.open(fc, encoding="utf-8").read():
+    if data_rows(root, "figures.csv") >= 1 and not templated(root, "figures.csv", "figures.csv"):
         rc, f, w, out = run([S("gate_check.py"), "dpi", "--manuscript", manuscript if exists(root, manuscript) else "figures.csv"], root)
         rec("G5", verdict(f, out), f"dpi {f} FAIL / {w} WARN")
-    else: rec("G5", "PENDING", "figures.csv 为空或仍是模板")
+    else: rec("G5", "PENDING", "figures.csv 不存在、无数据行或仍是模板")
     # G6
     if exists(root, manuscript):
         subs = ["floats", "acronyms", "scope", "numbers", "limits"] + (["refs"] if net and exists(root, "paper/refs.bib") else [])
@@ -147,32 +215,48 @@ def check(root, net):
     sv = st.get("survey") or {}
     sv_filled = any(sv.get(k) for k in ("scope_in", "scope_out", "axis", "thesis"))   # path/threshold keys are template defaults; only content keys make it a survey
     if (st.get("branch") == "survey") or sv_filled:
-        if exists(root, "protocol.md") and "锁定日期：\n" not in io.open(os.path.join(root, "protocol.md"), encoding="utf-8").read()[:200]:
+        if exists(root, "protocol.md") and not templated(root, "protocol.md", "protocol.md"):
             rc, f, w, out = run([S("survey_check.py"), "protocol", "--codebook", sv.get("codebook", "coding/codebook.md")], root); rec("G-S2", verdict(f, out), f"protocol {f} FAIL / {w} WARN")
         else: rec("G-S2", "PENDING", "protocol.md 不存在或仍是模板")
         if exists(root, sv.get("screening_sheet", "coding/screening_sheet.csv")):
             rc, f, w, out = run([S("survey_check.py"), "coding"], root); rec("G-S3", verdict(f, out), f"coding {f} FAIL / {w} WARN")
         else: rec("G-S3", "PENDING", f"无 {sv.get('screening_sheet', 'coding/screening_sheet.csv')}")
-        if exists(root, sv.get("claims", "paper/claims.csv")) and "C1,\"\"" not in io.open(os.path.join(root, sv.get("claims", "paper/claims.csv")), encoding="utf-8").read():
+        cl = sv.get("claims", "paper/claims.csv")
+        if data_rows(root, cl) >= 1 and not templated(root, cl, "claims.csv"):
             rc, f, w, out = run([S("survey_check.py"), "claims"], root); rec("G-S5", verdict(f, out), f"claims {f} FAIL / {w} WARN")
-        else: rec("G-S5", "PENDING", "paper/claims.csv 为空或仍是模板")
+        else: rec("G-S5", "PENDING", f"{cl} 不存在、无数据行或仍是模板")
     nf = sum(1 for _, s, _ in board if s in ("FAIL", "CRASH"))
     first_bad = next((g for g, s, _ in board if s in ("FAIL", "CRASH", "PENDING")), None)
-    print(f"\n== {nf} 道关口 FAIL/CRASH；phase.current = {(st.get('phase') or {}).get('current', '?')}；下一步：{'修 ' + first_bad if first_bad else '全部通过，可投稿'} ==")
+    print(f"\n== {nf} 道关口 FAIL/CRASH；entry={entry}；phase.current = {(st.get('phase') or {}).get('current', '?')}；下一步：{'修 ' + first_bad if first_bad else '全部通过，可投稿'} ==")
+    if write:
+        write_gates(os.path.join(root, "research-state.yaml"), board)
+        print("状态板已写回 research-state.yaml 的 gates:（`t2p.py status` 读它；--no-write 可跳过）")
     print("逐条明细：对应脚本加 --project 单独跑；gate_report.md 保存最近一次 gate_check 输出")
     return nf
 
 def status(root):
     st = load_state(os.path.join(root, "research-state.yaml"))
     if st is None: print("无 research-state.yaml"); return 1
-    ph = st.get("phase") or {}; g = st.get("gates") or {}
-    print(f"项目: {(st.get('project') or {}).get('title', '?')}\n目标刊: {(st.get('target') or {}).get('venue', '?')}\n阶段: {ph.get('current', '?')}  历史: {ph.get('history', [])}")
-    for k in sorted(g): print(f"  {k}: {g[k].get('status', '?'):8s} {str(g[k].get('evidence', ''))[:90]}")
-    nxt = next((k for k in sorted(g) if g[k].get("status") != "pass"), None)
+    ph = st.get("phase") or {}; g = {k: (v or {}) for k, v in (st.get("gates") or {}).items()}; pj = st.get("project") or {}
+    print(f"项目: {pj.get('title', '?')}  分支: {st.get('branch') or 'research'}  入口: {pj.get('entry') or 'topic_only'}")
+    print(f"目标刊: {(st.get('target') or {}).get('venue', '?')}\n阶段: {ph.get('current', '?')}  历史: {ph.get('history', [])}")
+    checked = [str(v.get("checked")) for v in g.values() if isinstance(v, dict) and v.get("checked")]
+    print("上次 check: " + (max(checked) if checked else "从未 —— 下面的状态是手工填的，先跑 `t2p.py check`"))
+    order = sorted(g, key=gate_key)
+    for k in order: print(f"  {k:5s} {str(g[k].get('status', '?')):8s} {str(g[k].get('evidence', ''))[:100]}")
+    nxt = next((k for k in order if str(g[k].get("status", "")).lower() not in ("pass", "n/a", "skip")), None)
     print(f"下一道未过关口: {nxt or '无'}")
     return 0
 
-def init(root, venue, field, branch):
+NEXT_BY_ENTRY = {
+    "topic_only": "下载目标刊 Guide for Authors 到 submission/guide.txt，把硬规则抄进 research-state.yaml 的 target，然后 `t2p.py check`",
+    "topic_plus_data": "下载目标刊 Guide for Authors 到 submission/guide.txt，把硬规则与数据可得性抄进 research-state.yaml（target / resources.data），然后 `t2p.py check`",
+    "have_results": "把 runs/ 与 results/main.csv 放进来，填 state.audits 与 state.results；补一份 prereg.md 并在首行标 `post-hoc`；下载 guide.txt；然后 `t2p.py check`",
+    "have_draft": "把稿子转成 paper/manuscript.md（LaTeX 用 tex_to_md.py，PDF 用 pdf_to_md.py），refs.bib 放 paper/；下载 guide.txt 填 target 硬规则；然后 `t2p.py check`（G1b–G5 显示 N/A 是正常的）",
+    "have_reviews": "同 have_draft，再把审稿意见逐条整理进 paper/review_log.md（[major]/[minor] + 处置），然后 `t2p.py check`",
+}
+
+def init(root, venue, field, branch, entry="topic_only"):
     os.makedirs(root, exist_ok=True)
     for d in (("literature", "runs", "results", "figures", "paper", "submission") if branch == "research" else ("literature", "literature/pdf", "coding", "tables", "figures", "paper", "submission")): os.makedirs(os.path.join(root, d), exist_ok=True)
     tpl = os.path.join(SKILL, "templates")
@@ -186,8 +270,14 @@ def init(root, venue, field, branch):
     if venue: s = re.sub(r'(?m)^(  venue:)[^\n]*$', r'\1 "%s"' % venue, s, count=1)
     if field: s = re.sub(r'(?m)^(  field:)[^\n]*$', r'\1 "%s"' % field, s, count=1)
     s = re.sub(r'(?m)^(  started:)[^\n]*$', r'\1 "%s"' % __import__("datetime").date.today().isoformat(), s, count=1)
+    s = re.sub(r'(?m)^(  entry:)[^#\n]*', r'\1 %s ' % entry, s, count=1)
+    s = re.sub(r'(?m)^(  current:)[^#\n]*', r'\1 %s ' % ENTRY_PHASE[entry], s, count=1)
+    if branch == "survey":   # the template lists the research gates; a survey project tracks G0, G1 and G-S0..G-S6
+        s = re.sub(r'(?m)^  G[1-8]\w*:.*\n', '', s)
+        rows = "".join(f'  {g}: {{status: pending, evidence: ""' + (', protocol_sha256: ""' if g == "G-S2" else "") + "}\n" for g in SURVEY_GATES[1:])
+        s = re.sub(r'(?m)^(  G0:.*\n)', lambda m: m.group(1) + rows, s, count=1)
     io.open(sp, "w", encoding="utf-8").write(s)
-    print(f"工作区已建: {root}\n下一步: 下载目标刊 Guide for Authors 到 submission/guide.txt，把硬规则抄进 research-state.yaml 的 target，然后 `t2p.py check`")
+    print(f"工作区已建: {root}（branch={branch}, entry={entry}, phase={ENTRY_PHASE[entry]}）\n下一步: {NEXT_BY_ENTRY[entry]}")
     return 0
 
 def doctor():
@@ -210,10 +300,12 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("status", "check", "init"):
         p = sub.add_parser(name); p.add_argument("--project", default=".")
-        if name == "check": p.add_argument("--net", action="store_true")
-        if name == "init": p.add_argument("--venue", default=""); p.add_argument("--field", default=""); p.add_argument("--branch", choices=["research", "survey"], default="research")
+        if name == "check": p.add_argument("--net", action="store_true"); p.add_argument("--no-write", action="store_true", help="不把状态板写回 research-state.yaml")
+        if name == "init":
+            p.add_argument("--venue", default=""); p.add_argument("--field", default=""); p.add_argument("--branch", choices=["research", "survey"], default="research")
+            p.add_argument("--entry", choices=list(ENTRIES), default="topic_only", help="项目从哪里开始：have_draft/have_reviews 时 G1b–G5 显示 N/A 而非 PENDING")
     sub.add_parser("doctor")
     a = ap.parse_args()
     if a.cmd == "doctor": sys.exit(doctor())
     root = os.path.abspath(a.project)
-    sys.exit({"status": lambda: status(root), "check": lambda: check(root, a.net), "init": lambda: init(root, a.venue, a.field, a.branch)}[a.cmd]())
+    sys.exit({"status": lambda: status(root), "check": lambda: check(root, a.net, not a.no_write), "init": lambda: init(root, a.venue, a.field, a.branch, a.entry)}[a.cmd]())

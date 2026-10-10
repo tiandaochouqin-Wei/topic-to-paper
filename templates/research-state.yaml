@@ -37,14 +37,17 @@ phase:
   current: P0               # P0..P8
   history: []               # - {phase: P1, done: YYYY-MM-DD}
 
-gates:                      # pass | fail | pending，附证据路径（综述分支用 G-S0..G-S6）
+gates:                      # 由 `t2p.py check` 写回：status pass|fail|crash|pending|skip|n/a，evidence，checked 时间；手工只填 *_sha256（综述分支用 G-S0..G-S6）
   G0: {status: pending, evidence: ""}
   G1: {status: pending, evidence: ""}
+  G1b: {status: pending, evidence: ""}
   G2: {status: pending, evidence: "", prereg_sha256: ""}
   G3: {status: pending, evidence: ""}
   G4: {status: pending, evidence: ""}
   G5: {status: pending, evidence: ""}
   G6: {status: pending, evidence: gate_report.md}
+  G6b: {status: pending, evidence: ""}
+  G6c: {status: pending, evidence: ""}
   G7: {status: pending, evidence: ""}
   G8: {status: pending, evidence: ""}
 

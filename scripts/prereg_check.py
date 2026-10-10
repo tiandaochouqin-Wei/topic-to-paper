@@ -105,7 +105,11 @@ def main():
         if locked and locked != sha:
             say("FAIL", f"prereg.md 已被修改但 state 里的锁没更新（锁 {locked[:8]}…，现 {sha[:8]}…）。改口径要在 state.experiments.convention_changes 留记录再重新锁")
         if not locked and runs and int(runs.group(1)) > 0:
-            say("FAIL", f"state 显示已有 {runs.group(1)} 个 run 但 prereg 从未锁定：事后注册，必须在 prereg.md 首行标明 post-hoc")
+            head = " ".join(md.splitlines()[:3]).lower()
+            if re.search(r"post[- ]?hoc|事后注册", head):
+                say("WARN", f"事后注册（首行已标 post-hoc）：state 有 {runs.group(1)} 个 run 早于本 prereg，正文方法节必须说明预注册在实验之后完成")
+            else:
+                say("FAIL", f"state 显示已有 {runs.group(1)} 个 run 但 prereg 从未锁定：事后注册，必须在 prereg.md 首行标明 post-hoc")
         if not locked:
             say("INFO", f"当前 sha256 = {sha}  → 写入 research-state.yaml gates.G2.prereg_sha256 即锁定")
         # venue norms

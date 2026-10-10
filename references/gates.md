@@ -9,6 +9,8 @@
 
 ## G1 文献入库即解析
 判据：gap_map 每个候选主张附 `lit_scout trend` 逐年计数；corpus.csv 每行有 doi/pmid/arxiv 之一；`gate_check.py refs` 对 corpus 跑一次全绿。
+为什么：字符串看着对但 DOI 指向另一篇，人工校对抓不到，只有解析回标题再比对才行。
+漏法：引用 key 用"首词+年份"让三组不同论文共用一条参考文献，静默合并。key 取三词并断言一 key 一标识符。
 
 ## G1b 创新点来源可追溯（`scripts/transfer_scan.py check`，机械）
 判据：literature/problem_table.csv 存在、≥8 行、tag/question/finding 齐、已读行 ≥60% 填齐 hidden_assumption+failure_scene+missing_experiment、≥1 条缺口被 ≥2 篇共享（`problem_table.py check`，由 transfer_scan check 调用）；gap_map `## 判定` 在 go 时五行（重要性/新颖性/可验证性/可解释性/可推广性）都答且弱项 <3；gap_map.md 有 `## 评测盲区`、`## 邻域默认假设`（可写"未知：查过…"但小节必须在）和 `## 判定`（verdict go|no-go、claim_source gap#X|transfer#Tn、reason）；transfer_scan.md ≥5 个候选、七列齐、域内计数已填（`count` 子命令写入，格式 openalex+local）；verdict go 时至少 1 个候选过三道判定（计数 ≤2 + 对应物非空 + 失效点非空），且 claim_source 指向的行必须过三道判定；verdict no-go 直接 PASS，不进 P2。prereg §1 必须写 `来源: gap#X|transfer#Tn`（规则前锁定的 prereg 降 WARN）。
@@ -16,8 +18,6 @@
 测试：模板原样 3 FAIL；填 5 行（2 过、3 淘汰）ALL PASS；claim_source 指向淘汰行 FAIL；改 no-go 后 PASS。
 漏法：第 2、3 道判定是 Claude 读论文后写的，不是机械的；候选里 arXiv 未录用的标 INFO 不拦。
 2026-10-08 二次扩充（来源：用户给的《人工智能科研论文创新点寻找方法》，采纳了其中可机械化的四条：问题表 + 反复缺口计数、失败案例分析、"值不值得做"五维、§0 现象先于方法；未采纳的是纯写作模板与阅读清单——写进 SKILL.md 原则行即可，不设关口）。
-为什么：字符串看着对但 DOI 指向另一篇，人工校对抓不到，只有解析回标题再比对才行。
-漏法：引用 key 用"首词+年份"让三组不同论文共用一条参考文献，静默合并。key 取三词并断言一 key 一标识符。
 
 ## G2 预注册八项
 判据：`scripts/prereg_check.py` 全绿。§0 phenomenon：缺则 WARN，有则必须含 现象/原因/对照 三行（缺 FAIL），最小对照未做 WARN；§1 无原因词（因为/because/机制）WARN；§1 须写 `来源: gap#X|transfer#Tn`（规则前锁定的降 WARN）。八个小节齐全且非空；denominator 与 inclusion_window 写明"跨数据集相同"或列出差异；baselines/ablations 表 ≥1 行；success 含最小改进量（数字+指标）与统计判据（≥3 seeds / CI / 检验）；failure 含备选 claim；事前预测带符号；sha256 与 state 锁一致；state 已有 run 而未锁 → 事后注册 FAIL。脚本同时打印目标刊的 venue-norms 行供对标。测试：在一份合格 prereg 上去掉一致性声明与统计判据并伪造 3 个 run，6/6 抓到。
@@ -92,7 +92,7 @@ family 来自 state.target.family，否则按 venue 名推断（Nature/Science/n
 校准过程改掉的阈值：Nature 已发表摘要中位 150–230（投稿限 150 但出版后常超），改为 >1.6× 才 FAIL；Nat Med 的 Results 小标题是名词短语，句式小标题从 ≥3 FAIL 降为 ≥2 WARN；"state-of-the-art" 在 Nature 系 20% 出现，降 WARN；Discussion 占比 6–12% 之间降 WARN。
 漏法：查的是形状不是内容；"Here we show" 可以写了但主张不对；JATS 的 Nat Med 稿 Results 用名词短语不违规。
 
-
+## G7 审稿闭环（`scripts/review_check.py`，机械）
 判据：review_log.md 每条 [major]/[minor] 有处置（同行或后两行的 复核通过|已改|rebut|partial|自证，或在 Phase 2 编辑综合表里按 R1-3 编号出现）；每条 major 在 `## Re-review` 小节里按编号或前 12 字 + closed/已改 关闭（inline "→已自证" 也算）；state.review.round ≥1 且 open_major 空；gate_report.md 新于 manuscript.md；处置里的 §x.y / Table n 在正文存在（缺 WARN）。
 测试：EAAI 真实 review_log 7 条全绿；追加一条无处置 major → 2 FAIL；加 Re-review 关闭后 ALL PASS。
 为什么：修订会引入新的数字与新的引用，第一次过关不代表第二次过。

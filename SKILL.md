@@ -16,9 +16,9 @@ license: MIT
 |---|---|
 | "帮我做一篇 X 的综述" / "write a survey on X" | 走 **综述分支** S0→S6（下文），从 S0 开始 |
 | "用 topic-to-paper 开始 X 方向" / "我想做 X 的方法论文" | 走 **研究分支** P0→P8，从 P0 开始 |
-| "这是我的稿子 <路径>，帮我过一遍" | 判断是综述还是研究稿 → 跑对应分支的写作关口（G6 或 S5）→ 报告 |
-| "收到审稿意见了" | P7/S6 修订分支，用 `nature-response` |
-| "resume X" / "继续 X 项目" | 读 `<项目>/research-state.yaml` → `t2p.py status` → 从第一道未过关口继续 |
+| "这是我的稿子 <路径>，帮我过一遍" | `t2p.py init --entry have_draft`（已有项目则把 state.project.entry 改成 have_draft）→ 稿子转 paper/manuscript.md → 判断是综述还是研究稿 → 跑对应分支的写作关口（G6 或 S5）→ 报告。G1b–G5 显示 N/A 是正常的 |
+| "收到审稿意见了" | entry 改 have_reviews（新项目 `init --entry have_reviews`）→ 意见逐条进 paper/review_log.md → P7/S6 修订分支，用 `nature-response` |
+| "resume X" / "继续 X 项目" | `t2p.py status`（显示上次 check 写回的状态板）→ 从第一道未过关口继续；状态可疑就重跑 `t2p.py check` |
 | "现在到哪了" | `t2p.py status`，三行回答 |
 
 **回来问用户的时机只有四种**：① 需要凭据或账号（Earthdata、SUPR、NSMC、期刊系统）；② 两种读法会导致实质不同的工作（如"综述范围是影像还是全模态"）；③ 要改已锁定的预注册；④ 关口 FAIL 且修法需要用户的领域判断（如"这条引用到底是哪篇"）。其它一切自己决定、自己做、做完汇报。
@@ -45,7 +45,7 @@ license: MIT
 └── submission/              # guide.txt  cover_letter.md  title_page.md  highlights.md  blind.md
 ```
 
-Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature>`（已存在则跳过），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。
+Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature> --entry <topic_only|topic_plus_data|have_results|have_draft|have_reviews>`（已存在则跳过；entry 决定哪些关口显示 N/A），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。`check` 会把每道关口的 status/evidence/checked 写回 state.gates，`status` 读它；state.gates 不要手工改（除 *_sha256 锁）。
 
 ---
 

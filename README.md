@@ -31,7 +31,9 @@ In Claude Code, inside the project folder, say one of:
 - `用 topic-to-paper 开始 <方向>` / `start a paper on <topic>` → research branch from P0
 - `帮我做一篇 <主题> 的综述` / `write a survey on <topic>` → survey branch from S0
 - `这是我的稿子 <path>，帮我过一遍` → runs the writing gates on an existing LaTeX/PDF/markdown draft
-- `resume <project>` → continues from the first failed gate in `research-state.yaml`
+- `resume <project>` → continues from the first failed gate in `research-state.yaml` (`t2p.py check` writes every gate's status back into it; `t2p.py status` reads it)
+
+A project can start anywhere: `t2p.py init --entry have_draft` (or `have_results`, `have_reviews`) marks the gates whose inputs do not exist yet as N/A instead of PENDING, so "check my draft" is not sent back to literature search.
 
 Claude replies with a status board (one line per gate) and a short "what I need from you" list. The four things it will stop for: credentials (data portals, compute allocations, journal systems), a choice between materially different readings of the request, changing a locked preregistration, and authorship/submit.
 
