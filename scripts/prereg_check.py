@@ -2,7 +2,7 @@
 """G2 — mechanical pre-registration gate.
    python prereg_check.py [--prereg prereg.md] [--state research-state.yaml] [--norms <venue_norms.csv>]
 Checks:
-  1. the eight mandatory sections exist and are non-trivial (≥ 25 words or a table with ≥ 2 rows)
+  1. the eight mandatory sections exist and are non-trivial (≥ 15 Latin words, or ≥ 60 CJK characters, or a table with ≥ 2 rows)
   2. denominator and inclusion_window each state cross-dataset consistency explicitly
   3. baselines / ablations tables have ≥ 1 row; counts are compared with the target venue's norms (references/venue-norms.csv)
   4. success criterion names a metric, a direction, a minimum effect and a statistical rule (seeds ≥ 3 or CI or test)
@@ -33,6 +33,16 @@ def table_rows(txt):
     rows = [l for l in txt.splitlines() if l.strip().startswith("|")]
     return max(len(rows) - 2, 0)   # header + separator
 
+CJK = r"[㐀-䶿一-鿿豈-﫿぀-ヿ]"
+
+def too_short(t):
+    """A section is too short when it has < 15 Latin words AND < 60 CJK characters AND no table with >= 2 rows.
+    Whitespace splitting alone counts a 300-character Chinese paragraph as a handful of words (a prereg written in
+    Chinese then failed as 'too short'); CJK characters are therefore counted separately."""
+    latin = len(re.findall(r"[A-Za-z][A-Za-z0-9'\-]*", t))
+    cjk = len(re.findall(CJK, t))
+    return latin < 15 and cjk < 60 and table_rows(t) < 2
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prereg", default="prereg.md")
@@ -45,7 +55,7 @@ def main():
     secs = {}
     for s in SECTIONS:
         t = section(md, s)
-        if t is None or (len(t.split()) < 15 and table_rows(t) < 2):
+        if t is None or too_short(t):
             say("FAIL", f"缺少或过短: {s}")
         secs[s] = t or ""
     # 0 phenomenon before method: section exists; either three lines (现象/原因/最小对照) or an explicit skip with reason
