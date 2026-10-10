@@ -91,6 +91,15 @@ def templated(root, rel, tpl):
     if not (os.path.exists(fp) and os.path.exists(tp)): return False
     return _norm(io.open(fp, encoding="utf-8").read()) == _norm(io.open(tp, encoding="utf-8").read())
 
+def n_runs(root, runs_dir):
+    """真正的 run 目录数，与 audit_check.collect_runs 同一判据（_ 与 . 开头的不算）。
+    不能用 os.listdir 非空来判断：`t2p.py init` 自己往 runs/ 放了 _run_card_template.md，
+    否则新项目的 runs/ 永远"非空"，G3 的远程实验包分支一辈子触发不到。"""
+    d = os.path.join(root, runs_dir)
+    if not os.path.isdir(d): return 0
+    return sum(1 for x in os.listdir(d) if os.path.isdir(os.path.join(d, x)) and not x.startswith(("_", ".")))
+
+
 def data_rows(root, rel):
     """number of non-empty lines after the header of a csv; 0 when the file is missing"""
     p = os.path.join(root, rel)
@@ -209,7 +218,7 @@ def check(root, net, write=True):
     else: rec("G2", "PENDING", "prereg.md 不存在或仍是模板")
     # G3
     rd = aud.get("runs_dir", "runs") if aud else "runs"
-    if aud and (aud.get("leak_flags") or aud.get("critical_params") or aud.get("inputs")) and exists(root, rd) and os.listdir(os.path.join(root, rd)):
+    if aud and (aud.get("leak_flags") or aud.get("critical_params") or aud.get("inputs")) and n_runs(root, rd):
         rc, f, w, out = run([S("audit_check.py")], root); rec("G3", verdict(f, out), f"audit_check {f} FAIL / {w} WARN")
     elif st.get("bundle") and (st["bundle"].get("matrix") or {}).get("ref") and (st["bundle"].get("matrix") or {}).get("baselines"):   # template ref alone is not a configured matrix
         rc, f, w, out = run([S("bundle.py"), "check"], root); m = re.search(r"\[INFO\] matrix: (\d+ runs[^\n]*)", out)
