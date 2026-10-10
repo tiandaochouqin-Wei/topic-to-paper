@@ -48,10 +48,11 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 | G5 figures | dpi measured on screen not at print width; legibility never inspected |
 | G6 manuscript | DOI strings that resolve to other papers; orphan figures; acronyms never expanded; "outperforms all" without a scope; table numbers that drift from result files; venue hard limits |
 | G6b/G6c writing | the sentence a section must contain is missing or in the wrong section; a CS-shaped draft sent to a Nature-family journal (Related Work, Conclusion, contribution list, equations in the main text) |
+| G6d LaTeX form | manuscript not in the venue's LaTeX template; a figure that is not a PDF; a multi-panel figure pasted together instead of composed from one PDF per panel with subfigure; stale derived manuscript.md |
 | G7 review loop | a major comment never closed in a re-review; G6 not re-run after edits |
 | G8 submission docs | title page / cover letter numbers that no longer match the body; a blind copy with the author's name in it |
 
-Generators, not just checks: SOTA/multi-dataset/ablation/seed tables with best/second-best marks and automatic provenance registration; main/ablation/seed figures from the result tables; qualitative result grids with insets; a remote experiment bundle (pre-flight env check, smoke run, full matrix, collect) for the "Claude writes the scripts, you run them on the server" workflow.
+Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_check.py skeleton`, knowledge in `references/latex-templates.csv`), real `\textwidth` measurement with pdflatex, subfigure blocks from per-panel PDFs; SOTA/multi-dataset/ablation/seed tables with best/second-best marks and automatic provenance registration; main/ablation/seed figures from the result tables; qualitative result grids with insets; a remote experiment bundle (pre-flight env check, smoke run, full matrix, collect) for the "Claude writes the scripts, you run them on the server" workflow.
 
 ## Optional: local literature index
 
@@ -61,7 +62,7 @@ Generators, not just checks: SOTA/multi-dataset/ablation/seed tables with best/s
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 24 gate/generator scripts, all argparse, all `--help`
+scripts/                 25 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, acronym-norms.csv, validation-*.md

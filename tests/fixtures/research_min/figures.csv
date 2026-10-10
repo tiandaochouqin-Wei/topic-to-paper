@@ -1,2 +1,5 @@
 file,print_width_mm,source_data,inspected,issues
 figures/fig_main.png,90,results/summary.csv,yes,
+figures/fig_main.pdf,89,results/summary.csv,yes,
+figures/fig_abl_a.pdf,91,results/ablation.csv,yes,
+figures/fig_abl_b.pdf,91,results/ablation.csv,yes,

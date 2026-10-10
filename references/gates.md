@@ -92,6 +92,11 @@ family 来自 state.target.family，否则按 venue 名推断（Nature/Science/n
 校准过程改掉的阈值：Nature 已发表摘要中位 150–230（投稿限 150 但出版后常超），改为 >1.6× 才 FAIL；Nat Med 的 Results 小标题是名词短语，句式小标题从 ≥3 FAIL 降为 ≥2 WARN；"state-of-the-art" 在 Nature 系 20% 出现，降 WARN；Discussion 占比 6–12% 之间降 WARN。
 漏法：查的是形状不是内容；"Here we show" 可以写了但主张不对；JATS 的 Nat Med 稿 Results 用名词短语不违规。
 
+## G6d LaTeX 投稿形态（`scripts/latex_check.py check`，机械；只对 paper/latex/main.tex 存在的项目）
+判据：documentclass / style 与 references/latex-templates.csv 里目标刊的模板一致（WARN；state.target.latex_class 填了且不符 FAIL）；每个 \includegraphics 解析到存在的文件（FAIL）且扩展名 ∈ state.target.figure_ext（默认 pdf，FAIL）；含 ≥2 张图的 figure 必须用 subfigure / \subfloat（FAIL）且 subcaption 或 subfig 已加载（FAIL）；题注带面板字母 (a)(b) 而只引用一个文件 = 预合成组合图（FAIL）；\ref 全部有 label（FAIL）；float 无 \label（WARN）；图未登记 figures.csv 或印刷宽度与 LaTeX 宽度差 >5%（WARN）；\bibliography 的 .bib 存在（FAIL）；paper/manuscript.md 比任一 .tex 源旧（FAIL，关口会检查过时正文）。
+为什么：出版社要的是矢量图与可编辑源文件；预合成的组合图一改一个面板就要整图重出，且子题注字号与正文脱节；figure 里塞两张图不用 subfigure 则无法被 \ref 到面板。版心宽度从模板实测（`latex_check.py widths --tex`），figures.csv 的印刷宽度才是真的，G5 的 dpi 才算得对。
+漏法：以前 LaTeX 稿只能靠 tex_to_md 转 md 后过文字关口，图的格式、组合方式、class 是否对刊无人查；manuscript.md 过时了也照常 PASS。
+
 ## G7 审稿闭环（`scripts/review_check.py`，机械）
 判据：review_log.md 每条 [major]/[minor] 有处置（同行或后两行的 复核通过|已改|rebut|partial|自证，或在 Phase 2 编辑综合表里按 R1-3 编号出现）；每条 major 在 `## Re-review` 小节里按编号或前 12 字 + closed/已改 关闭（inline "→已自证" 也算）；state.review.round ≥1 且 open_major 空；gate_report.md 新于 manuscript.md；处置里的 §x.y / Table n 在正文存在（缺 WARN）。
 测试：EAAI 真实 review_log 7 条全绿；追加一条无处置 major → 2 FAIL；加 Re-review 关闭后 ALL PASS。

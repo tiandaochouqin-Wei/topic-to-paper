@@ -54,12 +54,40 @@ def tabular_to_md(body):
     if len(out) > 1: out.insert(1, "|" + "---|" * (out[0].count("|") - 1))
     return "\n".join(out)
 
+def expand_inputs(path, seen=None):
+    """\\input{x} / \\include{x} -> contents of x(.tex) next to the including file, recursively; comments stripped first."""
+    seen = seen if seen is not None else set(); path = os.path.abspath(path); seen.add(path)
+    text = strip_comments(io.open(path, encoding="utf-8", errors="replace").read()); base = os.path.dirname(path)
+    def sub(m):
+        name = m.group(1).strip(); p = next((c for c in (os.path.join(base, name), os.path.join(base, name + ".tex")) if os.path.isfile(c)), None)
+        if p is None or os.path.abspath(p) in seen: return "" if p else m.group(0)
+        return "\n" + expand_inputs(p, seen) + "\n"
+    return re.sub(r"\\(?:input|include)\s*\{([^}]+)\}", sub, text)
+
+def class_widths(src):
+    """(textwidth_mm, two_column) from references/latex-templates.csv for the documentclass / style file, else None."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "references", "latex-templates.csv")
+    if not os.path.exists(p): return None
+    m = re.search(r"\\documentclass\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}", src); cls = m.group(2).strip() if m else ""; opts = (m.group(1) or "") if m else ""
+    pkgs = [x.strip() for g in re.findall(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}", src) for x in g.split(",")]
+    for r in csv.DictReader(io.open(p, encoding="utf-8-sig")):
+        sty = [s for s in r.get("sty", "").split("|") if s]
+        if cls in r["documentclass"].split("|") and (not sty or any(x.startswith(s) for s in sty for x in pkgs)):
+            return float(r["full_width_mm"]), (r["twocolumn"].lower() == "yes" or "twocolumn" in opts)
+    return None
+
 def convert(tex_path, out_dir, bib_path, tw_mm):
-    src = io.open(tex_path, encoding="utf-8", errors="replace").read()
-    src = strip_comments(src)
-    two_col = bool(re.search(r"\\documentclass\[[^\]]*(?:journal|twocolumn|conference)[^\]]*\]", src)) or "IEEEtran" in src
+    src = expand_inputs(tex_path)
+    cw = class_widths(src)
+    if tw_mm is None:
+        tw_mm = cw[0] if cw else 178.0
+        print(f"textwidth {tw_mm} mm" + (" (references/latex-templates.csv)" if cw else " (default; pass --textwidth-mm or add the class to latex-templates.csv)"))
+    two_col = (cw[1] if cw else False) or bool(re.search(r"\\documentclass\[[^\]]*(?:journal|twocolumn|conference)[^\]]*\]", src)) or "IEEEtran" in src
     body = src.split("\\begin{document}", 1)[-1].split("\\end{document}", 1)[0]
     body = re.sub(r"\\maketitle|\\tableofcontents|\\newpage|\\clearpage|\\IEEEpeerreviewmaketitle|\\IEEEdisplaynontitleabstractindextext", "", body)
+    body = re.sub(r"\\(?:begin|end)\{frontmatter\}", "", body)
+    body = re.sub(r"\\(?:author|affiliation|address|cortext|ead|fntext|tnotetext|title|IEEEauthorblockN|IEEEauthorblockA|thanks)\s*(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}", "", body)
+    body = re.sub(r"\\begin\{keyword\}(.*?)\\end\{keyword\}", lambda m: "\n\nKeywords: " + re.sub(r"\s*\\sep\b\s*", "; ", m.group(1)).strip() + "\n\n", body, flags=re.S)
     # --- citations -> [n]
     order = []
     def cite_sub(m):
@@ -78,18 +106,31 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
         is_tab = env.startswith("table")
         if is_tab: tab_n += 1; n = tab_n; tag = "Table"
         else: fig_n += 1; n = fig_n; tag = "Fig."
-        cap = unbrace(grab_cmd(inner, "caption")).strip()
+        caps = []
+        for cm in re.finditer(r"\\caption\s*(?:\[[^\]]*\])?\s*\{", inner):
+            caps.append(unbrace(balanced(inner, cm.end() - 1)[0]).strip())
+        subcaps = [unbrace(x).strip() for x in re.findall(r"\\subfloat\s*\[((?:[^\[\]]|\[[^\]]*\])*)\]", inner)]
+        if len(caps) > 1: subcaps = caps[:-1]
+        cap = (caps[-1] if caps else "") + ("".join(f" ({chr(97 + i)}) {re.sub(chr(92) + chr(92) + "label\\{[^}]*\\}", "", c).strip()}" for i, c in enumerate(subcaps)) if subcaps else "")
         for lm in re.finditer(r"\\label\{([^}]+)\}", inner): labels[lm.group(1)] = f"{tag} {n}"
         out = f"\n\n**{tag} {n}.** {cap}\n\n"
         if is_tab:
             tm = re.search(r"\\begin\{tabular\*?\}(?:\{[^}]*\})+(.*?)\\end\{tabular\*?\}", inner, re.S)
             if tm: out += tabular_to_md(tm.group(1)) + "\n\n"
+        # a graphic inside \begin{subfigure}{0.48\textwidth} is 0.48 of the base, whatever its own width= says relative to \linewidth
+        sub_scale = {}
+        for sm in re.finditer(r"\\begin\{subfigure\}(?:\[[^\]]*\])?\{\s*([\d.]*)\s*\\(textwidth|linewidth|columnwidth)\s*\}(.*?)\\end\{subfigure\}", inner, re.S):
+            sfrac = float(sm.group(1)) if sm.group(1) else 1.0; sbase = tw_mm / 2 if (sm.group(2) == "columnwidth" and two_col) else tw_mm
+            for g in re.finditer(r"\\includegraphics", sm.group(3)): sub_scale[sm.start(3) + g.start()] = sfrac * sbase
         for gm in re.finditer(r"\\includegraphics\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}", inner):
             opt, fn = gm.group(1) or "", gm.group(2)
             wm = re.search(r"width\s*=\s*([\d.]*)\s*\\(textwidth|linewidth|columnwidth)", opt)
             frac = float(wm.group(1)) if wm and wm.group(1) else 1.0
-            base = tw_mm / 2 if (wm and wm.group(2) == "columnwidth" and two_col) else tw_mm
-            wmm = frac * base if wm else tw_mm
+            if gm.start() in sub_scale:
+                wmm = frac * sub_scale[gm.start()] if wm else sub_scale[gm.start()]
+            else:
+                base = tw_mm / 2 if (wm and wm.group(2) == "columnwidth" and two_col) else tw_mm
+                wmm = frac * base if wm else tw_mm
             fig_rows.append((fn, round(wmm, 1), n))
         return out
     body = re.sub(r"\\begin\{(figure\*?|table\*?)\}(.*?)\\end\{\1\}", float_sub, body, flags=re.S)
@@ -137,17 +178,33 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
     os.makedirs(os.path.join(out_dir, "paper"), exist_ok=True)
     md = f"# {title}\n\n{body.strip()}\n\n## References\n\n" + "\n".join(md_refs) + "\n"
     io.open(os.path.join(out_dir, "paper", "manuscript.md"), "w", encoding="utf-8").write(md)
-    io.open(os.path.join(out_dir, "paper", "refs.bib"), "w", encoding="utf-8").write("\n\n".join(bib_out) + "\n")
+    out_bib = os.path.join(out_dir, "paper", "refs.bib")
+    if bib_path and os.path.exists(bib_path) and os.path.abspath(bib_path) == os.path.abspath(out_bib):
+        print(f"refs.bib: {bib_path} is the project bib, left untouched (keys keep their names)")
+    else:
+        io.open(out_bib, "w", encoding="utf-8").write("\n\n".join(bib_out) + "\n")
     texdir = os.path.dirname(os.path.abspath(tex_path))
-    with open(os.path.join(out_dir, "figures.csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f); w.writerow(["file", "print_width_mm", "source_data", "inspected", "issues"])
-        for fn, wmm, n in fig_rows:
-            p = next((c for c in (os.path.join(texdir, fn), os.path.join(texdir, fn + ".pdf"), os.path.join(texdir, fn + ".png")) if os.path.exists(c)), fn)
-            w.writerow([os.path.relpath(p, out_dir) if os.path.isabs(p) else p, wmm, "", "no", f"Fig. {n}"])
+    gp = re.search(r"\\graphicspath\s*\{((?:\s*\{[^}]*\}\s*)+)\}", src); gpaths = re.findall(r"\{([^}]*)\}", gp.group(1)) if gp else []
+    fcsv = os.path.join(out_dir, "figures.csv"); hdr = ["file", "print_width_mm", "source_data", "inspected", "issues"]
+    old = {}
+    if os.path.exists(fcsv):
+        for r in csv.DictReader(io.open(fcsv, encoding="utf-8-sig")): old[os.path.normpath(r["file"])] = r
+    new_rows = []
+    for fn, wmm, n in fig_rows:
+        cands = [os.path.join(b, fn + e) for b in [texdir] + [os.path.join(texdir, g) for g in gpaths] for e in ("", ".pdf", ".png")]
+        p = next((c for c in cands if os.path.isfile(c)), os.path.join(texdir, fn))
+        rel = os.path.relpath(p, out_dir).replace("\\", "/")
+        prev = old.get(os.path.normpath(rel), {})
+        new_rows.append({"file": rel, "print_width_mm": wmm, "source_data": prev.get("source_data", ""), "inspected": prev.get("inspected", "no"), "issues": prev.get("issues") or f"Fig. {n}"})
+    seen = {os.path.normpath(r["file"]) for r in new_rows}
+    keep = [r for k, r in old.items() if k not in seen]      # figures registered earlier but not (yet) in the tex stay registered
+    with open(fcsv, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=hdr); w.writeheader()
+        for r in new_rows + keep: w.writerow({k: r.get(k, "") for k in hdr})
     missing = sum(1 for r in md_refs if "not found" in r)
     print(f"{os.path.basename(tex_path)}: {fig_n} figures, {tab_n} tables, {len(order)} cited keys ({missing} missing from bib), {len(labels)} labels -> {out_dir}")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("tex"); ap.add_argument("out_dir"); ap.add_argument("--bib", default=""); ap.add_argument("--textwidth-mm", type=float, default=178.0, help="IEEEtran journal 178; elsarticle 3p 17.5 cm = 175; Nature 180")
+    ap.add_argument("tex"); ap.add_argument("out_dir"); ap.add_argument("--bib", default=""); ap.add_argument("--textwidth-mm", type=float, default=None, help="default: from references/latex-templates.csv for the documentclass, else 178")
     a = ap.parse_args(); convert(a.tex, a.out_dir, a.bib, a.textwidth_mm)

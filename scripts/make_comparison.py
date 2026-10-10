@@ -225,6 +225,8 @@ def det_grid(a):
             tw = draw.textlength(mth, font=font); draw.text((x0 + (cell - tw) / 2, y0 + cell + 4), mth, fill="black", font=font)
     canvas.save(a.out)
     dpi = canvas.size[0] / (a.width_mm / 25.4)
+    pdf = os.path.splitext(a.out)[0] + ".pdf"; canvas.save(pdf, "PDF", resolution=dpi)   # LaTeX includes the PDF; the PNG is for inspection
+    print(f"-> {pdf} (same raster, {dpi:.0f} dpi at {a.width_mm} mm)")
     print(f"grid {canvas.size} -> {dpi:.0f} dpi at {a.width_mm} mm; cells {len(methods)}×{len(samples)}" + (f"; MISSING {len(missing)}: {missing[:6]}" if missing else ""))
     return dpi
 

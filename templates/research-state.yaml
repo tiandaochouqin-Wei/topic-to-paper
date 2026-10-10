@@ -22,6 +22,9 @@ target:
   field: ""               # cv | ml | medimg | nature：加载 references/acronym-norms.csv 的领域缩略语规范
   family: ""              # cs_conf | cs_journal | nature：写法画像（references/venue-profiles.md），空则由 venue 名推断；决定章节顺序、篇幅、禁用词、统计写法
   required_files: []        # 从 guide 抄
+  latex_dir: paper/latex    # 有 LaTeX 模板的刊：main.tex 在这里（latex_check.py skeleton 生成），paper/manuscript.md 由 tex_to_md.py 派生
+  latex_class: ""           # 期望的 documentclass（如 elsarticle / IEEEtran）；填了之后 G6d 对不上就 FAIL
+  figure_ext: pdf           # \includegraphics 允许的扩展名；图一律 PDF，组合图每个面板一个 PDF
 
 resources:
   gpu: ""                   # 型号与显存

@@ -23,6 +23,9 @@ target:
   field: cv
   family: cs_journal
   required_files: [manuscript, title_page, cover_letter, highlights, blind]
+  latex_dir: paper/latex
+  latex_class: elsarticle
+  figure_ext: pdf
 
 resources:
   gpu: "A2000"

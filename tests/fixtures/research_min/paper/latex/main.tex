@@ -1,0 +1,57 @@
+\documentclass[preprint,review,12pt]{elsarticle}
+% template: elsevier — elsarticle.cls comes from https://ctan.org/pkg/elsarticle and is not shipped with the fixture
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\graphicspath{{../../figures/}}
+
+\begin{document}
+\begin{frontmatter}
+\title{Domain-robust vision-based force estimation by removing the platform sensor offset}
+\author[1]{Anonymous}
+\affiliation[1]{organization={Fixture University}, city={Nowhere}, country={Nowhere}}
+\begin{abstract}
+Vision-based force estimation degrades across robot platforms because of a label-side sensor offset. A domain-adversarial regularizer removes it and lowers the root-mean-square error (RMSE) on the held-out platform by 19.2\% relative to the strongest baseline.
+\end{abstract}
+\begin{keyword}
+force estimation \sep domain shift \sep surgical robotics
+\end{keyword}
+\end{frontmatter}
+
+\section{Introduction}
+Surgical force estimation must transfer across robot platforms~\cite{lecun2015deep}. Fig.~\ref{fig:main} summarises the main comparison, Fig.~\ref{fig:abl} the ablations, and Table~\ref{tab:main} the numbers. The strongest baseline is the geometric regressor of~\cite{he2016resnet}.
+
+\section{Method}
+The objective is $L = L_{reg} + \beta L_{dom} + \alpha L_{cons}$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.47\textwidth]{fig_main.pdf}
+  \caption{Main comparison on both platforms (fixture).}
+  \label{fig:main}
+\end{figure}
+
+\input{figs/fig_abl}
+
+\section{Experiments}
+\begin{table}[t]
+  \centering
+  \caption{Main comparison, contact-window convention.}
+  \label{tab:main}
+  \begin{tabular}{lcc}
+    \toprule
+    Method & RMSE E1 (N) & RMSE E2 (N) \\
+    \midrule
+    baseA & 0.250 & 0.352 \\
+    ours & 0.202 & 0.303 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Conclusion}
+The gain comes from the adversarial term.
+
+\bibliographystyle{elsarticle-num}
+\bibliography{../refs}
+\end{document}

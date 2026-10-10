@@ -66,6 +66,7 @@
 | 示意图/架构图 | skill `scientific-schematics`、`academic-plotting` |
 | 配色与可读性 | skill `dataviz` |
 | 图 → 可编辑 PPT | skill `image2pptx` |
+| 组合图：每面板一个 PDF，生成 subfigure/subfloat 块 | `scripts/latex_check.py figure --panels a.pdf,b.pdf --labels ... --caption ... --label fig:x` → paper/latex/figs/fig_x.tex |
 
 ## P6 WRITE
 | 动作 | 工具 |
@@ -73,7 +74,8 @@
 | 按稿件家族取写作骨架（P0 定 target.family） | `templates/skeleton-cs_conf.md` / `skeleton-cs_journal.md` / `skeleton-nature.md`；规则与数据 `references/venue-profiles.md` |
 | 稿件形状 vs 家族画像 = G6c | `scripts/shape_check.py`（章节顺序、摘要长度、贡献列表/Here-we-show、句式小标题、公式位置、禁用词、Discussion 占比、统计句占比） |
 | 各节必写清单（生成 / 核对 = G6b） | `scripts/draft_plan.py plan \| check` |
-| LaTeX 稿进关口 | `scripts/tex_to_md.py main.tex <dir> --bib refs.bib`，再 `t2p.py check --project <dir>` |
+| LaTeX 稿进关口 | `scripts/tex_to_md.py paper/latex/main.tex . --bib paper/refs.bib`（展开 \input，合并 figures.csv），再 `t2p.py check` |
+| 期刊 LaTeX 模板骨架 / 版心实测 / 投稿形态关口 = G6d | `scripts/latex_check.py skeleton --venue "<刊>"`、`widths --tex paper/latex/main.tex`、`check`；模板知识表 `references/latex-templates.csv` |
 | SOTA 对比表（单数据集，分 CNN/Transformer 组，Params/FLOPs，红最优/蓝次优，ours 加粗） | `scripts/make_comparison.py sota --csv results/main.csv --group-col family --extra Params,FLOPs --ours X --cite-col ref --numbers` |
 | 多数据集并排对比表 | `scripts/make_comparison.py multi --datasets A,B,C --dataset-col dataset ...` |
 | 消融表（✓/× 组件列，Group 编号，全 ✓ 行加粗） | `scripts/make_comparison.py ablation --components C1,C2,C3 --ablation-plain` |
