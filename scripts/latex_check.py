@@ -356,11 +356,16 @@ def skeleton(a):
     star = "*" if family == "nature" else ""
     for lv, t in secs:
         L.append(("\\section" if lv == 2 else "\\subsection") + star + f"{{{t}}}")
-        if lv == 2 and t.lower().startswith(("intro", "results")):
-            L += ["", "Fig.~\\ref{fig:main} … Fig.~\\ref{fig:panels} …", ""]
+    # The two figure examples stay COMMENTED OUT: at P0 no figure exists yet, and a live \includegraphics of a file that
+    # P5 has not produced would make G6d FAIL on a freshly generated skeleton. Uncomment at P6, one block per real figure.
     base = "\\columnwidth" if two_column(tpl, opts, cls) else "\\textwidth"
-    L += ["", "\\begin{figure}[t]", "  \\centering", f"  \\includegraphics[width=0.95{base}]{{fig_main.pdf}}", "  \\caption{<caption>}", "  \\label{fig:main}", "\\end{figure}", ""]
-    L.append(figure_block([os.path.join(root, "figures", "fig_a.pdf"), os.path.join(root, "figures", "fig_b.pdf")], ["<panel a>", "<panel b>"], "<caption>", "fig:panels", "0.48", style, "figure", out_dir, two_column(tpl, opts, cls)).rstrip("\n"))
+    example = (["% ---- 图示例（P5 出图后取消注释，每张图一块；正文里用 Fig.~\\ref{fig:main} 引用）----",
+                "\\begin{figure}[t]", "  \\centering", f"  \\includegraphics[width=0.95{base}]{{fig_main.pdf}}", "  \\caption{<caption>}", "  \\label{fig:main}", "\\end{figure}", "",
+                "% ---- 组合图示例：每个面板一个 PDF，由 `latex_check.py figure --panels a.pdf,b.pdf …` 生成 ----"]
+               + figure_block([os.path.join(root, "figures", "fig_a.pdf"), os.path.join(root, "figures", "fig_b.pdf")],
+                              ["<panel a>", "<panel b>"], "<caption>", "fig:panels", "0.48", style, "figure", out_dir,
+                              two_column(tpl, opts, cls)).rstrip("\n").split("\n"))
+    L += [""] + [ln if ln.startswith("%") else "% " + ln for ln in example]
     L += ["", f"\\bibliographystyle{{{bibstyle}}}", f"\\bibliography{{{bibrel}}}", "\\end{document}", ""]
     io.open(main, "w", encoding="utf-8", newline="\n").write("\n".join(L))
     print(f"-> {os.path.relpath(main, root)}  class {cls}{'[' + opts + ']' if opts else ''}，family {family}，{len(secs)} 个节，子图风格 {style}")

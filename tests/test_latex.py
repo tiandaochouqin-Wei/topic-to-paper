@@ -106,6 +106,21 @@ def test_skeleton_elsevier(tmp_path):
     assert "\\graphicspath{{../../figures/}}" in t
 
 
+def test_fresh_skeleton_passes_the_gate(tmp_path):
+    """A skeleton has no figures yet (P5 makes them), so its figure examples must be commented out:
+    a live \\includegraphics of a missing file made G6d FAIL on a freshly generated skeleton (found 2026-10-10)."""
+    import io
+    run("latex_check.py", "skeleton", "--venue", "Remote Sensing", "--project", str(tmp_path), cwd=tmp_path)
+    t = read(tmp_path / "paper" / "latex" / "main.tex")
+    live = [ln for ln in t.splitlines() if "includegraphics" in ln and not ln.lstrip().startswith("%")]
+    assert not live, live
+    assert "\\begin{subfigure}" in t and "P5 出图后取消注释" in t            # the example is still there to uncomment
+    assert all(ln.lstrip().startswith("%") for ln in t.splitlines() if "subfigure}" in ln or "\\caption{<caption>}" in ln)
+    io.open(tmp_path / "paper" / "refs.bib", "w", encoding="utf-8").write("@misc{x, title = {T}, year = {2026}, doi = {10.1/x}}\n")
+    r = run("latex_check.py", "check", "--project", str(tmp_path), cwd=tmp_path)
+    assert r.fails == 0, r.out
+
+
 def test_skeleton_ieee_uses_subfig(tmp_path):
     r = run("latex_check.py", "skeleton", "--venue", "TPAMI", "--project", str(tmp_path), cwd=tmp_path)
     assert r.returncode == 0, r.out
