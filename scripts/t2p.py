@@ -8,7 +8,9 @@
   python t2p.py init    [--project .] [--venue V] [--field F] [--branch research|survey]
                         [--entry topic_only|topic_plus_data|have_results|have_draft|have_reviews]
                                                create the workspace from templates; --entry says where the project starts
-  python t2p.py doctor                         verify python deps and the scripts themselves
+  python t2p.py lock    [--project .]          hash prereg.md (research) / protocol.md (survey) into gates.G2.prereg_sha256
+                                               / gates.G-S2.protocol_sha256 — do not edit that field by hand
+  python t2p.py doctor  [--skills]             verify python deps and the scripts themselves
 
 Entry points: a project that starts from an existing draft (have_draft) or from reviews (have_reviews) has no P1–P5
 artefacts, so G1b/G2/G3/G4/G5 are shown as N/A instead of PENDING while their inputs are absent and never become the
@@ -99,6 +101,45 @@ def dump_inline(d):
     import yaml
     return yaml.safe_dump(d, default_flow_style=True, allow_unicode=True, width=10**6, sort_keys=False).strip()
 
+GATE_PAT = re.compile(r"^(\s+)(G[\w-]+):\s*(\{.*\})\s*(#.*)?$")
+
+def set_gate_key(sp, gate, key, value):
+    """Set one key inside the inline dict of `gate` in the gates: block, whatever the current quoting is, keeping the
+    other keys, the comments and the line ending. Returns True when the gate line was found."""
+    import yaml
+    txt = io.open(sp, encoding="utf-8").read(); eol = "\r\n" if "\r\n" in txt else "\n"
+    lines = txt.replace("\r\n", "\n").split("\n")
+    for i, ln in enumerate(lines):
+        m = GATE_PAT.match(ln)
+        if not m or m.group(2) != gate: continue
+        d = yaml.safe_load(m.group(3)) or {}
+        d[key] = value
+        lines[i] = f"{m.group(1)}{gate}: {dump_inline(d)}" + (f"  {m.group(4)}" if m.group(4) else "")
+        io.open(sp, "w", encoding="utf-8", newline="").write(eol.join(lines))
+        return True
+    return False
+
+def lock(root):
+    """Hash the preregistration (research) or protocol (survey) and write it into its gate entry. Doing this by hand with
+    a regex breaks as soon as `check` has rewritten the gates block with different quoting, so it is a command."""
+    sp = os.path.join(root, "research-state.yaml")
+    st = load_state(sp)
+    if st is None: print("[FAIL] research-state.yaml 不存在：先 `t2p.py init`"); return 1
+    survey = (st.get("branch") == "survey")
+    doc, gate, key = ("protocol.md", "G-S2", "protocol_sha256") if survey else ("prereg.md", "G2", "prereg_sha256")
+    dp = os.path.join(root, doc)
+    if not os.path.exists(dp): print(f"[FAIL] {doc} 不存在"); return 1
+    if templated(root, doc, doc): print(f"[FAIL] {doc} 仍是 templates/{doc} 的原样副本，没有内容可锁"); return 1
+    import hashlib
+    sha = hashlib.sha256(io.open(dp, encoding="utf-8").read().encode("utf-8")).hexdigest()
+    old = ((st.get("gates") or {}).get(gate) or {}).get(key) or ""
+    if not set_gate_key(sp, gate, key, sha):
+        print(f"[FAIL] gates 块里没有 {gate} 行：先跑一次 `t2p.py check`"); return 1
+    if old and old != sha:
+        print(f"[WARN] {doc} 的锁被更新（旧 {old[:12]}… → 新 {sha[:12]}…）：改口径要同时在 state.experiments.convention_changes 留记录")
+    print(f"[PASS] {doc} 已锁定 → gates.{gate}.{key} = {sha}")
+    return 0
+
 def write_gates(sp, board):
     """Write the board into the `gates:` block of research-state.yaml in place, one inline dict per gate. Every comment
     and every extra key (prereg_sha256, protocol_sha256, ...) is kept; gates not yet listed are appended to the block."""
@@ -110,7 +151,7 @@ def write_gates(sp, board):
     if gi is None:
         while lines and lines[-1] == "": lines.pop()
         lines += ["", "gates:"]; gi = len(lines) - 1
-    pat = re.compile(r"^(\s+)(G[\w-]+):\s*(\{.*\})\s*(#.*)?$")
+    pat = GATE_PAT
     at = {}; indent = "  "; last = gi; j = gi + 1
     while j < len(lines) and (lines[j].strip() == "" or lines[j][:1] in (" ", "\t")):
         m = pat.match(lines[j])
@@ -258,6 +299,9 @@ def status(root):
     for k in order: print(f"  {k:5s} {str(g[k].get('status', '?')):8s} {str(g[k].get('evidence', ''))[:100]}")
     nxt = next((k for k in order if str(g[k].get("status", "")).lower() not in ("pass", "n/a", "skip")), None)
     print(f"下一道未过关口: {nxt or '无'}")
+    for doc, gt, key in (("prereg.md", "G2", "prereg_sha256"), ("protocol.md", "G-S2", "protocol_sha256")):
+        if os.path.exists(os.path.join(root, doc)) and not (g.get(gt) or {}).get(key):
+            print(f"{doc} 未锁定: 跑 `t2p.py lock` 把 sha256 写进 gates.{gt}.{key}")
     return 0
 
 NEXT_BY_ENTRY = {
@@ -340,7 +384,7 @@ def doctor(skills=False, project="."):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("status", "check", "init"):
+    for name in ("status", "check", "init", "lock"):
         p = sub.add_parser(name); p.add_argument("--project", default=".")
         if name == "check": p.add_argument("--net", action="store_true"); p.add_argument("--no-write", action="store_true", help="不把状态板写回 research-state.yaml")
         if name == "init":
@@ -350,4 +394,5 @@ if __name__ == "__main__":
     a = ap.parse_args()
     if a.cmd == "doctor": sys.exit(doctor(a.skills, a.project))
     root = os.path.abspath(a.project)
-    sys.exit({"status": lambda: status(root), "check": lambda: check(root, a.net, not a.no_write), "init": lambda: init(root, a.venue, a.field, a.branch, a.entry)}[a.cmd]())
+    sys.exit({"status": lambda: status(root), "check": lambda: check(root, a.net, not a.no_write),
+              "init": lambda: init(root, a.venue, a.field, a.branch, a.entry), "lock": lambda: lock(root)}[a.cmd]())

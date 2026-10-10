@@ -46,7 +46,7 @@ license: MIT
 └── submission/              # guide.txt  cover_letter.md  title_page.md  highlights.md  blind.md
 ```
 
-Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature> --entry <topic_only|topic_plus_data|have_results|have_draft|have_reviews>`（已存在则跳过；entry 决定哪些关口显示 N/A），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。`check` 会把每道关口的 status/evidence/checked 写回 state.gates，`status` 读它；state.gates 不要手工改（除 *_sha256 锁）。
+Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature> --entry <topic_only|topic_plus_data|have_results|have_draft|have_reviews>`（已存在则跳过；entry 决定哪些关口显示 N/A），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。`check` 会把每道关口的 status/evidence/checked 写回 state.gates，`status` 读它；**state.gates 一律不手工改**，预注册/协议的 sha256 用 `t2p.py lock` 写（手工正则会因写回时的引号风格而静默失配）。
 
 ---
 
