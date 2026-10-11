@@ -153,13 +153,21 @@ def main():
         pre_abl = table_first_col(section(md, "ablations")); pre_base = table_first_col(section(md, "baselines"))
         have_abl = [r.get("ablation") or r.get(gk, "") for r in (abl_rows or [])]
         have_methods = sorted({r.get(gk, "") for r in main_rows})
-        miss = [x for x in pre_abl if not fuzzy_in(x, have_abl)]
+        aliases = cfg.get("aliases") or {}; waiver = cfg.get("coverage_waiver") or {}
+        _n = lambda s: re.sub(r"[^a-z0-9]", "", str(s).lower())
+        def _covered(x, pool): return fuzzy_in(x, pool) or any(n in pool and _n(sub) and _n(sub) in _n(x) for n, sub in aliases.items())
+        def _waived(x): return any(_n(k) and _n(k) in _n(x) for k in waiver)
+        wv = [x for x in pre_abl + pre_base if _waived(x)]
+        if wv: say("WARN", "coverage", f"{len(wv)} 项 prereg 基线/消融按 results.coverage_waiver 豁免: {wv[:3]} —— 投稿主表不得带豁免")
+        pre_abl = [x for x in pre_abl if not _waived(x)]; pre_base = [x for x in pre_base if not _waived(x)]
+        fuzzy_in_ = fuzzy_in
+        miss = [x for x in pre_abl if not _covered(x, have_abl)]
         if pre_abl and abl_rows is None: say("FAIL", "coverage", f"prereg 列了 {len(pre_abl)} 项消融但 {cfg.get('ablation_table')} 不存在")
         elif miss: say("FAIL", "coverage", f"prereg §6 的消融未出现在 ablation.csv: {miss}")
         elif pre_abl: say("PASS", "coverage", f"prereg §6 的 {len(pre_abl)} 项消融全部有行")
-        extra = [x for x in set(have_abl) if x and not fuzzy_in(x, pre_abl)]
+        extra = [x for x in set(have_abl) if x and not fuzzy_in(x, pre_abl) and not any(_n(aliases.get(x, "")) and _n(aliases[x]) in _n(p) for p in pre_abl)]
         if extra: say("WARN", "coverage", f"ablation.csv 有 prereg 未登记的消融 {extra} —— 事后增补要在 state.convention_changes 留记录")
-        missb = [x for x in pre_base if not fuzzy_in(x, have_methods)]
+        missb = [x for x in pre_base if not _covered(x, have_methods)]
         if missb: say("FAIL", "coverage", f"prereg §5 的基线未出现在 main.csv: {missb}")
         elif pre_base: say("PASS", "coverage", f"prereg §5 的 {len(pre_base)} 个基线全部在主表")
     # ---- predictions (sign flip = anomaly: must be in findings.md before training continues)

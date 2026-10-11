@@ -109,6 +109,13 @@ def expected_signs(prereg):
         out[cells[0]] = s
     return out
 
+HIGHER_BETTER = re.compile(r"csi|auc|acc|f1|iou|dice|\bmap\b|\bap\d*\b|psnr|ssim|recall|precision|pod|r2\b|corr|bleu|rouge|hss|ets|fss|top\d|hit", re.I)
+LOWER_BETTER = re.compile(r"rmse|mae|mse|error|loss|nll|ece|fid|far\b|brier|crps|mape|wer|cer|latency", re.I)
+def sign_for_metric(es, metric):
+    """prereg §6 signs are written as 'worse'/'better' (error-metric convention: worse = +). On a higher-is-better metric flip them."""
+    if es in ("+", "-") and HIGHER_BETTER.search(metric) and not LOWER_BETTER.search(metric): return "-" if es == "+" else "+"
+    return es
+
 def norm_tok(s):
     return {w for w in re.sub(r"[^a-z0-9]+", " ", s.lower()).split() if w not in {"no", "without", "w", "o", "the", "a", "of", "and", "remove", "removed", "ablation"}}
 
@@ -143,7 +150,8 @@ def resolve(state_p, prereg_p, project):
             if ok: res += 1; nres += 1
             mark = "" if ok else "~"
             cells.append(f"{d:+.3f}({z:.1f}σ){mark}".rjust(16))
-            if ok and es in ("+", "-") and (("+" if d > 0 else "-") != es): bad.append(m)
+            es_m = sign_for_metric(es, m)
+            if ok and es_m in ("+", "-") and (("+" if d > 0 else "-") != es_m): bad.append(m)
         if bad:
             contra += 1
             print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   CONTRADICTS prereg sign {es} on {bad}")

@@ -255,7 +255,7 @@ cd "$(dirname "$0")"
 D=results_$(date +%Y%m%d_%H%M)
 FILES=()
 for f in manifest.json matrix.csv smoke_report.txt failed.txt slurm_*.out; do [ -e "$f" ] && FILES+=("$f"); done
-while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 \\( -name args.json -o -name log.json -o -name eval.json -o -name hardware.json -o -name manifest.json -o -name stats.npz -o -name train.log -o -name eval.log \\) 2>/dev/null)
+while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 \\( -name args.json -o -name log.json -o -name eval.json -o -name hardware.json -o -name manifest.json -o -name stats.npz -o -name stats.json -o -name train.log -o -name eval.log -o -name 'split*' \\) 2>/dev/null)
 while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 -type d -name preds 2>/dev/null)
 tar czf "$D.tar.gz" "${{FILES[@]}}"
 ls -la "$D.tar.gz"; echo "send $D.tar.gz back ($(find {cdn}/runs -maxdepth 2 -name eval.json 2>/dev/null | wc -l) runs with eval.json)"
@@ -311,11 +311,17 @@ def check(a):
     if md:
         base = table_first_col(section(md, "baselines")); abl = table_first_col(section(md, "ablations"))
         ref = (b.get("matrix") or {}).get("ref", {}).get("name", "")
-        mb = [x for x in base if not fuzzy_in(x, names + [ref])]; ma = [x for x in abl if not fuzzy_in(x, names)]
-        if mb: say("FAIL", "coverage", f"prereg §5 基线不在矩阵里: {mb}（matrix.baselines 加上，或 prereg 写明不比）")
-        else: say("PASS", "coverage", f"prereg §5 的 {len(base)} 个基线全部在矩阵")
+        aliases = res.get("aliases") or {}; waiver = res.get("coverage_waiver") or {}
+        def covered(x, pool):   # prereg row x is covered by a matrix name directly, or through results.aliases {name: "<substring of the prereg row>"}
+            return fuzzy_in(x, pool) or any(n in pool and norm(sub) and norm(sub) in norm(x) for n, sub in aliases.items())
+        def waived(x): return next((f"{k}: {v}" for k, v in waiver.items() if norm(k) and norm(k) in norm(x)), "")
+        mb = [x for x in base if not covered(x, names + [ref]) and not waived(x)]; ma = [x for x in abl if not covered(x, names) and not waived(x)]
+        wv = [waived(x) for x in base + abl if waived(x) and not covered(x, names + [ref])]
+        if wv: say("WARN", "coverage", f"{len(wv)} 项 prereg 基线/消融在本阶段不跑（results.coverage_waiver）: {wv[:3]} —— 主表前必须补上或在 convention_changes 写明")
+        if mb: say("FAIL", "coverage", f"prereg §5 基线不在矩阵里: {mb}（matrix.baselines 加上；名字对不上用 results.aliases {{矩阵名: prereg 行子串}}；本阶段不跑的写 results.coverage_waiver）")
+        else: say("PASS", "coverage", f"prereg §5 的 {len(base)} 个基线全部在矩阵或已豁免")
         if ma: say("FAIL", "coverage", f"prereg §6 消融不在矩阵里: {ma}")
-        else: say("PASS", "coverage", f"prereg §6 的 {len(abl)} 项消融全部在矩阵")
+        else: say("PASS", "coverage", f"prereg §6 的 {len(abl)} 项消融全部在矩阵或已豁免")
     else: say("WARN", "coverage", "无 prereg.md，跳过覆盖核对")
     seeds = (b.get("matrix") or {}).get("seeds") or [0]; ms = int(res.get("min_seeds", 3)); seeded = set((b.get("matrix") or {}).get("seeded") or [])
     refn = (b.get("matrix") or {}).get("ref", {}).get("name", "")
@@ -328,8 +334,9 @@ def check(a):
     elif leaks: say("PASS", "leak", f"矩阵无 run 打开 {leaks}")
     crit = aud.get("critical_params") or {}
     for p in crit:
-        nz = r"--" + re.escape(p) + r"(?:\s+|=)(?!0(?:\.0+)?(?![\d.]))[\d.]+"          # "--beta 0.1" / "--beta=0.1", not "--beta 0" / "--beta 0.0"
-        anyv = r"--" + re.escape(p) + r"(?:\s+|=)[\d.]+"
+        # value may be a number (--beta 0.1) or a word (--cond srf); "off" = 0 / 0.0 / none / false / off / no  (RS_nowcast 2026-10-12: --cond is a string)
+        nz = r"--" + re.escape(p) + r"(?:\s+|=)(?!(?:0(?:\.0+)?|none|null|false|off|no)(?![\w.]))[\w.\-]+"
+        anyv = r"--" + re.escape(p) + r"(?:\s+|=)[\w.\-]+"
         off = [r["run_id"] for r in rows if r["role"] == "baseline" and re.search(nz, r["args"])]
         if off: say("WARN", "critical", f"基线 run 显式给了 {p}≠0: {off[:4]} —— 若基线代码里该项不生效，args 会撒谎（G3 有效配置关口会抓，但最好在矩阵里就写 0）")
         # 2026-10-11 全新项目端到端实测：ref 只写 "--model ours"，train.py 的 --beta 默认 0，于是"本文方法"按基线配置跑完了全部 seeds，
