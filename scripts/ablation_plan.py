@@ -120,9 +120,11 @@ def norm_tok(s):
     return {w for w in re.sub(r"[^a-z0-9一-鿿]+", " ", s.lower()).split() if w not in {"no", "without", "w", "o", "the", "a", "of", "and", "remove", "removed", "ablation"}}
 def flat(s): return re.sub(r"[^a-z0-9一-鿿]", "", str(s).lower())
 def row_matches(prereg_row, name, aliases):
-    """ablation.csv name <-> prereg §6 row: token overlap, or results.aliases[name] is a substring of the row (Chinese prose rows)"""
-    if norm_tok(prereg_row) & norm_tok(name) or (norm_tok(name) and norm_tok(name) <= norm_tok(prereg_row)): return True
-    al = flat(aliases.get(name, "")); return bool(al) and al in flat(prereg_row)
+    """ablation.csv name <-> prereg §6 row: results.aliases[name] is a substring of the row, or EVERY token of the short name is in the
+    row. Any-one-token overlap was too loose: 'no_srf_aug' matched the row 'SRF 条件化 → 中心波长标量' through the token 'srf' (RS_nowcast)."""
+    al = flat(aliases.get(name, ""))
+    if al: return al in flat(prereg_row)
+    nt = norm_tok(name); return bool(nt) and nt <= norm_tok(prereg_row)
 
 def resolve(state_p, prereg_p, project):
     root = os.path.abspath(project); st = load_yaml(os.path.join(root, state_p)); cfg = st.get("results") or {}
@@ -166,7 +168,8 @@ def resolve(state_p, prereg_p, project):
             print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   {'ok' if es != '?' else 'no prereg sign'}")
     null_expect = tot * 0.0455   # P(|z| ≥ 2) under H0 for a single-run difference vs seed sd (two-sided, σ√2)
     print(f"\n可解读格 {res}/{tot}（|Δ| ≥ 2·σ_ref·√2）；零假设下期望约 {null_expect:.1f} 格。" + ("**整体在单 run 分辨率极限，不逐格解读**" if res <= null_expect * 1.5 else "整体高于零假设，可逐格解读"))
-    missing = [k for k in exp if not any(row_matches(k, r["ablation"], aliases) for r in abl)]
+    main_methods = sorted({r.get(gk, "") for r in main if r.get(gk) and r.get(gk) != ref})     # a §6 row may be a multi-seed main-table method
+    missing = [k for k in exp if not any(row_matches(k, n, aliases) for n in [r["ablation"] for r in abl] + main_methods)]
     if missing: print(f"[FAIL] resolve: prereg §6 有 {len(missing)} 项消融没有 run: {missing}"); fails += 1
     if contra:
         conv = (st.get("experiments") or {}).get("convention_changes") or []

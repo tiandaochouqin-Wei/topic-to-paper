@@ -155,8 +155,10 @@ def main():
         # ---- coverage
         print("\n== coverage ==")
         pre_abl = table_first_col(section(md, "ablations")); pre_base = table_first_col(section(md, "baselines"))
-        have_abl = [r.get("ablation") or r.get(gk, "") for r in (abl_rows or [])]
         have_methods = sorted({r.get(gk, "") for r in main_rows})
+        ref_m = cfg.get("reference_method", "ours")
+        # a §6 row can be a multi-seed method in the main table (RS_nowcast: the DOFA-style scalar conditioning is both a baseline and ablation row 1)
+        have_abl = [r.get("ablation") or r.get(gk, "") for r in (abl_rows or [])] + [m for m in have_methods if m != ref_m]
         aliases = cfg.get("aliases") or {}; waiver = cfg.get("coverage_waiver") or {}
         _n = flat
         def _covered(x, pool): return fuzzy_in(x, pool) or any(n in pool and _n(sub) and _n(sub) in _n(x) for n, sub in aliases.items())
