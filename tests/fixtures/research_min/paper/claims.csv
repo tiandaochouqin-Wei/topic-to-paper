@@ -1,3 +1,6 @@
-claim_id,statement,dataset,metric_convention,evidence_file,table_or_figure,scope_words,verified
-C1,"ours lowers RMSE on the held-out platform by 19.2% relative to the strongest baseline (baseA)",E1,contact-window,results/summary.csv,Table 1,,yes
-C2,"the gain comes from the adversarial term while the consistency term is not resolvable within seed noise",E1+E2,contact-window,results/ablation.csv,Table 2,,yes
+claim_id,statement,dataset,metric_convention,evidence_file,evidence_key,expected,table_or_figure,scope_words,verified
+C0,"cross-platform degradation is dominated by a label-side sensor offset: subtracting the measured offset removes most of the degradation (control experiment)",E2,contact-window,prereg.md,,,,,yes
+C1,"ours lowers RMSE on the held-out platform by 19.2% relative to the strongest baseline (baseA)",E1,contact-window,results/main.csv,rel:rmse_E1:ours:baseA,-19.2±0.15,Table 1,,yes
+C2,"the gain comes from the adversarial term: removing it (no_dom) raises RMSE by more than two seed standard deviations",E1+E2,contact-window,results/ablation.csv,z:rmse_E1:no_dom,>=2,Table 2,,yes
+C3,"the consistency term is not resolvable within seed noise: removing it (no_cons) changes RMSE by less than one seed standard deviation",E1+E2,contact-window,results/ablation.csv,z:rmse_E1:no_cons,<2,Table 2,,yes
+C4,"ablation cells within seed noise are reported as not resolvable rather than interpreted (single run each)",E1+E2,contact-window,results/ablation.csv,,,Table 2,,yes

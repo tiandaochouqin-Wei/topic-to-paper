@@ -39,7 +39,7 @@ def test_research_board_all_pass(research):
     assert run("draft_plan.py", "plan", "--project", ".", cwd=research).returncode == 0
     r = run("t2p.py", "check", "--project", ".", cwd=research)
     assert "[FAIL]" not in r.out and "[CRASH]" not in r.out, r.out
-    for g in ("G0", "G1b", "G2", "G3", "G4", "G5", "G6", "G6b", "G6c", "G7", "G8"):
+    for g in ("G0", "G1b", "G2", "G3", "G4", "G5", "G6", "G6b", "G6c", "G6e", "G7", "G8"):
         assert f"[PASS] {g}:" in r.out, f"{g} not PASS\n{r.out}"
     assert "[SKIP] G1:" in r.out            # bib exists, DOI resolution needs --net
     assert r.returncode == 0, r.out

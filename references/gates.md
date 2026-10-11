@@ -93,6 +93,12 @@ family 来自 state.target.family，否则按 venue 名推断（Nature/Science/n
 校准过程改掉的阈值：Nature 已发表摘要中位 150–230（投稿限 150 但出版后常超），改为 >1.6× 才 FAIL；Nat Med 的 Results 小标题是名词短语，句式小标题从 ≥3 FAIL 降为 ≥2 WARN；"state-of-the-art" 在 Nature 系 20% 出现，降 WARN；Discussion 占比 6–12% 之间降 WARN。
 漏法：查的是形状不是内容；"Here we show" 可以写了但主张不对；JATS 的 Nat Med 稿 Results 用名词短语不违规。
 
+## G6e 主张层（`scripts/claims_check.py`，机械；2026-10-11）
+判据：paper/claims.csv 每行 = 一条主张；有 evidence_key 的行机械算值并按 expected 判（`rel:<metric>:<a>:<b>` 相对变化 %、`delta:` 差、`z:<metric>:<a>` 消融分辨率 |Δ|/(σ_ref√2)、`mean:`、numbers.csv 式单格、json 点路径；expected 取 `<x <=x >x >=x ==x x±t + −`）；无 evidence_key 的定性行 WARN 永不 PASS（审稿席位人工回看）；主张里的数字必须在正文出现；有 table_or_figure 的主张必须在该题注所在节被陈述（词元重合 ≥50% 或共享数字）；nature 稿的 "Here we show" 句必须对应一行（FAIL）、句式小标题各对应一行（WARN）；CS 稿每条贡献条目必须对应一行（FAIL）、摘要与某行共享数字（WARN）；正文每句本文自述的强作用域主张（gate_check 的 SCOPE_STRONG，且句里有 we/our/proposed）必须对应 scope_words 非空的一行（FAIL）；`rel:` 主张低于 prereg §7 最小改进量 WARN（§8 备选生效，正文须说明）。
+为什么：G6c 只能查"有没有一句 Here we show / 有没有贡献列表"，查不了"这句话说的事是不是数出来的"；lessons 里"审稿人第一击是'你说最好，哪个表'"原来靠 scope 关口列出行号后人工回表，现在回表本身是关口：强作用域句 ↔ claims 行 ↔ 表 ↔ 结果文件四段连通才 PASS。
+测试：夹具 5 行（3 量化 PASS、2 定性 WARN）ALL PASS；expected 改成与结果相反 FAIL；不可分辨格写成有效 FAIL；有 key 无 expected FAIL；主张数字与正文不同步 FAIL；贡献条目无对应行 FAIL；加一句 "outperforms all existing" 无 claims 行 FAIL、登记 scope_words 后 PASS；table_or_figure 指错节 FAIL；nature 的 Here-we-show 句无对应行 FAIL；prereg §7 改 25% 后 WARN。
+漏法：定性主张（§0 对照实验、协议类主张）仍是人判；词元重合 50% 对改写过的句子可能漏；`z:` 用的是单 run 消融 vs 参照 seeds 的分辨率，多 seed 消融应改用 delta: + 检验。
+
 ## G6d LaTeX 投稿形态（`scripts/latex_check.py check`，机械；只对 paper/latex/main.tex 存在的项目）
 判据：documentclass / style 与 references/latex-templates.csv 里目标刊的模板一致（WARN；state.target.latex_class 填了且不符 FAIL）；每个 \includegraphics 解析到存在的文件（FAIL）且扩展名 ∈ state.target.figure_ext（默认 pdf，FAIL）；含 ≥2 张图的 figure 必须用 subfigure / \subfloat（FAIL）且 subcaption 或 subfig 已加载（FAIL）；题注带面板字母 (a)(b) 而只引用一个文件 = 预合成组合图（FAIL）；\ref 全部有 label（FAIL）；float 无 \label（WARN）；图未登记 figures.csv 或印刷宽度与 LaTeX 宽度差 >5%（WARN）；\bibliography 的 .bib 存在（FAIL）；paper/manuscript.md 比任一 .tex 源旧（FAIL，关口会检查过时正文）。
 为什么：出版社要的是矢量图与可编辑源文件；预合成的组合图一改一个面板就要整图重出，且子题注字号与正文脱节；figure 里塞两张图不用 subfigure 则无法被 \ref 到面板。版心宽度从模板实测（`latex_check.py widths --tex`），figures.csv 的印刷宽度才是真的，G5 的 dpi 才算得对。

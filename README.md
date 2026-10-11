@@ -48,6 +48,7 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 | G5 figures | dpi measured on screen not at print width; legibility never inspected |
 | G6 manuscript | DOI strings that resolve to other papers; orphan figures; acronyms never expanded; "outperforms all" without a scope; table numbers that drift from result files; venue hard limits |
 | G6b/G6c writing | the sentence a section must contain is missing or in the wrong section; a CS-shaped draft sent to a Nature-family journal (Related Work, Conclusion, contribution list, equations in the main text) |
+| G6e claims | a "Here we show" sentence or contribution bullet that no claims row backs; a claims row whose number the result files no longer produce; an ablation cell inside seed noise written up as an effect; "outperforms all" with no row saying all of what, on which table |
 | G6d LaTeX form | manuscript not in the venue's LaTeX template; a figure that is not a PDF; a multi-panel figure pasted together instead of composed from one PDF per panel with subfigure; stale derived manuscript.md |
 | G7 review loop | a major comment never closed in a re-review; G6 not re-run after edits |
 | G8 submission docs | title page / cover letter numbers that no longer match the body; a blind copy with the author's name in it |
@@ -62,7 +63,7 @@ Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_ch
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 27 gate/generator scripts, all argparse, all `--help`
+scripts/                 28 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, figure-norms.md (which figure types each venue / family / topic uses), latex-templates.csv, acronym-norms.csv, validation-*.md
@@ -70,7 +71,7 @@ references/              gates.md (why each gate exists), phases/P0–P8.md + S0
 
 ## Limits (stated honestly)
 
-Fully autonomous publication is not possible: data credentials, compute, pivot decisions after a null result, and the submit button are the user's. The second and third of the three innovation tests (structural correspondence, failure point) are written by Claude after reading a paper; the gate judges their *shape* against the project's own domain vocabulary (a correspondence must name a domain entity and not just architecture words; a failure point must name a domain entity plus a breaking predicate and must not be "not yet applied to X"), it cannot judge whether the failure point is true. Shape checks verify form, not whether the claim is right. P4 from the first run to the main table has been validated on a one-epoch smoke run and on a finished 22-run project, not yet end-to-end on a fresh project; the Slurm branch of the bundle is untested.
+Fully autonomous publication is not possible: data credentials, compute, pivot decisions after a null result, and the submit button are the user's. The second and third of the three innovation tests (structural correspondence, failure point) are written by Claude after reading a paper; the gate judges their *shape* against the project's own domain vocabulary (a correspondence must name a domain entity and not just architecture words; a failure point must name a domain entity plus a breaking predicate and must not be "not yet applied to X"), it cannot judge whether the failure point is true. Shape checks verify form; the claim gate (G6e) verifies that every headline sentence maps to a claims row computed from the result files, but a qualitative claim with no evidence key is only flagged for the review seats, never passed. P4 from the first run to the main table runs end-to-end on a fresh project in the regression suite (a runnable fixture trainer through the generated bundle scripts, bash and Slurm; the Slurm path is exercised through a serial `sbatch` emulator, not a real cluster — see `references/validation-round10-four-limits-2026-10-11.md`).
 
 ## License
 

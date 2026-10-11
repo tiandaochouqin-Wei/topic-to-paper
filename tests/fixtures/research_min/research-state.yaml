@@ -54,6 +54,7 @@ gates:
   G4: {status: pass, evidence: results/main.csv}
   G5: {status: pass, evidence: figures.csv}
   G6: {status: pass, evidence: gate_report.md}
+  G6e: {status: pass, evidence: paper/claims.csv}
   G7: {status: pass, evidence: paper/review_log.md}
   G8: {status: pass, evidence: submission/}
 

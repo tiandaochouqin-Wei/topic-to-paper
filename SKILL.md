@@ -1,7 +1,7 @@
 ---
 name: topic-to-paper
 description: "Gated topic-to-submission pipeline. One sentence from the user (a topic, a draft path, or 'resume <project>') and Claude runs every script to a submission package: research branch P0–P8 and survey branch S0–S6, each stage closed by a machine-checked gate (preregistration lock, leakage/effective-config audit, number traceability, ablation resolution, figure dpi, manuscript shape, review loop, submission consistency). Single session, no subagents, state in research-state.yaml. Triggers: 用 topic-to-paper, 从选题到论文, 投稿包, 端到端论文, 自动化科研, 帮我做一篇综述, 写一篇综述, write a survey on X, 这是我的稿子帮我过一遍关口, check my draft against the gates, resume/继续 <项目>. Not for a single writing, citation or figure task (nature-writing, nature-citation, nature-figure do those)."
-version: 2.7.0
+version: 2.8.0
 author: Wei Zhang (KI) + Claude
 license: MIT
 ---
@@ -62,7 +62,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 | **P3 搭建** [细则](references/phases/P3.md) | 填 state.audits（泄漏开关、关键超参证据列、必需输入、烟测）；实验在服务器跑时填 state.bundle 出实验包 | runs/ 结构；bundle/ | `audit_check.py --smoke`；`bundle.py check\|make\|tables` | G3 = `audit_check.py` 全绿（runs 空时 `bundle.py check` 顶上） |
 | **P4 实验** [细则](references/phases/P4.md) | 每 run 写 run_card；反常先记 findings.md 再动配置（分诊 [anomaly-triage](references/anomaly-triage.md)）；对本文方法切失败片 | results/main.csv、ablation.csv、runs/*/eval.json、findings.md、results/failure_slices.md | `failure_slice.py`；`results_check.py`；`ablation_plan.py resolve` | G4 = 两脚本全绿 |
 | **P5 图** [细则](references/phases/P5.md) | 主结果图 / 消融图 / seed 图 / 定性网格由脚本生成；**全部 PDF，组合图每个面板一个 PDF**（LaTeX 里 subfigure 拼）；每张裁图目测后 inspected=yes | figures/*.pdf（+ .png 预览）+ .source.csv；figures.csv | `make_figure.py main\|ablation\|seeds`；`make_comparison.py grid` | G5 = `gate_check.py dpi` |
-| **P6 写作** [细则](references/phases/P6.md) | 按 family 取骨架 → 填 claims.csv → 生成必写清单 → 写 → 表格由脚本生成并登记数字；LaTeX 稿写 paper/latex/main.tex，`tex_to_md.py` 派生 manuscript.md 再过关口 | paper/manuscript.md、claims.csv、numbers.csv、draft_plan.md | `draft_plan.py plan\|check`；`make_comparison.py sota\|multi\|ablation\|seeds --numbers`；`gate_check.py all`；`shape_check.py` | G6 = `gate_check.py all`；G6b = `draft_plan.py check`；G6c = `shape_check.py`；G6d = `latex_check.py check`（LaTeX 稿） |
+| **P6 写作** [细则](references/phases/P6.md) | 按 family 取骨架 → 填 claims.csv → 生成必写清单 → 写 → 表格由脚本生成并登记数字；LaTeX 稿写 paper/latex/main.tex，`tex_to_md.py` 派生 manuscript.md 再过关口 | paper/manuscript.md、claims.csv、numbers.csv、draft_plan.md | `draft_plan.py plan\|check`；`make_comparison.py sota\|multi\|ablation\|seeds --numbers`；`gate_check.py all`；`shape_check.py` | G6 = `gate_check.py all`；G6b = `draft_plan.py check`；G6c = `shape_check.py`；G6d = `latex_check.py check`（LaTeX 稿）；G6e = `claims_check.py`（主张 ↔ 结果文件） |
 | **P7 审稿** [细则](references/phases/P7.md) | 五席审稿在本会话内做；每条先回结果文件复核再写 review_log.md；修完 `## Re-review` 逐条关闭 major，G6 重跑 | paper/review_log.md；state.review.round + 1 | `review_check.py` | G7 = `review_check.py` 全绿 |
 | **P8 投稿包** [细则](references/phases/P8.md) | 标题页、cover letter、highlights、盲稿、数据声明 | submission/* | `gate_check.py submission` | G8 |
 
@@ -91,7 +91,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 ## 脚本（全部由 Claude 跑）
 
 入口 `t2p.py`（init / check / status / doctor）；`check` 对综述分支额外跑 `survey_check.py`。
-研究分支：`lit_scout.py` `baseline_miner.py` `prereg_check.py` `ablation_plan.py` `audit_check.py` `results_check.py` `gate_check.py`。
+研究分支：`lit_scout.py` `baseline_miner.py` `prereg_check.py` `ablation_plan.py` `audit_check.py` `bundle.py` `results_check.py` `gate_check.py` `claims_check.py`。
 综述分支：`survey_check.py`（protocol / coding / claims 三个子命令）+ `gate_check.py`。
 输入转换：`tex_to_md.py`（LaTeX）、`pdf_to_md.py`（已发表 PDF）、`jats_to_md.py`（Europe PMC XML）。
 校准：`calibrate.py` `venue_norms.py`（在已发表语料上重算关口阈值与刊物规范）。

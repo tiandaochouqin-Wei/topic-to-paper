@@ -51,6 +51,7 @@ gates:                      # 由 `t2p.py check` 写回：status pass|fail|crash
   G6: {status: pending, evidence: gate_report.md}
   G6b: {status: pending, evidence: ""}
   G6c: {status: pending, evidence: ""}
+  G6e: {status: pending, evidence: ""}
   G7: {status: pending, evidence: ""}
   G8: {status: pending, evidence: ""}
 

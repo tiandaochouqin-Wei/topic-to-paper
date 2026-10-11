@@ -138,8 +138,8 @@ def build(root):
         if r.get("statement", "").strip():
             nums = numbers_in(r["statement"])
             add("intro", f"claims {r.get('claim_id')}", "贡献条目要含该主张的数字：" + r["statement"][:70], " ".join(sorted(nums)) if nums else r["statement"], "numbers" if nums else "tokens")
-            sec = "results"
-            add(sec, f"claims {r.get('claim_id')} @ {r.get('table_or_figure','')}", "结果节陈述该主张并指向 " + str(r.get("table_or_figure", "")), " ".join(sorted(nums)) if nums else r["statement"], "numbers" if nums else "tokens")
+            if (r.get("table_or_figure") or "").strip():     # a claim without a table/figure (prereg §0 control experiment, protocol claims) is stated in the intro only
+                add("results", f"claims {r.get('claim_id')} @ {r.get('table_or_figure','')}", "结果节陈述该主张并指向 " + str(r.get("table_or_figure", "")), " ".join(sorted(nums)) if nums else r["statement"], "numbers" if nums else "tokens")
     # ---- results: ref vs strongest baseline on primary metric
     mt = os.path.join(root, res.get("main_table", "results/main.csv")); rows = read_csv(mt)
     pm = res.get("primary_metric"); gk = res.get("group_key", "method"); ref = res.get("reference_method", "ours")

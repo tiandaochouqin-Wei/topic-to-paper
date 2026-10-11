@@ -19,7 +19,7 @@ def test_init_have_draft_marks_early_gates_na(tmp_path):
     assert r.returncode == 0, r.out
     st = _state(proj)
     assert st["project"]["entry"] == "have_draft" and st["phase"]["current"] == "P6"
-    assert "G1b" in st["gates"] and "G6b" in st["gates"] and "G6c" in st["gates"]     # template lists every reported gate
+    assert "G1b" in st["gates"] and "G6b" in st["gates"] and "G6c" in st["gates"] and "G6e" in st["gates"]     # template lists every reported gate
     c = run("t2p.py", "check", "--project", ".", cwd=proj)
     for g in ("G1b", "G2", "G3", "G4", "G5"):
         assert f"[N/A] {g}:" in c.out and f"[PENDING] {g}:" not in c.out, c.out

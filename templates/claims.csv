@@ -1,2 +1,2 @@
-claim_id,statement,dataset,metric_convention,evidence_file,table_or_figure,scope_words,verified
-C1,"",,"",results/main.csv,Table 1,"",no
+claim_id,statement,dataset,metric_convention,evidence_file,evidence_key,expected,table_or_figure,scope_words,verified
+C1,"",,"",results/main.csv,"rel:<metric>:ours:<strongest baseline>","-10±0.5",Table 1,"",no
