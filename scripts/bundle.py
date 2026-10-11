@@ -58,9 +58,11 @@ def table_first_col(txt):
             if c and c.lower() not in ("name", "名称", "remove", "去掉/替换什么", "ablation", "method", "方法"): out.append(c)
     return out
 
-def norm(s): return re.sub(r"[^a-z0-9]", "", s.lower())
+def norm(s): return re.sub(r"[^a-z0-9一-鿿]", "", str(s).lower())    # keep CJK: prereg rows are often Chinese prose
 def fuzzy_in(item, pool):
-    n = norm(item); return any(n == norm(p) or n in norm(p) or norm(p) in n for p in pool if norm(p))
+    n = norm(item)
+    if not n: return False                                            # an empty key used to match every pool entry (RS_nowcast: Chinese-only rows all "covered")
+    return any(n == norm(p) or n in norm(p) or norm(p) in n for p in pool if norm(p))
 
 def sha(p):
     h = hashlib.sha256()

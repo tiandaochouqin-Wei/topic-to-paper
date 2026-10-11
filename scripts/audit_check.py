@@ -57,7 +57,9 @@ def load_log(p):
     return None
 
 def truthy(v):
-    return v not in (0, 0.0, False, None, "", "0", "false", "False", [], {})
+    """args value counts as ON. Strings: '0', 'false', 'none', 'null', 'off', 'no' are OFF (RS_nowcast: --cond none was read as on)."""
+    if isinstance(v, str): return v.strip().lower() not in ("", "0", "0.0", "false", "none", "null", "off", "no")
+    return v not in (0, 0.0, False, None, [], {})
 
 # ------------------------------------------------------------------ runs
 def collect_runs(cfg, root):
@@ -225,7 +227,7 @@ def _is_write(seg):
     # open(...) 的 mode 实参可能被 os.path.join(...) 隔开，所以不能用 [^)]*：直接在整段里找写模式字面量
     return bool(re.search(r"\bopen\s*\(", seg) and re.search(r"""["'][wax][btx+]*["']""", seg))
 
-OPTIONAL = re.compile(r"(log|ckpt|checkpoint|best\.pt|last\.pt|\.pt\b|\.pth\b|resume|cache|\bout\b|output|eval\.json|args\.json|meta\.json|results?\.json|\.png|\.pdf|\.csv)", re.I)
+OPTIONAL = re.compile(r"(log|ckpt|checkpoint|best\.pt|last\.pt|\.pt\b|\.pth\b|resume|cache|\bout\b|output|eval\.json|args\.json|meta\.json|manifest\.json|hardware\.json|results?\.json|\.png|\.pdf|\.csv)", re.I)
 
 def check_silent_fallback(cfg, root):
     inputs = set(cfg.get("inputs") or [])

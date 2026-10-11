@@ -117,7 +117,12 @@ def sign_for_metric(es, metric):
     return es
 
 def norm_tok(s):
-    return {w for w in re.sub(r"[^a-z0-9]+", " ", s.lower()).split() if w not in {"no", "without", "w", "o", "the", "a", "of", "and", "remove", "removed", "ablation"}}
+    return {w for w in re.sub(r"[^a-z0-9一-鿿]+", " ", s.lower()).split() if w not in {"no", "without", "w", "o", "the", "a", "of", "and", "remove", "removed", "ablation"}}
+def flat(s): return re.sub(r"[^a-z0-9一-鿿]", "", str(s).lower())
+def row_matches(prereg_row, name, aliases):
+    """ablation.csv name <-> prereg §6 row: token overlap, or results.aliases[name] is a substring of the row (Chinese prose rows)"""
+    if norm_tok(prereg_row) & norm_tok(name) or (norm_tok(name) and norm_tok(name) <= norm_tok(prereg_row)): return True
+    al = flat(aliases.get(name, "")); return bool(al) and al in flat(prereg_row)
 
 def resolve(state_p, prereg_p, project):
     root = os.path.abspath(project); st = load_yaml(os.path.join(root, state_p)); cfg = st.get("results") or {}
@@ -137,11 +142,13 @@ def resolve(state_p, prereg_p, project):
     sig = {m: (statistics.stdev([float(r[m]) for r in ref_rows]) if len(ref_rows) >= 2 else float("nan")) for m in metrics}
     mean = {m: statistics.mean([float(r[m]) for r in ref_rows]) for m in metrics} if ref_rows else {}
     exp = expected_signs(io.open(os.path.join(root, prereg_p), encoding="utf-8").read()) if os.path.exists(os.path.join(root, prereg_p)) else {}
+    aliases = cfg.get("aliases") or {}; waiver = cfg.get("coverage_waiver") or {}
+    exp = {k: v for k, v in exp.items() if not any(flat(w) and flat(w) in flat(k) for w in waiver)}   # rows this stage does not run (results_check WARNs about them)
     print(f"参考 '{ref}': {len(ref_rows)} 行 / seeds {sorted(seeds)}；σ_ref: " + ", ".join(f"{m}={sig[m]:.4f}" for m in metrics))
     print(f"\n{'ablation':22s} " + " ".join(f"{m[:14]:>16s}" for m in metrics) + "   resolvable/total  sign-check")
     tot = res = contra = 0
     for r in abl:
-        name = r["ablation"]; es = next((v for k, v in exp.items() if norm_tok(k) & norm_tok(name) or norm_tok(name) <= norm_tok(k)), "?")
+        name = r["ablation"]; es = next((v for k, v in exp.items() if row_matches(k, name, aliases)), "?")
         cells = []; nres = 0; bad = []
         for m in metrics:
             if r.get(m, "") == "" or not ref_rows: cells.append(f"{'':>16s}"); continue
@@ -159,7 +166,7 @@ def resolve(state_p, prereg_p, project):
             print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   {'ok' if es != '?' else 'no prereg sign'}")
     null_expect = tot * 0.0455   # P(|z| ≥ 2) under H0 for a single-run difference vs seed sd (two-sided, σ√2)
     print(f"\n可解读格 {res}/{tot}（|Δ| ≥ 2·σ_ref·√2）；零假设下期望约 {null_expect:.1f} 格。" + ("**整体在单 run 分辨率极限，不逐格解读**" if res <= null_expect * 1.5 else "整体高于零假设，可逐格解读"))
-    missing = [k for k in exp if not any(norm_tok(k) & norm_tok(r["ablation"]) or norm_tok(r["ablation"]) <= norm_tok(k) for r in abl)]
+    missing = [k for k in exp if not any(row_matches(k, r["ablation"], aliases) for r in abl)]
     if missing: print(f"[FAIL] resolve: prereg §6 有 {len(missing)} 项消融没有 run: {missing}"); fails += 1
     if contra:
         conv = (st.get("experiments") or {}).get("convention_changes") or []

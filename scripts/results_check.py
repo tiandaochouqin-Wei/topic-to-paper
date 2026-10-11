@@ -44,8 +44,9 @@ def get_path(o, path):
     return o
 
 def norm(s):
-    s = re.sub(r"[^a-z0-9]+", " ", str(s).lower())
+    s = re.sub(r"[^a-z0-9一-鿿]+", " ", str(s).lower())
     return {w for w in s.split() if w not in {"no", "without", "w", "o", "the", "a", "of", "and", "remove", "removed", "ablation"}}
+def flat(s): return re.sub(r"[^a-z0-9一-鿿]", "", str(s).lower())
 
 def fuzzy_in(item, pool):
     a = norm(item)
@@ -124,7 +125,10 @@ def main():
         sec = section(md, "primary_metric")
         key = re.sub(r"_.*", "", pm).lower()
         if key not in sec.lower() and pm.lower() not in sec.lower():
-            say("FAIL", "convention", f"prereg §2 没有提到主指标 '{pm}'（主表的主指标必须是预注册的那个）")
+            conv = (st.get("experiments") or {}).get("convention_changes") or []
+            logged_conv = any(pm.lower() in str(c).lower() for c in conv)   # str(), not json.dumps: yaml gives date objects
+            if logged_conv: say("WARN", "convention", f"主指标 '{pm}' 不在 prereg §2，但 state.experiments.convention_changes 登记了它（代理口径）—— 投稿主表必须换回预注册指标")
+            else: say("FAIL", "convention", f"prereg §2 没有提到主指标 '{pm}'（主表的主指标必须是预注册的那个；代理口径要在 state.experiments.convention_changes 登记）")
         else: say("PASS", "convention", f"主指标 {pm} 与 prereg §2 一致")
     if md:
         win = section(md, "inclusion_window"); den = section(md, "denominator")
@@ -154,7 +158,7 @@ def main():
         have_abl = [r.get("ablation") or r.get(gk, "") for r in (abl_rows or [])]
         have_methods = sorted({r.get(gk, "") for r in main_rows})
         aliases = cfg.get("aliases") or {}; waiver = cfg.get("coverage_waiver") or {}
-        _n = lambda s: re.sub(r"[^a-z0-9]", "", str(s).lower())
+        _n = flat
         def _covered(x, pool): return fuzzy_in(x, pool) or any(n in pool and _n(sub) and _n(sub) in _n(x) for n, sub in aliases.items())
         def _waived(x): return any(_n(k) and _n(k) in _n(x) for k in waiver)
         wv = [x for x in pre_abl + pre_base if _waived(x)]
