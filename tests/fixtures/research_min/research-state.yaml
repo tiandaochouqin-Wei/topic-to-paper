@@ -100,9 +100,9 @@ bundle:                     # 远程实验包（bundle.py make|check|tables）�
     seeds: [0, 1, 2]
     seed_flag: "--seed {seed}"
     seeded: [ours, baseA, baseB, no_dom, no_cons]
-    ref: {name: ours, args: "--model ours"}
-    baselines: {baseA: "--model baseA", baseB: "--model baseB"}
-    ablations: {no_dom: "--model ours --beta 0", no_cons: "--model ours --alpha 0"}
+    ref: {name: ours, args: "--model ours --beta 0.1 --alpha 0.5"}        # every critical_params key explicit: a default of 0 would run "ours" as a baseline
+    baselines: {baseA: "--model baseA --beta 0 --alpha 0", baseB: "--model baseB --beta 0 --alpha 0"}
+    ablations: {no_dom: "--model ours --beta 0 --alpha 0.5", no_cons: "--model ours --beta 0.1 --alpha 0"}
     extra: {}
 
 results:

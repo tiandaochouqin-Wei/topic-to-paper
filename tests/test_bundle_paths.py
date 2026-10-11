@@ -67,3 +67,31 @@ def test_readme_does_not_double_the_code_dir(research):
     assert run("bundle.py", "make", "--out", "bundle", cwd=research).returncode == 0
     rd = read(research / "bundle" / "README.md")
     assert "code/code/" not in rd, rd[:600]
+
+
+def test_ref_must_set_every_critical_param_explicitly(research):
+    """2026-10-11 全新项目端到端：ref 只写 --model ours，train.py 的 --beta 默认 0，本文方法按基线配置跑完了全部 seeds，G3 放行。"""
+    _set_bundle_matrix(research, 'ref: {name: ours, args: "--model ours"}')
+    r = run("bundle.py", "check", cwd=research)
+    assert r.fails >= 1 and "beta" in r.out and "显式" in r.out, r.out
+
+
+def test_ref_critical_param_zero_fails(research):
+    _set_bundle_matrix(research, 'ref: {name: ours, args: "--model ours --beta 0 --alpha 0.5"}')
+    r = run("bundle.py", "check", cwd=research)
+    assert r.fails >= 1 and "为 0" in r.out, r.out
+
+
+def test_ablation_relying_on_default_fails(research):
+    _set_bundle_matrix(research, 'ablations: {no_dom: "--model ours --alpha 0.5", no_cons: "--model ours --beta 0.1 --alpha 0"}')
+    r = run("bundle.py", "check", cwd=research)
+    assert r.fails >= 1 and "no_dom" in r.out and "beta" in r.out, r.out
+
+
+def _set_bundle_matrix(project, line):
+    """replace the matrix line that starts with the same key (ref: / ablations: / baselines:)"""
+    p = project / "research-state.yaml"; s = read(p)
+    key = line.split(":", 1)[0]
+    s2, n = re.subn(rf"(?m)^    {key}: .*$", "    " + line, s, count=1)
+    assert n == 1, key
+    write(p, s2)

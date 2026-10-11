@@ -3,13 +3,18 @@
 
   python bundle.py make   [--state research-state.yaml] [--out bundle/]      build the upload package from state.bundle + prereg
   python bundle.py check  [--state ...]                                        G3 half: matrix covers prereg §5/§6, seeds, no leak flags, inputs
-  python bundle.py tables [--state ...] [--runs runs]                          after results come back: runs/*/eval.json -> results/main.csv + ablation.csv
-                                                                               via state.results.metric_map; hardware from hardware.json; never hand-typed
+  python bundle.py ingest <results_*.tar.gz> [--state ...]                     unpack what collect.sh sent back: <code>/runs/<run>/* -> <project>/runs/<run>/,
+                                                                               bundle-level files (smoke_report, failed.txt, slurm_*.out) -> bundle/returned_<date>/
+  python bundle.py tables [--state ...] [--runs runs]                          after ingest: runs/*/eval.json -> results/main.csv + ablation.csv (+ results/main.md
+                                                                               convention note from prereg §3/§4) via state.results.metric_map; hardware from
+                                                                               hardware.json; never hand-typed
 
 state.bundle (see templates/research-state.yaml):
   code_dir, entry ("python train.py --exp {run} {args}"), eval ("python eval.py --exp {runs}"), post (optional, e.g. preds dump),
   env (requirements.txt | environment.yml), python_min, data: [{name, remote, inputs: [...]}], scheduler: bash|slurm,
-  slurm: {partition, gres, time, mem, cpus, modules: [], conda: ""}, smoke: {args: "--epochs 1", runs: [ref]},
+  slurm: {partition, gres, time, mem, cpus, max_parallel, modules: [], conda: ""}, smoke: {args: "--epochs 1", runs: [ref]},
+  require_gpu (default true; false = CUDA absence is INFO in check_env, for CPU-only pipelines and the regression tests),
+  data[i].clip_glob: "*" = every sub-directory is a clip; "." = the data directory itself holds the inputs (no clip level)
   matrix: {seeds: [...], ref: {name, args}, baselines: {name: args}, ablations: {name: args}, extra: {name: args}, seed_flag: "--seed {seed}", seeded: [names]}
 
 Bundle contents:
@@ -17,7 +22,9 @@ Bundle contents:
   check_env.py     CUDA / GPU / disk / every data input exists -> exits non-zero on any miss (silent-fallback guard, remote edition)
   run_one.sh       one run: records hardware.json + git/sha manifest, then entry; eval + post afterwards
   smoke.sh         one short run on the reference config, then eval; proves the pipeline end-to-end in minutes
-  run_all.sh       full matrix (bash: sequential; slurm: generates jobs.sbatch array + submit.sh)
+  run_all.sh       full matrix (bash: sequential, restartable; slurm: check_env then sbatch jobs.sbatch — an array job, one task per matrix row,
+                   finished runs (eval.json present) exit at once so the array is restartable too)
+  sbatch_local.sh  slurm only: a serial emulator of `sbatch` for dry-running jobs.sbatch on a workstation (what the regression suite uses)
   matrix.csv       run_id, role, method/ablation, seed, args — the single source the tables step reads back
   collect.sh       tar runs/*/{args,log,eval,hardware}.json + stats.npz + preds/ (no checkpoints) -> results_<date>.tar.gz
   manifest.json    sha256 of every code file and of prereg.md; tables step refuses results whose manifest differs
@@ -86,7 +93,7 @@ def make(a):
     cdn = os.path.basename(os.path.normpath(code_dir)) or "code"       # name of the code dir INSIDE the bundle
     rows = build_matrix(b)
     with open(os.path.join(out, "matrix.csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["run_id", "role", "name", "seed", "args"]); w.writeheader(); w.writerows(rows)
+        w = csv.DictWriter(f, fieldnames=["run_id", "role", "name", "seed", "args"], lineterminator="\n"); w.writeheader(); w.writerows(rows)   # LF only: jobs.sbatch reads this back on Linux
     # manifest: code + prereg
     man = {"created": datetime.date.today().isoformat(), "files": {}}
     for dp, _, fs in os.walk(code_dir):
@@ -109,12 +116,18 @@ v = sys.version_info; ok(v >= tuple(int(x) for x in "{b.get('python_min', '3.9')
 for mod in {json.dumps(b.get('import_check') or ['numpy', 'torch'])}:
     try: importlib.import_module(mod); ok(True, f"import {{mod}}")
     except Exception as ex: ok(False, f"import {{mod}}: {{ex}}")
+REQUIRE_GPU = {bool(b.get('require_gpu', True))} and "--no-gpu" not in sys.argv   # --no-gpu: Slurm login nodes have no GPU; the job re-checks
 try:
-    import torch; ok(torch.cuda.is_available(), "CUDA available")
+    import torch
+    if torch.cuda.is_available(): ok(True, "CUDA available")
+    elif REQUIRE_GPU: ok(False, "CUDA available")
+    else: print("[INFO] no CUDA here (" + ("--no-gpu: checked again inside the job" if "--no-gpu" in sys.argv else "bundle.require_gpu = false, CPU run accepted") + ")")
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             p = torch.cuda.get_device_properties(i); ok(p.total_memory / 2**30 >= {b.get('min_vram_gb', 8)}, f"GPU{{i}} {{p.name}} {{p.total_memory/2**30:.0f}} GB (need >= {b.get('min_vram_gb', 8)})")
-except Exception as ex: ok(False, f"torch/cuda: {{ex}}")
+except Exception as ex:
+    if REQUIRE_GPU: ok(False, f"torch/cuda: {{ex}}")
+    else: print(f"[INFO] torch unavailable ({{ex}}); bundle.require_gpu = false")
 free = shutil.disk_usage(".").free / 2**30; ok(free >= {b.get('min_disk_gb', 20)}, f"free disk {{free:.0f}} GB (need >= {b.get('min_disk_gb', 20)})")
 DATA = {json.dumps([{"name": d.get("name"), "path": d.get("remote"), "inputs": d.get("inputs") or inputs, "clip_glob": d.get("clip_glob", "*")} for d in data], ensure_ascii=False)}
 for d in DATA:   # remote 里的 ~ 与 $VAR 要在服务器上展开，否则路径存在也会报 MISS
@@ -122,7 +135,7 @@ for d in DATA:   # remote 里的 ~ 与 $VAR 要在服务器上展开，否则路
 for d in DATA:
     ok(os.path.isdir(d["path"]), f"data {{d['name']}} at {{d['path']}}")
     if os.path.isdir(d["path"]):
-        subs = [os.path.join(d["path"], s) for s in sorted(os.listdir(d["path"])) if os.path.isdir(os.path.join(d["path"], s)) and fnmatch.fnmatch(s, d["clip_glob"])] or [d["path"]]
+        subs = [d["path"]] if d["clip_glob"] in ("", ".") else ([os.path.join(d["path"], s) for s in sorted(os.listdir(d["path"])) if os.path.isdir(os.path.join(d["path"], s)) and fnmatch.fnmatch(s, d["clip_glob"])] or [d["path"]])
         ok(len(subs) > 0, f"  {{len(subs)}} clips match '{{d['clip_glob']}}'")
         for inp in d["inputs"]:
             miss = [s for s in subs[:{b.get('check_first_n', 50)}] if not os.path.exists(os.path.join(s, inp))]
@@ -143,7 +156,8 @@ RUN="$1"; shift; ARGS="$*"
 cd "$(dirname "$0")/{cdn}"
 {data_env}
 mkdir -p "runs/$RUN"
-python - "$RUN" <<'PY'
+PYBIN="${{PYTHON:-python}}"   # export PYTHON=python3 on servers where `python` is absent
+"$PYBIN" - "$RUN" <<'PY'
 import json, sys, subprocess, platform, datetime
 r = sys.argv[1]; hw = {{"host": platform.node(), "time": datetime.datetime.now().isoformat(timespec="seconds")}}
 try:
@@ -169,11 +183,11 @@ echo "== done $RUN"
     sm_runs = sm.get("runs") or [ref.get("name", "ref")]
     by_name = {}
     for r in rows: by_name.setdefault(r["name"], r)          # first row = seeds[0]
-    lines = ["#!/usr/bin/env bash", "# smoke: short run(s) on the reference config, then eval. Minutes, not hours. Send back smoke_report.txt.", "set -euo pipefail", 'cd "$(dirname "$0")"', "python check_env.py | tee smoke_report.txt"]
+    lines = ["#!/usr/bin/env bash", "# smoke: short run(s) on the reference config, then eval. Minutes, not hours. Send back smoke_report.txt.", "set -euo pipefail", 'cd "$(dirname "$0")"', '"${PYTHON:-python}" check_env.py | tee smoke_report.txt']
     for n in sm_runs:
         r = by_name.get(n) or {"args": ""}
         lines.append(f'bash {"run_one_smoke.sh" if sm.get("eval") else "run_one.sh"} _smoke_{n} {r["args"]} {sm_args} 2>&1 | tail -40 | tee -a smoke_report.txt')
-    lines.append('python - <<\'PY\' | tee -a smoke_report.txt\nimport json, glob, os\nfor d in sorted(glob.glob("%s/runs/_smoke_*")):\n    have = {f: os.path.exists(os.path.join(d, f)) for f in ["args.json", "log.json", "eval.json", "hardware.json"]}\n    print(os.path.basename(d), have, "log entries:", len(json.load(open(os.path.join(d, "log.json")))) if have["log.json"] else 0)\nPY' % cdn)
+    lines.append('"${PYTHON:-python}" - <<\'PY\' | tee -a smoke_report.txt\nimport json, glob, os\nfor d in sorted(glob.glob("%s/runs/_smoke_*")):\n    have = {f: os.path.exists(os.path.join(d, f)) for f in ["args.json", "log.json", "eval.json", "hardware.json"]}\n    print(os.path.basename(d), have, "log entries:", len(json.load(open(os.path.join(d, "log.json")))) if have["log.json"] else 0)\nPY' % cdn)
     lines.append('echo "SMOKE DONE — send smoke_report.txt back"')
     io.open(os.path.join(out, "smoke.sh"), "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
     # run_all.sh / slurm
@@ -181,9 +195,10 @@ echo "== done $RUN"
     if sched == "slurm":
         sl = b.get("slurm") or {}
         mods = "\n".join(f"module load {m}" for m in (sl.get("modules") or []))
-        conda = f'source activate {sl["conda"]}' if sl.get("conda") else ""
-        sb = f'''#!/usr/bin/env bash
-#SBATCH -J {st.get('project', {}).get('title', 't2p')[:12] or 't2p'}
+        conda = (f'source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate {sl["conda"]} || echo "conda activate {sl["conda"]} failed"') if sl.get("conda") else ""
+        jname = re.sub(r"[^A-Za-z0-9_.-]", "", str(st.get("project", {}).get("title", "")))[:12] or "t2p"
+        sb = f"""#!/usr/bin/env bash
+#SBATCH -J {jname}
 #SBATCH -p {sl.get('partition', 'gpu')}
 #SBATCH --gres={sl.get('gres', 'gpu:1')}
 #SBATCH -t {sl.get('time', '12:00:00')}
@@ -191,31 +206,60 @@ echo "== done $RUN"
 #SBATCH -c {sl.get('cpus', 8)}
 #SBATCH --array=0-{len(rows)-1}%{sl.get('max_parallel', 4)}
 #SBATCH -o slurm_%A_%a.out
+# one array task = one matrix.csv row. Finished runs (eval.json present) exit at once, so re-submitting after a
+# partial failure only runs what is missing; failures are appended to failed.txt. Dry-run without a cluster:
+#   SBATCH="bash sbatch_local.sh" bash run_all.sh
+set -uo pipefail
 {mods}
 {conda}
 cd "$SLURM_SUBMIT_DIR"
-LINE=$(tail -n +2 matrix.csv | sed -n "$((SLURM_ARRAY_TASK_ID+1))p")
-RUN=$(echo "$LINE" | cut -d, -f1); ARGS=$(echo "$LINE" | cut -d, -f5- | sed 's/^"//; s/"$//')
-bash run_one.sh "$RUN" $ARGS
-'''
+PYBIN="${{PYTHON:-python}}"
+LINE=$("$PYBIN" -c 'import csv, sys; r = list(csv.DictReader(open("matrix.csv", encoding="utf-8")))[int(sys.argv[1])]; print(r["run_id"], r["args"])' "$SLURM_ARRAY_TASK_ID")
+RUN=${{LINE%% *}}; ARGS=${{LINE#* }}
+if [ -f "{cdn}/runs/$RUN/eval.json" ]; then echo "skip $RUN (eval.json present)"; exit 0; fi
+"$PYBIN" check_env.py || {{ echo "FAILED $RUN (check_env on $(hostname))" >> failed.txt; exit 1; }}
+echo "task $SLURM_ARRAY_TASK_ID -> $RUN :: $ARGS"
+bash run_one.sh "$RUN" $ARGS || {{ echo "FAILED $RUN" >> failed.txt; exit 1; }}
+"""
         io.open(os.path.join(out, "jobs.sbatch"), "w", encoding="utf-8", newline="\n").write(sb)
-        io.open(os.path.join(out, "run_all.sh"), "w", encoding="utf-8", newline="\n").write('#!/usr/bin/env bash\ncd "$(dirname "$0")"\npython check_env.py && sbatch jobs.sbatch\n')
+        io.open(os.path.join(out, "run_all.sh"), "w", encoding="utf-8", newline="\n").write(
+            '#!/usr/bin/env bash\n# submit the whole matrix as one array job. Login nodes have no GPU, so the pre-flight here skips the CUDA check;\n'
+            '# every array task runs the full check_env.py on its compute node before training.\n'
+            'cd "$(dirname "$0")"\n"${PYTHON:-python}" check_env.py --no-gpu || exit 1\n${SBATCH:-sbatch} jobs.sbatch\n')
+        io.open(os.path.join(out, "sbatch_local.sh"), "w", encoding="utf-8", newline="\n").write("""#!/usr/bin/env bash
+# Serial emulator of `sbatch` for an array job: runs every task of jobs.sbatch one after another in this shell, with the
+# SLURM_* variables the script reads, and writes slurm_<job>_<task>.out like the real thing. For dry runs on a workstation
+# and for the regression suite; it is NOT Slurm (no partition, no GPU allocation, no time limit).
+#   SBATCH="bash sbatch_local.sh" bash run_all.sh
+set -u
+S="${1:?usage: sbatch_local.sh jobs.sbatch}"
+RANGE=$(grep -m1 -oE '^#SBATCH --array=[0-9]+-[0-9]+' "$S" | grep -oE '[0-9]+-[0-9]+$')
+A=${RANGE%-*}; B=${RANGE#*-}
+export SLURM_SUBMIT_DIR="$(pwd)" SLURM_ARRAY_JOB_ID=$$
+echo "Submitted batch job $$ (local emulation: tasks $A-$B run serially)"
+for i in $(seq "$A" "$B"); do
+  SLURM_ARRAY_TASK_ID=$i SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID}_$i" bash "$S" > "slurm_${SLURM_ARRAY_JOB_ID}_${i}.out" 2>&1 || echo "task $i exited non-zero (slurm_${SLURM_ARRAY_JOB_ID}_${i}.out)"
+done
+echo "all $((B-A+1)) tasks finished"
+""")
     else:
-        lines = ["#!/usr/bin/env bash", "# full matrix, sequential. Already-finished runs (eval.json present) are skipped so this is restartable.", "set -uo pipefail", 'cd "$(dirname "$0")"', "python check_env.py || exit 1"]
+        lines = ["#!/usr/bin/env bash", "# full matrix, sequential. Already-finished runs (eval.json present) are skipped so this is restartable.", "set -uo pipefail", 'cd "$(dirname "$0")"', '"${PYTHON:-python}" check_env.py || exit 1']
         for r in rows:
             lines.append(f'[ -f {cdn}/runs/{r["run_id"]}/eval.json ] && echo "skip {r["run_id"]}" || bash run_one.sh {r["run_id"]} {r["args"]} || echo "FAILED {r["run_id"]}" >> failed.txt')
         lines.append('echo "ALL DONE — run collect.sh"')
         io.open(os.path.join(out, "run_all.sh"), "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
     # collect.sh
-    col = f'''#!/usr/bin/env bash
-# pack everything the gates need, no checkpoints. Send results_<date>.tar.gz back.
+    col = f"""#!/usr/bin/env bash
+# pack everything the gates need, no checkpoints. Send results_<date>.tar.gz back; `bundle.py ingest <tar>` unpacks it into the project.
 cd "$(dirname "$0")"
 D=results_$(date +%Y%m%d_%H%M)
-tar czf $D.tar.gz manifest.json matrix.csv smoke_report.txt failed.txt slurm_*.out 2>/dev/null \\
-  $(find {cdn}/runs -maxdepth 2 \\( -name args.json -o -name log.json -o -name eval.json -o -name hardware.json -o -name manifest.json -o -name stats.npz -o -name train.log -o -name eval.log \\) ) \\
-  $(find {cdn}/runs -maxdepth 2 -type d -name preds)
-ls -la $D.tar.gz; echo "send $D.tar.gz back"
-'''
+FILES=()
+for f in manifest.json matrix.csv smoke_report.txt failed.txt slurm_*.out; do [ -e "$f" ] && FILES+=("$f"); done
+while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 \\( -name args.json -o -name log.json -o -name eval.json -o -name hardware.json -o -name manifest.json -o -name stats.npz -o -name train.log -o -name eval.log \\) 2>/dev/null)
+while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 -type d -name preds 2>/dev/null)
+tar czf "$D.tar.gz" "${{FILES[@]}}"
+ls -la "$D.tar.gz"; echo "send $D.tar.gz back ($(find {cdn}/runs -maxdepth 2 -name eval.json 2>/dev/null | wc -l) runs with eval.json)"
+"""
     io.open(os.path.join(out, "collect.sh"), "w", encoding="utf-8", newline="\n").write(col)
     # README
     env = b.get("env", "requirements.txt")
@@ -225,11 +269,11 @@ ls -la $D.tar.gz; echo "send $D.tar.gz back"
 {chr(10).join(f"- {d.get('name')}: `{d.get('remote')}`" for d in data) or '- （state.bundle.data 未填）'}
 
 按顺序：
-1. 建环境：`pip install -r {cdn}/{env}`（或 conda env create -f）
-2. `python check_env.py` —— 任何 MISS 都不要往下跑，把输出发回来
-3. `bash smoke.sh` —— 几分钟；把 `smoke_report.txt` 发回来，我确认后再跑全量
-4. `bash run_all.sh` —— {len(rows)} 个 run（{sched}{'，sbatch 数组' if sched == 'slurm' else '，顺序跑，可中断重跑'}）
-5. `bash collect.sh` —— 把生成的 `results_*.tar.gz` 发回来（不含 checkpoint）
+1. 建环境：`pip install -r {cdn}/{env}`（或 conda env create -f）；`python` 不是 3 的机器先 `export PYTHON=python3`
+2. `python check_env.py{' --no-gpu' if sched == 'slurm' else ''}` —— 任何 MISS 都不要往下跑，把输出发回来{'（登录节点无 GPU，--no-gpu 跳过显卡项；作业内会再查）' if sched == 'slurm' else ''}
+3. {'`srun -p ' + str((b.get('slurm') or {}).get('partition', 'gpu')) + ' --gres=' + str((b.get('slurm') or {}).get('gres', 'gpu:1')) + ' --pty bash smoke.sh`（要在计算节点上跑）' if sched == 'slurm' else '`bash smoke.sh`'} —— 几分钟；把 `smoke_report.txt` 发回来，我确认后再跑全量
+4. `bash run_all.sh` —— {len(rows)} 个 run（{'sbatch 数组作业，一个 task 一个 run；`squeue -u $USER` 看进度，`slurm_*.out` 看日志；中途失败就再跑一次 run_all.sh，已完成的 run 自动跳过，失败的在 failed.txt' if sched == 'slurm' else '顺序跑，可中断重跑，已完成的 run 自动跳过，失败的在 failed.txt'}）
+5. `bash collect.sh` —— 把生成的 `results_*.tar.gz` 发回来（不含 checkpoint）；回来后我跑 `bundle.py ingest` + `tables`
 
 矩阵（matrix.csv）：ref {sum(1 for r in rows if r['role']=='ref')} / baselines {sum(1 for r in rows if r['role']=='baseline')} / ablations {sum(1 for r in rows if r['role']=='ablation')} / extra {sum(1 for r in rows if r['role']=='extra')}，seeds {(b.get('matrix') or {}).get('seeds')}
 每个 run 产出 runs/<run_id>/{{args,log,eval,hardware,manifest}}.json；hardware.json 是主表"同一硬件"规则的证据。
@@ -284,9 +328,17 @@ def check(a):
     elif leaks: say("PASS", "leak", f"矩阵无 run 打开 {leaks}")
     crit = aud.get("critical_params") or {}
     for p in crit:
-        on = [r["run_id"] for r in rows if re.search(r"--" + re.escape(p) + r"\s+(?!0(\.0+)?\b)[\d.]+", r["args"])]
-        off = [r["run_id"] for r in rows if r["role"] == "baseline" and re.search(r"--" + re.escape(p) + r"\s+(?!0(\.0+)?\b)[\d.]+", r["args"])]
+        nz = r"--" + re.escape(p) + r"(?:\s+|=)(?!0(?:\.0+)?(?![\d.]))[\d.]+"          # "--beta 0.1" / "--beta=0.1", not "--beta 0" / "--beta 0.0"
+        anyv = r"--" + re.escape(p) + r"(?:\s+|=)[\d.]+"
+        off = [r["run_id"] for r in rows if r["role"] == "baseline" and re.search(nz, r["args"])]
         if off: say("WARN", "critical", f"基线 run 显式给了 {p}≠0: {off[:4]} —— 若基线代码里该项不生效，args 会撒谎（G3 有效配置关口会抓，但最好在矩阵里就写 0）")
+        # 2026-10-11 全新项目端到端实测：ref 只写 "--model ours"，train.py 的 --beta 默认 0，于是"本文方法"按基线配置跑完了全部 seeds，
+        # 而 G3 有效配置审计因 args=0、日志=0 自洽而放行。本文方法与消融行必须把每个关键超参写在 args 里，不许靠默认值。
+        implicit = [r["run_id"] for r in rows if r["role"] in ("ref", "ablation") and not re.search(anyv, r["args"])]
+        if implicit: say("FAIL", "critical", f"{p} 没有显式写进这些 run 的 args: {implicit[:5]} —— 本文方法与消融行必须写 `--{p} <值>`（去掉就写 0），不能靠 train.py 的默认值：默认值是 0 时本文方法会静默按基线跑")
+        ref_rows = [r for r in rows if r["role"] == "ref"]
+        if ref_rows and not any(re.search(nz, r["args"]) for r in ref_rows): say("FAIL", "critical", f"参照方法的 args 里 {p} 为 0 或缺失：{ref_rows[0]['args']!r} —— 本文方法的关键超参必须非零")
+    if crit and not FAILS: say("PASS", "critical", f"ref 与消融行都显式给了 {list(crit)}")
     inputs = aud.get("inputs") or []; data = b.get("data") or []
     if not data: say("FAIL", "data", "bundle.data 为空：check_env 不知道去哪查输入")
     else:
@@ -345,6 +397,17 @@ def tables(a):
         with open(p, "w", newline="", encoding="utf-8") as f:
             cols = ["run_id", gk, "seed", "table", "hardware"] + list(mm.keys()); w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(main)
         print(f"{p}: {len(main)} rows")
+        # convention note next to the table: results_check reads <main>.md for the prereg §3/§4 markers (|F| ≥ 0.1 N, contact-window, …).
+        # Written from prereg verbatim so the convention on the table is the locked one, not a re-typed paraphrase.
+        pr = os.path.join(root, "prereg.md"); md = io.open(pr, encoding="utf-8").read() if os.path.exists(pr) else ""
+        note_p = os.path.splitext(p)[0] + ".md"
+        if md and not os.path.exists(note_p):
+            den = section(md, "denominator").strip(); win = section(md, "inclusion_window").strip()
+            io.open(note_p, "w", encoding="utf-8").write(
+                f"# {os.path.relpath(p, root).replace(chr(92), '/')} — convention note (bundle.py tables, from prereg.md §3/§4)\n\n"
+                f"## denominator\n{den or '(prereg §3 empty)'}\n\n## inclusion_window\n{win or '(prereg §4 empty)'}\n\n"
+                f"metric columns {list(mm.keys())} are read from runs/<run_id>/{res.get('eval_file', 'eval.json')} via state.results.metric_map {mm}; hardware from hardware.json.\n")
+            print(f"{note_p}: convention note written from prereg §3/§4")
     if abl:
         p = os.path.join(root, res.get("ablation_table", "results/ablation.csv"))
         with open(p, "w", newline="", encoding="utf-8") as f:
@@ -354,14 +417,56 @@ def tables(a):
     if len(hws) > 1: say("WARN", "tables", f"多种硬件混在一起 {hws} —— results_check 会 FAIL，另立 repro 表")
     for rid, why in skipped: print(f"  skipped {rid}: {why}")
     print(f"{len(main)+len(abl)} rows written, {len(skipped)} skipped; 下一步 results_check.py")
+    if skipped and not (main or abl): sys.exit(1)
+
+# ------------------------------------------------------------------ ingest
+def ingest(a):
+    """Unpack what collect.sh produced: <code>/runs/<run>/<file> -> <project>/runs/<run>/<file>; bundle-level files -> bundle/returned_<stamp>/.
+    Refuses paths that would escape the project (tar from an untrusted machine is still a tar)."""
+    st = load_state(a.state); root = os.path.dirname(os.path.abspath(a.state)); res = st.get("results") or {}
+    runs_dir = os.path.join(root, a.runs or res.get("runs_dir", "runs")); os.makedirs(runs_dir, exist_ok=True)
+    if not os.path.exists(a.tar): say("FAIL", "ingest", f"{a.tar} 不存在"); sys.exit(1)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S"); side = os.path.join(root, "bundle", f"returned_{stamp}"); os.makedirs(side, exist_ok=True)
+    n_run, n_side, runs_seen, smoke_seen, refused = 0, 0, set(), set(), []
+    with tarfile.open(a.tar, "r:*") as tf:
+        for m in tf.getmembers():
+            if not m.isfile(): continue
+            parts = [x for x in m.name.replace("\\", "/").split("/") if x not in ("", ".")]
+            if any(x == ".." for x in parts) or m.name.startswith("/"): refused.append(m.name); continue
+            if "runs" in parts and parts.index("runs") + 2 < len(parts):          # <anything>/runs/<run_id>/<rest...>
+                i = parts.index("runs"); rid = parts[i + 1]; rest = parts[i + 2:]
+                if rid.startswith(("_", ".")):                                     # _smoke_* and the like: evidence, not a run
+                    dst = os.path.join(side, "runs", rid, *rest); smoke_seen.add(rid); n_side += 1
+                else:
+                    dst = os.path.join(runs_dir, rid, *rest); runs_seen.add(rid); n_run += 1
+            else:
+                dst = os.path.join(side, *parts); n_side += 1
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with tf.extractfile(m) as src, open(dst, "wb") as out:
+                out.write(src.read())
+    if refused: say("FAIL", "ingest", f"tar 里有越界路径，已拒绝: {refused[:3]}")
+    with_eval = sorted(r for r in runs_seen if os.path.exists(os.path.join(runs_dir, r, res.get("eval_file", "eval.json"))))
+    without = sorted(runs_seen - set(with_eval))
+    say("PASS" if with_eval else "FAIL", "ingest", f"{len(runs_seen)} 个 run 的 {n_run} 个文件 -> {os.path.relpath(runs_dir, root)}/；{len(with_eval)} 个有 eval.json" + (f"，无 eval.json: {without[:6]}" if without else ""))
+    fp = os.path.join(side, "failed.txt")
+    if os.path.exists(fp):
+        lines = [l.strip() for l in io.open(fp, encoding="utf-8", errors="replace") if l.strip()]
+        say("WARN", "ingest", f"failed.txt 有 {len(lines)} 条: {lines[:4]} —— 这些 run 不会进表；修了再补跑，补跑前先在 findings.md 记一条")
+    print(f"{n_side} 个包级文件 -> {os.path.relpath(side, root)}/（smoke_report / failed.txt / slurm_*.out / matrix.csv" + (f"；烟测 run {sorted(smoke_seen)} 也放这里，不进 runs/" if smoke_seen else "") + "）")
+    man_p = os.path.join(root, "bundle", "manifest.json"); got_p = os.path.join(side, "manifest.json")
+    if os.path.exists(man_p) and os.path.exists(got_p):
+        same = json.load(open(man_p)).get("files") == json.load(open(got_p)).get("files")
+        say("PASS" if same else "FAIL", "ingest", "返回的 manifest.json 与本地实验包一致" if same else "返回的 manifest.json 与本地实验包不一致：服务器上改过代码，tables 会拒绝每个 run")
+    print("\n" + ("ALL PASS" if FAILS == 0 else f"{FAILS} FAIL") + "；下一步 `bundle.py tables`"); sys.exit(0 if FAILS == 0 else 1)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("make", "check", "tables"):
+    for n in ("make", "check", "tables", "ingest"):
         p = sub.add_parser(n); p.add_argument("--state", default="research-state.yaml")
         if n == "make": p.add_argument("--out", default="bundle")
         if n == "tables": p.add_argument("--runs", default=""); p.add_argument("--matrix", default=""); p.add_argument("--decimals", type=int, default=3)
-    a = ap.parse_args(); {"make": make, "check": check, "tables": tables}[a.cmd](a)
+        if n == "ingest": p.add_argument("tar", help="results_*.tar.gz produced by collect.sh"); p.add_argument("--runs", default="")
+    a = ap.parse_args(); {"make": make, "check": check, "tables": tables, "ingest": ingest}[a.cmd](a)
 
 if __name__ == "__main__":
     main()

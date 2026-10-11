@@ -61,7 +61,9 @@ def finish(fig, a, src_rows, src_hdr, root, caption):
     fp = os.path.join(root, "figures.csv"); rel = os.path.relpath(out, root).replace("\\", "/")
     rows = list(csv.DictReader(open(fp, encoding="utf-8-sig"))) if os.path.exists(fp) else []
     hdr = list(rows[0].keys()) if rows else ["file", "print_width_mm", "source_data", "inspected", "issues"]   # = templates/figures.csv
-    rows = [r for r in rows if r.get("file") != rel]
+    # t2p.py init copies templates/figures.csv with a placeholder row (figures/fig1.png); a fresh project would FAIL G5 on a
+    # figure that never existed. Drop rows whose file does not exist and was never inspected (= placeholders).
+    rows = [r for r in rows if r.get("file") != rel and not (r.get("inspected", "no") != "yes" and not os.path.exists(os.path.join(root, r.get("file", ""))))]
     new = {h: "" for h in hdr}; new.update({"file": rel, "print_width_mm": str(a.width_mm), "inspected": "no"})
     for k in ("source_data", "source"):
         if k in hdr: new[k] = os.path.relpath(sp, root).replace("\\", "/")
