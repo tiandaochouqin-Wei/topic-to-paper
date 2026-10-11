@@ -323,3 +323,53 @@ def test_g8_blind_copy_leaks_identity(research):
     edit(research / "submission" / "blind.md", "## References", "This work was funded by grant no 12345 to Zhang at Karolinska.\n\n## References")
     r = run("gate_check.py", "submission", cwd=research)
     assert r.fails >= 1 and "盲稿" in r.out
+
+
+# ------------------------------------------------------------------ G1b  tests 2 / 3 judged mechanically (2026-10-11)
+def _scan(research):
+    return research / "literature" / "transfer_scan.md"
+
+
+def test_g1b_architecture_words_are_not_a_correspondence(research):
+    edit(_scan(research), "| platform identity as the nuisance |", "| both use a Transformer encoder with attention |")
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails >= 1 and "T1" in r.out and "架构词" in r.out and "对应物" in r.out, r.out
+
+
+def test_g1b_correspondence_without_domain_noun(research):
+    edit(_scan(research), "| platform identity as the nuisance |", "| the same idea works here too |")
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails >= 1 and "T1" in r.out and "领域" in r.out, r.out
+
+
+def test_g1b_not_yet_applied_is_not_a_failure_point(research):
+    edit(_scan(research), "| the nuisance is in the label channel, not the input, so the discriminator must see the prediction head |",
+         "| has not yet been applied to surgical force estimation |")
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails >= 1 and "T1" in r.out and "还没人用过" in r.out, r.out
+
+
+def test_g1b_failure_point_without_breaking_predicate(research):
+    edit(_scan(research), "| the nuisance is in the label channel, not the input, so the discriminator must see the prediction head |",
+         "| surgical force sensor offset platform calibration regression |")
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails >= 1 and "T1" in r.out and "谓词" in r.out, r.out
+
+
+def test_g1b_failure_point_as_a_label_is_too_short(research):
+    edit(_scan(research), "| the nuisance is in the label channel, not the input, so the discriminator must see the prediction head |", "| offset not modelled |")
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails >= 1 and "T1" in r.out and "太短" in r.out, r.out
+
+
+def test_g1b_ruled_out_rows_are_not_judged(research):
+    """T3 is 淘汰-无失效点 with an empty cell: the author's ruling stands, no FAIL for it."""
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails == 0 and "T3" not in r.out, r.out
+
+
+def test_g1b_claim_source_pointing_at_a_shape_failure(research):
+    edit(research / "literature" / "gap_map.md", "claim_source: gap#A", "claim_source: transfer#T2")
+    edit(_scan(research), "| the offset is force-dependent at contact onset, a constant bias model under-corrects |", "| never tried on surgical robots |")
+    r = run("transfer_scan.py", "check", cwd=research)
+    assert r.fails >= 1 and "transfer#T2" in r.out and "不能作为主张来源" in r.out and "失效点" in r.out, r.out

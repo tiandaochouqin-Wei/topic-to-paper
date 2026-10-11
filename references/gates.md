@@ -16,7 +16,8 @@
 判据：literature/problem_table.csv 存在、≥8 行、tag/question/finding 齐、已读行 ≥60% 填齐 hidden_assumption+failure_scene+missing_experiment、≥1 条缺口被 ≥2 篇共享（`problem_table.py check`，由 transfer_scan check 调用）；gap_map `## 判定` 在 go 时五行（重要性/新颖性/可验证性/可解释性/可推广性）都答且弱项 <3；gap_map.md 有 `## 评测盲区`、`## 邻域默认假设`（可写"未知：查过…"但小节必须在）和 `## 判定`（verdict go|no-go、claim_source gap#X|transfer#Tn、reason）；transfer_scan.md ≥5 个候选、七列齐、域内计数已填（`count` 子命令写入，格式 openalex+local）；verdict go 时至少 1 个候选过三道判定（计数 ≤2 + 对应物非空 + 失效点非空），且 claim_source 指向的行必须过三道判定；verdict no-go 直接 PASS，不进 P2。prereg §1 必须写 `来源: gap#X|transfer#Tn`（规则前锁定的 prereg 降 WARN）。
 为什么：创新点有五个来源（前人明文假设、邻域方法的失效点、评测口径漏洞、自己实验的反常、两领域常识矛盾），原流程只机械化了第一个；遥感项目的主张其实来自第二个（DOFA 的波长条件化），但那是读文献时碰巧带出来的，不是流程强制的。另外原 G1 只要求 gap_map 有 3 个候选，不允许回答"这个方向不值得做"。
 测试：模板原样 3 FAIL；填 5 行（2 过、3 淘汰）ALL PASS；claim_source 指向淘汰行 FAIL；改 no-go 后 PASS。
-漏法：第 2、3 道判定是 Claude 读论文后写的，不是机械的；候选里 arXiv 未录用的标 INFO 不拦。
+第②③道判定的机械部分（2026-10-11）：对应物与失效点两格按**形状**判，词表 = transfer_scan 的领域词行 + problem_table.csv 全部文本格 + gap_map + prereg，减去架构通用词（transformer/attention/encoder/backbone…）。对应物：含 ≥1 个领域词、不全是架构词、不是问题结构列的复述。失效点：≥4 个内容词、含领域词、含失效谓词（not/fails/assumes/leaves/depends/因为/失效…）、不是"还没人用过"（那是第①道）、不是对应物的复述。作者写 淘汰 的行不判（作者的否决优先）；写 候选/选定 而形状不成立的行 FAIL；claim_source 指向的行必须过形状判定。校准：验证轮 5 的 RS_nowcast 行——DOFA 两格过，OmniRSCLIP 无对应物、SMARTIES 失效点无领域词、"both use ViT / not yet applied" 两格全败，与当时的人工判定一致。
+漏法：形状对不等于失效点为真（"DOFA 假设相邻波段信息互补"写得出来但可以是错的）；判定只能保证写了一句"目标领域的 X 让它在 Y 上坏掉"这种形状的话。候选里 arXiv 未录用的标 INFO 不拦。
 2026-10-08 二次扩充（来源：用户给的《人工智能科研论文创新点寻找方法》，采纳了其中可机械化的四条：问题表 + 反复缺口计数、失败案例分析、"值不值得做"五维、§0 现象先于方法；未采纳的是纯写作模板与阅读清单——写进 SKILL.md 原则行即可，不设关口）。
 
 ## G2 预注册八项

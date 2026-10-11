@@ -70,7 +70,7 @@ references/              gates.md (why each gate exists), phases/P0–P8.md + S0
 
 ## Limits (stated honestly)
 
-Fully autonomous publication is not possible: data credentials, compute, pivot decisions after a null result, and the submit button are the user's. The second and third of the three innovation tests (structural correspondence, failure point) are written by Claude after reading a paper, not computed. Shape checks verify form, not whether the claim is right. P4 from the first run to the main table has been validated on a one-epoch smoke run and on a finished 22-run project, not yet end-to-end on a fresh project; the Slurm branch of the bundle is untested.
+Fully autonomous publication is not possible: data credentials, compute, pivot decisions after a null result, and the submit button are the user's. The second and third of the three innovation tests (structural correspondence, failure point) are written by Claude after reading a paper; the gate judges their *shape* against the project's own domain vocabulary (a correspondence must name a domain entity and not just architecture words; a failure point must name a domain entity plus a breaking predicate and must not be "not yet applied to X"), it cannot judge whether the failure point is true. Shape checks verify form, not whether the claim is right. P4 from the first run to the main table has been validated on a one-epoch smoke run and on a finished 22-run project, not yet end-to-end on a fresh project; the Slurm branch of the bundle is untested.
 
 ## License
 

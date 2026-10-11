@@ -12,11 +12,17 @@ whether moving them in is non-trivial. Companion to gap_map.md (inside-field gap
              This is the mechanical test 1: the method has (almost) never been applied to the target domain.
   check   python transfer_scan.py check [--scan literature/transfer_scan.md] [--gap literature/gap_map.md] [--state research-state.yaml]
           -> G1 half: transfer_scan.md has >= 5 candidates with all 7 columns; >= 1 candidate passes the three tests
-             (domain_count <= 2, correspondence written, failure point written) unless gap_map verdict is no-go;
+             (domain_count <= 2, correspondence, failure point) unless gap_map verdict is no-go;
              gap_map.md has sections 评测盲区 / 邻域默认假设 / 判定 (verdict go|no-go, claim_source, reason).
 
-Why three tests (see references/gates.md G1): test 1 is mechanical; tests 2 and 3 are written by Claude after reading the paper.
-"X applied to Y" with no failure point is what reviewers call incremental — the failure point IS the claim.
+The three tests. Test 1 (domain count) is a query. Tests 2 and 3 are judged mechanically on the SHAPE of the cell against the
+project's own domain vocabulary (领域词 line + problem_table.csv + gap_map.md + prereg.md, minus generic architecture words):
+  test 2 对应物: names a domain entity, is not only architecture words ("both use a Transformer"), is not 问题结构 restated.
+  test 3 失效点: >= 4 content words, names a domain entity, carries a breaking predicate (not / fails / assumes / leaves / 因为 / 失效 …),
+                 is not "not yet applied to X" (that is test 1), is not the correspondence restated.
+The judges cannot tell whether the failure point is TRUE — only whether a sentence of the right kind was written; a
+candidate the author marks 淘汰 is never resurrected by them. "X applied to Y" with no failure point is what reviewers
+call incremental — the failure point IS the claim.
 """
 import argparse, csv, io, os, re, sys, json, datetime, sqlite3, urllib.parse, urllib.request, time, xml.etree.ElementTree as ET
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
@@ -183,11 +189,72 @@ def count(a):
 def first_int(s):
     m = re.search(r"\d+", s or ""); return int(m.group()) if m else None
 
-def passes(r):
+# ------------------------------------------------------------------ tests 2 and 3, mechanical
+# Until 2026-10-11 "对应物 non-empty" and "失效点 non-empty" were the whole of tests 2/3: a cell saying "both use a Transformer" or
+# "not yet applied to remote sensing" passed. The judges below do not understand the paper; they check that the cell has the
+# SHAPE of a correspondence (names a domain entity, not only architecture words) and of a failure point (names a domain
+# entity AND a breaking predicate, and is not test 1 restated). The author's 判定 column is then checked against them.
+GENERIC = set("transformer transformers attention cnn convolution convolutional neural network networks deep learning model models architecture backbone module modules layer layers same similar both also framework pipeline end-to-end mlp resnet vit unet diffusion gnn graph llm llms foundation pretrained pretraining train trained training loss method methods approach technique algorithm paradigm scheme design encoder decoder head heads embedding embeddings token tokens block blocks idea works work here too".split())
+STOP2 = set("the a an of to in on for and or with by from as is are be that this we our it its at under over than into via using use used based across between per each all any not no non new novel result results paper work study data set sets can could may might will would should must see has have had does did done its their there here when where which who what how into onto".split())
+BREAK = re.compile(r"\b(not|no|cannot|can't|fails?|failure|breaks?|broken|collapses?|degrades?|violat\w*|assum\w+|invalid\w*|wrong|mismatch\w*|absent|missing|lacks?|ignores?|leaves?|misses?|loses?|under-?(?:estimat|correct|fit|perform|predict|count)\w*|over-?(?:fit|estimat|smooth|correct)\w*|dependent|depends?|requires?|needs?|only|unless|because|since|so\b|whereas|but|however|instead|rather)\b|因为|所以|失效|不成立|无法|不能|假设|但|却|只|仅|缺|忽略|依赖|退化|崩", re.I)
+UNAPPLIED = re.compile(r"\b(not|never|rarely|hasn't|has not|have not|haven't)\s+(yet\s+)?(been\s+)?(applied|used|tried|tested|explored|adopted|transferred|extended)\b|\bno (one|prior work|existing work|previous work)\b|\bnobody\b|未(?:有人|被|曾)?(?:应用|尝试|用于|迁移|探索)|没有?人(?:做|用|试)", re.I)
+
+def stem(w):
+    w = w.lower()
+    return w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+
+def ctoks(s):
+    """content tokens: letters/CJK, hyphen split, stop words out, light plural stemming"""
+    out = []
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9]+|[一-鿿]{2,}", (s or "").replace("-", " ").replace("_", " ")):
+        w = stem(w)
+        if len(w) > 2 and w not in STOP2: out.append(w)
+    return out
+
+def domain_vocab(scan_md, gap_md, prereg_md, pt_path):
+    """tokens that belong to the target domain: the 领域词 line of transfer_scan.md, every text cell of problem_table.csv, gap_map, prereg — minus generic architecture words"""
+    txt = []
+    m = re.search(r"领域词[^：:]*[:：]\s*(.+)", scan_md)
+    if m: txt.append(m.group(1))
+    if pt_path and os.path.exists(pt_path):
+        for r in csv.DictReader(open(pt_path, encoding="utf-8-sig")):
+            txt += [v for k, v in r.items() if k not in ("tag", "year", "venue", "read_depth") and v]
+    txt += [gap_md or "", prereg_md or ""]
+    return {t for t in ctoks(" ".join(txt)) if t not in GENERIC}
+
+def judge_row(r, dom):
+    """-> dict(corr=(ok, why), fail=(ok, why)) for tests 2 and 3 on one transfer_scan row"""
+    struct, corr, fp = col(r, "问题结构"), col(r, "对应物"), col(r, "失效点")
+    st = set(ctoks(struct)); ct = ctoks(corr); ft = ctoks(fp)
+    # test 2: correspondence names something of the target domain, is more than architecture words, and is not 问题结构 again
+    if EMPTY.match(corr): c = (False, "空")
+    else:
+        dom_c = [t for t in dict.fromkeys(ct) if t in dom and t not in GENERIC]
+        if not [t for t in ct if t not in GENERIC]: c = (False, "只有架构词（'都用 Transformer' 不是结构对应）")
+        elif not dom_c: c = (False, "没有目标领域的名词（对应物要说领域里的什么扮演这个结构角色）")
+        elif len(ct) < 2: c = (False, "只有一个词")
+        elif st and len(set(ct) & st) / max(1, len(set(ct))) >= 0.8: c = (False, "与问题结构列重复")
+        else: c = (True, f"领域词 {dom_c[:3]}")
+    # test 3: failure point names a domain entity and a breaking predicate, is a sentence, is not "not yet applied", is not the correspondence again
+    if EMPTY.match(fp): f = (False, "空")
+    else:
+        dom_f = [t for t in dict.fromkeys(ft) if t in dom and t not in GENERIC]
+        pred = BREAK.findall(fp)
+        if UNAPPLIED.search(fp): f = (False, "写的是'还没人用过'——那是第①道判定的内容，不是失效点；失效点要说目标领域的什么让它坏掉")
+        elif len(ft) < 4: f = (False, f"太短（{len(ft)} 个内容词），失效点是一句话不是标签")
+        elif not dom_f: f = (False, "没有目标领域的名词（让它失效的那一点必须是领域里的东西）")
+        elif not pred: f = (False, "没有失效谓词（not / cannot / fails / assumes / leaves / depends / 因为 / 失效 …）")
+        elif ct and len(set(ft) & set(ct)) / max(1, len(set(ft))) >= 0.8: f = (False, "与对应物列重复")
+        else: f = (True, f"领域词 {dom_f[:3]}，谓词 {[p if isinstance(p, str) else next(x for x in p if x) for p in pred][:2]}")
+    return {"corr": c, "fail": f}
+
+def passes(r, dom=None):
     c = col(r, "计数"); n2 = [int(x) for x in re.findall(r"\d+", c)]
     if "?" in c or not n2: return False                      # OpenAlex not reached -> mechanical test not done
     if re.search(r"淘汰", col(r, "判定")): return False        # author already ruled it out
-    return sum(n2) <= 2 and not EMPTY.match(col(r, "对应物")) and not EMPTY.match(col(r, "失效点"))
+    if sum(n2) > 2: return False
+    if dom is None: return not EMPTY.match(col(r, "对应物")) and not EMPTY.match(col(r, "失效点"))
+    j = judge_row(r, dom); return j["corr"][0] and j["fail"][0]
 
 def section(md, name):
     m = re.search(r"^(#{1,4})\s*\d*\.?\s*" + re.escape(name) + r"\b.*?$", md, re.M | re.I)
@@ -248,7 +315,22 @@ def check(a):
         if unk: say("FAIL", f"域内计数的 OpenAlex 部分未取到（429/断网），重跑 `count`: {unk[:5]}")
         pre = [col(r, "方法") for r in rows if re.search(r"arxiv|preprint|未录用", col(r, "来源"), re.I) and not re.search(r"NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|TPAMI|Nature|Science|TGRS|MICCAI|accepted", col(r, "来源"), re.I)]
         if pre: say("INFO", f"{len(pre)} 个候选仅为预印本（未同行评审）: {pre[:5]} —— 进 prereg 时在 §5 注明")
-        good = [col(r, "方法") for r in rows if passes(r)]
+        # tests 2 and 3, mechanical: shape of the 对应物 / 失效点 cells against the project's domain vocabulary
+        prereg_p = os.path.join(os.path.dirname(os.path.abspath(a.gap)), "..", "prereg.md")
+        dom = domain_vocab(scan, gap, io.open(prereg_p, encoding="utf-8").read() if os.path.exists(prereg_p) else "", pt)
+        if len(dom) < 15: say("WARN", f"领域词表只有 {len(dom)} 个词（来自 transfer_scan 的领域词行、problem_table、gap_map、prereg）：第②③道判定的机械部分会偏松")
+        judged = {col(r, "方法"): judge_row(r, dom) for r in rows}
+        live = [r for r in rows if not re.search(r"淘汰", col(r, "判定"))]
+        for r in live:
+            j = judged[col(r, "方法")]
+            for name, key, lab in (("对应物", "corr", "②"), ("失效点", "fail", "③")):
+                ok, why = j[key]
+                if not ok: say("FAIL", f"{col(r, '#') or col(r, '方法')} {col(r, '方法')[:30]}: 第{lab}道判定（{name}）不成立 —— {why}")
+        # the author's 判定 must agree with the judges: a row ruled out as 无对应/无失效点 whose cell actually passes is fine (author is stricter);
+        # a row marked 候选/选定 that fails a judge is not.
+        agree = [col(r, "方法") for r in live if judged[col(r, "方法")]["corr"][0] and judged[col(r, "方法")]["fail"][0]]
+        if agree: say("PASS", f"{len(agree)}/{len(live)} 个未淘汰候选的对应物与失效点形状成立（领域词 {len(dom)} 个）")
+        good = [col(r, "方法") for r in rows if passes(r, dom)]
         if good: say("PASS", f"{len(good)} 个候选过三道判定（域内计数≤2 + 对应物 + 失效点）: {good}")
         elif verdict == "no-go": say("INFO", "无候选过三道判定，与 no-go 判定一致")
         else: say("FAIL", "没有候选过三道判定：要么补读论文写出对应物/失效点，要么 gap_map 判定改 no-go")
@@ -256,7 +338,9 @@ def check(a):
             tid = src.split("#", 1)[1].upper(); tid = tid if tid.startswith("T") else "T" + tid
             hit = [r for r in rows if col(r, "#").upper() == tid or col(r, "方法").upper() == tid]
             if not hit: say("FAIL", f"claim_source {src} 在 transfer_scan 表里找不到行 #{tid}")
-            elif not passes(hit[0]): say("FAIL", f"claim_source {src}（{col(hit[0], '方法')}）没有过三道判定，不能作为主张来源")
+            elif not passes(hit[0], dom):
+                j = judged[col(hit[0], "方法")]; why = "；".join(f"{n}: {w}" for n, (ok, w) in (("对应物", j["corr"]), ("失效点", j["fail"])) if not ok) or "域内计数 > 2 或已淘汰"
+                say("FAIL", f"claim_source {src}（{col(hit[0], '方法')}）没有过三道判定，不能作为主张来源 —— {why}")
             else: say("PASS", f"主张来源 {src} = {col(hit[0], '方法')}，三道判定通过")
     print("\n" + ("ALL PASS" if FAILS == 0 else f"{FAILS} FAIL")); sys.exit(0 if FAILS == 0 else 1)
 
