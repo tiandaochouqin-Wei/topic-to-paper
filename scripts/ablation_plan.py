@@ -136,7 +136,13 @@ def resolve(state_p, prereg_p, project):
     metrics = [c for c in abl[0].keys() if c not in ("ablation", "run_id", "seed", "hardware", "table", gk) and re.match(r"^-?\d", (abl[0][c] or "x"))]
     # reference seeds from main.csv (same hardware as ablation rows if a hardware column exists)
     hw_abl = {r.get("hardware") for r in abl if r.get("hardware")}
-    ref_rows = [r for r in main if r.get(gk) == ref and (not r.get("hardware") or not hw_abl or r.get("hardware") in hw_abl)]
+    # multi-dataset main table + single-dataset ablation table (tpami_medimg 2026-10-12): the reference's seed spread must come from the
+    # SAME dataset as the ablation rows, otherwise sigma_ref is the spread across datasets. results.dataset_col names the column;
+    # default = the first column among dataset/task/data present in both tables.
+    dcol = cfg.get("dataset_col") or next((c for c in ("dataset", "task", "data") if abl and c in abl[0] and main and c in main[0]), None)
+    dvals = {r.get(dcol) for r in abl if r.get(dcol)} if dcol else set()
+    ref_rows = [r for r in main if r.get(gk) == ref and (not r.get("hardware") or not hw_abl or r.get("hardware") in hw_abl) and (not dvals or r.get(dcol) in dvals)]
+    if dvals: print(f"参照行限定在 {dcol} ∈ {sorted(dvals)}（与消融行同数据集）")
     seeds = {r.get("seed") for r in ref_rows}
     fails = 0
     if len(seeds) < 2:

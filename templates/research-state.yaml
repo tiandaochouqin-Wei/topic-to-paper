@@ -118,6 +118,7 @@ results:                    # G4，scripts/results_check.py 机械执行
   predictions: []                     # 事前预测符号检验：- {a: ours, b: no_dom, metric: rmse_E5, sign: "+"}；反号且 findings.md 无记录 = FAIL
   reproductions: []                   # 基线复现 vs 原论文报告值：- {method: RCNN, metric: rmse_E1, reported: 0.52, reported_std: 0.03}（tol 默认 2×std，或直接给 tol）；超差且 findings.md 无记录 = FAIL
   findings: findings.md               # 反常记录：每条含方法名与指标名，先记录再继续训练
+  dataset_col: ""                     # 主表跨多个数据集时，消融分辨率的参照行只取与 ablation.csv 同一数据集（空 = 自动找 dataset/task/data 列）
   aliases: {}                         # 矩阵/表里的短名 -> prereg §5/§6 行的子串，如 {cwl: "中心波长", nominal: "Nominal"}；名字对不上时用
   coverage_waiver: {}                 # 本阶段不跑的 prereg 基线/消融（prereg 行子串 -> 理由），bundle check / results_check 报 WARN 不 FAIL；投稿主表不得带豁免
 

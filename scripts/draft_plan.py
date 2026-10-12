@@ -55,8 +55,10 @@ def ms_section(md, key):
 STOP = set("the a an of to in on for and or with by from as is are be that this we our it its at under over than into via using use used based across between per each all any not no non new novel method methods approach model models result results paper work study data set sets".split())
 def toks(s):
     return [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}|[一-鿿]{2,}", s.lower()) if w not in STOP]
+CJK = re.compile(r"[一-鿿]")
 def overlap(need, hay):
     need = [t for t in dict.fromkeys(toks(need))]
+    if not CJK.search(hay): need = [t for t in need if not CJK.search(t)]   # English manuscript: CJK probe tokens (bilingual prereg) cannot match by construction
     if not need: return 1.0
     h = hay.lower()
     return sum(1 for t in need if t in h) / len(need)
@@ -149,7 +151,7 @@ def build(root):
             try: by[r[gk]].append(float(r[pm]))
             except Exception: pass
         if ref in by and len(by) > 1:
-            lower_better = bool(re.search(r"rmse|mae|error|loss|nll|ece|fid", pm, re.I))
+            lower_better = bool(re.search(r"rmse|mae|mse|error|loss|nll|ece|fid|risk|fnr|fpr|miscoverage|brier|crps|width|size|latency|wer|cer", pm, re.I))
             rv = statistics.mean(by[ref]); others = {k: statistics.mean(v) for k, v in by.items() if k != ref}
             best = min(others, key=others.get) if lower_better else max(others, key=others.get)
             rel = (others[best] - rv) / others[best] * 100 if lower_better else (rv - others[best]) / others[best] * 100
@@ -208,6 +210,10 @@ def check(a):
         if k == "name":
             ok = bool(re.search(r"(?<![A-Za-z0-9])" + re.escape(p) + r"(?![A-Za-z0-9])", hay, re.I)) or overlap(p, hay) >= 0.99
             if ok and len(p) <= 2: it = {**it, "level": "WARN", "must": it["must"] + "（名字太短，匹配不可靠：人工确认）"}; ok = False
+            if not ok and CJK.search(p) and not CJK.search(hay):   # Chinese prereg row, English manuscript: match on the Latin tokens of the row; none -> human check
+                lat = [t for t in dict.fromkeys(toks(p)) if not CJK.search(t)]
+                if lat: ok = overlap(" ".join(lat), hay) >= 0.99
+                else: it = {**it, "level": "WARN", "must": it["must"] + "（中文行无拉丁词元，英文稿无法机械匹配：人工确认）"}; ok = False
         elif k == "numbers": ok = all(n in hay for n in p.split())
         elif k == "number": ok = p in hay
         elif k == "number_prefix": ok = p in hay
