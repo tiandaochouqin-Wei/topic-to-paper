@@ -42,6 +42,20 @@ def grab_cmd(s, cmd):
     body, _ = balanced(s, m.end() - 1)
     return body
 
+def tabular_body(inner):
+    """body of the first tabular/tabular* in inner, with the (possibly nested, e.g. p{0.62\\columnwidth} or @{}) preamble consumed by brace matching."""
+    m = re.search(r"\\begin\{tabular\*?\}", inner)
+    if not m: return None
+    i = m.end()
+    while i < len(inner) and inner[i] in " \t\n": i += 1
+    if i < len(inner) and inner[i] == "{":           # tabular*: first group is the width, second the preamble
+        _, i = balanced(inner, i)
+        j = i
+        while j < len(inner) and inner[j] in " \t\n": j += 1
+        if j < len(inner) and inner[j] == "{": _, i = balanced(inner, j)
+    e = re.search(r"\\end\{tabular\*?\}", inner[i:])
+    return inner[i:i + e.start()] if e else inner[i:]
+
 def tabular_to_md(body):
     body = re.sub(r"\\(?:toprule|midrule|bottomrule|hline|cline\{[^}]*\}|cmidrule(?:\([^)]*\))?\{[^}]*\})", "", body)
     body = re.sub(r"\\multicolumn\{\d+\}\{[^}]*\}\{((?:[^{}]|\{[^{}]*\})*)\}", r"\1", body)
@@ -115,8 +129,8 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
         for lm in re.finditer(r"\\label\{([^}]+)\}", inner): labels[lm.group(1)] = f"{tag} {n}"
         out = f"\n\n**{tag} {n}.** {cap}\n\n"
         if is_tab:
-            tm = re.search(r"\\begin\{tabular\*?\}(?:\{[^}]*\})+(.*?)\\end\{tabular\*?\}", inner, re.S)
-            if tm: out += tabular_to_md(tm.group(1)) + "\n\n"
+            tb = tabular_body(inner)
+            if tb is not None: out += tabular_to_md(tb) + "\n\n"
         # a graphic inside \begin{subfigure}{0.48\textwidth} is 0.48 of the base, whatever its own width= says relative to \linewidth
         sub_scale = {}
         for sm in re.finditer(r"\\begin\{subfigure\}(?:\[[^\]]*\])?\{\s*([\d.]*)\s*\\(textwidth|linewidth|columnwidth)\s*\}(.*?)\\end\{subfigure\}", inner, re.S):
@@ -176,6 +190,7 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
         else:
             md_refs.append(f"[{i}] (bib key not found: {k})"); bib_out.append(f"@misc{{r{i},\n  title = {{{k}}},\n}}")
     os.makedirs(os.path.join(out_dir, "paper"), exist_ok=True)
+    body = re.sub(r"\$\s*([+\-\u2212]?\d+(?:\.\d+)?)\s*\$", r"\1", body)   # $-37$ is a number, not a formula: keep it visible to the numbers gate
     md = f"# {title}\n\n{body.strip()}\n\n## References\n\n" + "\n".join(md_refs) + "\n"
     io.open(os.path.join(out_dir, "paper", "manuscript.md"), "w", encoding="utf-8").write(md)
     out_bib = os.path.join(out_dir, "paper", "refs.bib")

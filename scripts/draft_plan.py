@@ -147,12 +147,15 @@ def build(root):
     pm = res.get("primary_metric"); gk = res.get("group_key", "method"); ref = res.get("reference_method", "ours")
     if rows and pm and pm in rows[0]:
         by = collections.defaultdict(list)
+        seed0 = min((r.get("seed") for r in rows if str(r.get("seed", "")).strip() != ""), key=lambda x: float(x), default=None)   # one slice: the first seed (repeat rows must not shift one method's mean)
         for r in rows:
+            if seed0 is not None and str(r.get("seed", "")).strip() not in ("", str(seed0)): continue
             try: by[r[gk]].append(float(r[pm]))
             except Exception: pass
         if ref in by and len(by) > 1:
             lower_better = bool(re.search(r"rmse|mae|mse|error|loss|nll|ece|fid|risk|fnr|fpr|miscoverage|brier|crps|width|size|latency|wer|cer", pm, re.I))
             rv = statistics.mean(by[ref]); others = {k: statistics.mean(v) for k, v in by.items() if k != ref}
+            if lower_better: others = {k: v for k, v in others.items() if v > 0} or others   # a risk identically 0 is a trivial set, not a strongest baseline
             best = min(others, key=others.get) if lower_better else max(others, key=others.get)
             rel = (others[best] - rv) / others[best] * 100 if lower_better else (rv - others[best]) / others[best] * 100
             add("results", "main.csv 主指标", f"结果节必须给出 {ref} 相对最强基线 {best} 在 {pm} 上的相对变化（约 {rel:.0f}%，正文可取整到 ±1）", f"{rel:.0f}", "number_pm1")

@@ -193,3 +193,17 @@ def test_tex_to_md_expands_inputs_and_merges_figures_csv(research):
     assert rows["figures/fig_main.pdf"]["inspected"] == "yes" and rows["figures/fig_main.pdf"]["source_data"] == "results/summary.csv"
     assert rows["figures/fig_abl_a.pdf"]["print_width_mm"].startswith("91") and rows["figures/fig_main.png"]["inspected"] == "yes"   # earlier rows survive
     assert "he2016resnet" in read(research / "paper" / "refs.bib")             # the project bib is not rewritten with r1..rN keys
+
+
+def test_tex_to_md_nested_tabular_preamble_and_number_math(research):
+    """p{0.62\\columnwidth} / @{} in a tabular preamble must not leak into the table rows (the 0.62 would trip the numbers gate);
+    inline math that is only a signed number ($-19$) is unwrapped so the number stays visible to the gates."""
+    m = _p(research, MAIN)
+    edit(m, "\\begin{tabular}{lcc}", "\\begin{tabular}{@{}p{0.62\\columnwidth}cc@{}}")
+    edit(m, "\\section{Conclusion}", "The change is $-19$\\% on E1.\n\n\\section{Conclusion}")
+    r = run("tex_to_md.py", "paper/latex/main.tex", ".", "--bib", "paper/refs.bib", cwd=research)
+    assert r.returncode == 0, r.out
+    md = read(research / "paper" / "manuscript.md")
+    assert "0.62" not in md and "columnwidth" not in md
+    assert "| baseA | 0.250 | 0.352 |" in md
+    assert "-19% on E1" in md

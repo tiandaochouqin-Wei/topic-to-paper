@@ -373,3 +373,23 @@ def test_g1b_claim_source_pointing_at_a_shape_failure(research):
     edit(_scan(research), "| the offset is force-dependent at contact onset, a constant bias model under-corrects |", "| never tried on surgical robots |")
     r = run("transfer_scan.py", "check", cwd=research)
     assert r.fails >= 1 and "transfer#T2" in r.out and "不能作为主张来源" in r.out and "失效点" in r.out, r.out
+
+
+def test_g6b_relative_change_uses_one_seed_slice(research):
+    """an extra seed row of one method must not move the derived 'ref vs strongest baseline' number (the manuscript says 19.2%)."""
+    mt = research / "results" / "main.csv"
+    write(mt, read(mt).rstrip("\n") + "\nours_s3,ours,3,A2000,0.150,0.250\n")
+    _plan(research)
+    r = run("draft_plan.py", "check", "--project", ".", cwd=research)
+    assert r.fails == 0, r.out
+    assert "约 19%" in read(research / "paper" / "draft_plan.md")
+
+
+def test_g6b_zero_risk_baseline_is_not_strongest(research):
+    """a baseline whose lower-is-better metric is identically 0 (a trivial set) is skipped when picking the strongest baseline."""
+    mt = research / "results" / "main.csv"
+    write(mt, read(mt).rstrip("\n") + "\ntrivial_s0,trivial,0,A2000,0.000,0.000\n")
+    _plan(research)
+    r = run("draft_plan.py", "check", "--project", ".", cwd=research)
+    assert r.fails == 0, r.out
+    assert "baseA" in read(research / "paper" / "draft_plan.md") and "最强基线 trivial" not in read(research / "paper" / "draft_plan.md")
