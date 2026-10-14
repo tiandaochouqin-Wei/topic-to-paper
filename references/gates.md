@@ -55,6 +55,10 @@
 为什么：matplotlib 的 figure.dpi 是屏幕值，九张图曾全低于 300 而屏幕上看不出来。
 漏法：字号达标的图照样有版面缺陷，无自检的图每张至少一个：图例穿线、图例溢出、刻度粘连。
 
+**印刷字号（验证轮 15 新增）**：矢量图用 PyMuPDF 读文本层，字号 × (print_width_mm / 原图宽) = 印刷字号；最小值 < `target.min_font_pt`（默认 5）FAIL，< 下限 + 1 WARN，无文本层 INFO。为什么：一张 83 mm 画的图排到半栏 44 mm，字号 3.5 pt，屏幕预览看不出来；G5 以前只查 dpi 和"已目测"，目测看的是放大的 PNG。
+**双纵轴**：同一页左右两侧都有纵向轴标签 → WARN（dataviz 规则：两种量纲各画一个面板）。
+**图类型覆盖**：按 `target.family` 取 references/figure-norms.md 里 ≥70% 已发表论文含有的图类型（cs_journal：overview / qualitative / comparison / ablation；cs_conf：前三），每种至少命中一条题注（`figure_norms.FIGURE_TYPES` 的关键词规则），否则要在 figures.csv 的 issues 列写 `no <type>: <为什么不需要>`；缺且未豁免 → WARN（题注关键词是启发式，不 FAIL）。为什么：tpami_medimg 关口全绿时没有总览图也没有定性图，同类期刊 89% / 81% 的论文都有。
+
 ## G6 正文六项
 ### refs
 bib 解析支持嵌套花括号与无尾逗号；DOI 从 doi/url 字段抽，arXiv 编号从 note/url/journal 字段抽（很多 bib 把 arXiv 写在 note 里）。CrossRef `works/{doi}` 取 title，与 bib title 做序列比率，<0.85 判 FAIL。PubMed 走 efetch 时限定 `PubmedData` 下的 ArticleId，否则会取到该文参考文献的 DOI。

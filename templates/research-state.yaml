@@ -18,6 +18,7 @@ target:
   ref_max: null
   columns: single           # single | double
   min_dpi: 300
+  min_font_pt: 5           # G5：矢量图按印刷宽度换算后的最小字号（pt）；低于它 FAIL，低于它 +1 WARN
   blind: false
   field: ""               # cv | ml | medimg | nature：加载 references/acronym-norms.csv 的领域缩略语规范
   family: ""              # cs_conf | cs_journal | nature：写法画像（references/venue-profiles.md），空则由 venue 名推断；决定章节顺序、篇幅、禁用词、统计写法

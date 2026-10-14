@@ -45,7 +45,7 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 | G2 preregistration | metric/denominator/window changed after seeing results; no failure branch; no pre-stated signs |
 | G3 build audit | target-domain labels leak into training; an `args.beta=0.1` that never took effect; a missing input directory silently disabling a modality |
 | G4 results | numbers not traceable to eval files; stale evals; mixed hardware in one table; ablation cells inside seed noise read as effects; anomalies patched instead of recorded |
-| G5 figures | dpi measured on screen not at print width; legibility never inspected |
+| G5 figures | dpi measured on screen not at print width; fonts unreadable after the figure is scaled into a half column; expected figure types (overview, qualitative, comparison, ablation) missing without a stated reason; dual-axis plots |
 | G6 manuscript | DOI strings that resolve to other papers; orphan figures; acronyms never expanded; "outperforms all" without a scope; table numbers that drift from result files; venue hard limits |
 | G6b/G6c writing | the sentence a section must contain is missing or in the wrong section; a CS-shaped draft sent to a Nature-family journal (Related Work, Conclusion, contribution list, equations in the main text) |
 | G6e claims | a "Here we show" sentence or contribution bullet that no claims row backs; a claims row whose number the result files no longer produce; an ablation cell inside seed noise written up as an effect; "outperforms all" with no row saying all of what, on which table |

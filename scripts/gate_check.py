@@ -16,7 +16,7 @@ gate_check.py — topic-to-paper 的机械关口。
 
 输出 gate_report.md；任一 FAIL 返回 1。只用标准库；dpi 需 Pillow，refs 需联网。
 """
-import argparse, csv, json, os, re, sys, time, urllib.request, urllib.parse, urllib.error, difflib
+import argparse, sys, csv, json, os, re, sys, time, urllib.request, urllib.parse, urllib.error, difflib
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -486,6 +486,78 @@ def gate_dpi(a):
             bad += 1; say("FAIL", "dpi", f"{f} 未裁图目测 (inspected != yes)")
     if bad == 0:
         say("PASS", "dpi", f"{n} 张图全部 ≥{min_dpi} dpi 且有来源、已目测（容差带 {band}，小图豁免 {tiny}）")
+    _dpi_print_fonts(a)
+    _dpi_coverage(a)
+
+FAMILY_MUST_TYPES = {"cs_journal": ["overview", "qualitative", "comparison", "ablation"], "cs_conf": ["overview", "qualitative", "comparison"], "nature": []}
+# types that >= 70% of published papers in the family carry (references/figure-norms.md, "按家族" table, 590-paper sample); nature families
+# are too heterogeneous for a must-list, so none is enforced there.
+
+def _dpi_print_fonts(a):
+    """printed font size of every vector figure = span size x (print_width_mm / native width); smallest below min_font_pt -> FAIL, below +1 -> WARN"""
+    try:
+        import fitz
+    except ImportError:
+        say("WARN", "dpi", "未安装 PyMuPDF（pip install pymupdf），跳过印刷字号检查"); return
+    min_pt = 5.0
+    try:
+        import yaml
+        st = yaml.safe_load(read(a.state)); min_pt = float(st["target"].get("min_font_pt") or 5.0)
+    except Exception:
+        pass
+    bad = 0; checked = 0
+    for row in csv.DictReader(open(a.figures, encoding="utf-8-sig")):
+        f = row["file"]
+        if not f.lower().endswith(".pdf") or not os.path.exists(f): continue
+        try:
+            doc = fitz.open(f); pg = doc[0]
+            spans = [dict(sp, dir=l.get("dir", (1, 0))) for b in pg.get_text("dict")["blocks"] for l in b.get("lines", []) for sp in l["spans"] if sp["text"].strip()]   # rotation is a line property
+            native_mm = pg.rect.width / 72 * 25.4; w_mm = float(row["print_width_mm"] or native_mm)
+        except Exception as ex:
+            say("WARN", "dpi", f"{f} 读不了文本层: {ex}"); continue
+        checked += 1
+        if not spans:
+            say("INFO", "dpi", f"{f} 无文本层（栅格或已转曲线）：字号只能目测"); continue
+        scale = w_mm / native_mm if native_mm else 1.0
+        sizes = sorted(sp["size"] * scale for sp in spans); lo, med = sizes[0], sizes[len(sizes) // 2]
+        smallest = min(spans, key=lambda sp: sp["size"])["text"].strip()[:30]
+        if lo < min_pt:
+            bad += 1; say("FAIL", "dpi", f"{f} 印刷最小字号 {lo:.1f} pt < {min_pt:g} pt（{native_mm:.0f} mm 原图排到 {w_mm:.0f} mm；最小的是 \"{smallest}\"）：按印刷宽度重画，不要缩放整图")
+        elif lo < min_pt + 1:
+            say("WARN", "dpi", f"{f} 印刷最小字号 {lo:.1f} pt（中位 {med:.1f}）：接近下限，确认是角标/刻度而不是正文标签")
+        else:
+            say("PASS", "dpi", f"{f} 印刷字号 {lo:.1f}–{med:.1f} pt @ {w_mm:.0f} mm")
+        # dual axis: y-axis labels (rotated text) on both the left and the right edge of the page
+        rot = [sp for sp in spans if abs(sp.get("dir", (1, 0))[0]) < 0.3 and len(sp["text"].strip()) > 3]
+        if rot:
+            xs = [sp["bbox"][0] for sp in rot]; W = pg.rect.width
+            if any(x < 0.15 * W for x in xs) and any(x > 0.85 * W for x in xs):
+                say("WARN", "dpi", f"{f} 左右两侧都有纵向轴标签：双纵轴图。两种量纲各画一个面板，或归一到同一底（dataviz 规则）")
+    if checked and bad == 0: say("PASS", "dpi", f"{checked} 张矢量图的印刷字号全部 ≥ {min_pt:g} pt")
+
+def _dpi_coverage(a):
+    """figure types the venue family expects (>= 70% of published papers) must match a caption or be waived in figures.csv issues ('no <type>: <why>')"""
+    fam = ""
+    try:
+        import yaml
+        st = yaml.safe_load(read(a.state)); fam = (st.get("target") or {}).get("family") or ""
+    except Exception:
+        pass
+    must = FAMILY_MUST_TYPES.get(fam)
+    if not must: return
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import figure_norms as fn
+    except Exception as ex:
+        say("WARN", "dpi", f"figure_norms 不可用（{ex}），跳过图类型覆盖"); return
+    if not os.path.exists(a.manuscript): return
+    caps = [l for l in read(a.manuscript).splitlines() if re.match(r"^\*\*(Fig\.|Figure)\s*S?\d+", l)]
+    found = {name for name, rx in fn.FIGURE_TYPES if any(re.search(rx, c, re.I) for c in caps)}
+    waived = " ".join((r.get("issues") or "") for r in csv.DictReader(open(a.figures, encoding="utf-8-sig")))
+    missing = [t for t in must if t not in found and not re.search(r"\bno\s+" + t + r"\s*:", waived, re.I)]
+    if missing:
+        say("WARN", "dpi", f"{fam} 论文 ≥70% 含的图类型本文题注没有命中: {missing}（references/figure-norms.md）。补图，或在 figures.csv 的 issues 列写 'no {missing[0]}: <为什么不需要>'")
+    else:
+        say("PASS", "dpi", f"{fam} 的常见图类型 {must} 均有题注命中或已写明豁免（题注共 {len(caps)} 条）")
 
 # ----------------------------------------------------------------- limits
 def gate_limits(a):
