@@ -6,7 +6,7 @@
 
 | 席位 | 只问这些问题 | 必须回到的文件 |
 |---|---|---|
-| R1 方法学 | 主张的作用域有没有越过数据集与口径？每个"更好"有没有 n、seeds、检验？消融格是否在 seed 噪声内却被解读？含命题的稿子：每条命题是否独立重推过证明（量词、期望还是概率、比值损失的分母）？正文里的"不可能/任何/从不"是否逐句对到某条命题？置信区间的重采样单位是否等于 prereg 写的单位？ | results/main.csv、ablation.csv、prereg.md §3/§4/§7、paper/theory_notes.md、分析脚本的重采样代码 |
+| R1 方法学 | 主张的作用域有没有越过数据集与口径？每个"更好"有没有 n、seeds、检验？消融格是否在 seed 噪声内却被解读？含命题的稿子：每条命题是否独立重推过证明（量词、期望还是概率、比值损失的分母）？正文里的"不可能/任何/从不"是否逐句对到某条命题？置信区间的重采样单位是否等于 prereg 写的单位？经验陈述里的"从不/每一对/所有任务"在换一个预测器或缩小测试集后是否仍成立？ | results/main.csv、ablation.csv、prereg.md §3/§4/§7、paper/theory_notes.md、分析脚本的重采样代码 |
 | R2 领域专家 | 问题是否真实、是否已有人系统回答（gap_map 的饱和计数）、基线是否漏了邻域里被比最多的（mined/baselines.csv） | literature/gap_map.md、problem_table.csv、mined/ |
 | R3 复现与泄漏 | 划分键、泄漏开关、关键超参是否生效、硬件是否混用、数字能否溯源 | audit_check / results_check 的输出、runs/*/args.json |
 | R4 写作与形状 | 章节顺序与家族画像是否一致、引言是否点名每篇关键论文的失效点、缩略语与图表引用 | shape_check、draft_plan check、gate_check 的输出 |
