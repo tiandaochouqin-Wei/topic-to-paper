@@ -17,7 +17,7 @@ Conventions (IEEE/TGRS style, matched against SKYDET TGRS 2026 Tables II–V and
   * grid: rows = samples, cols = methods; optional inset crop drawn at 2× in the top-right of each cell; column labels under each row-pair
   * writes <out>.source.csv next to every artefact so numbers.csv can point at it (G6 numbers gate)
 """
-import argparse, csv, io, os, sys, math, collections
+import argparse, csv, io, os, re, sys, math, collections
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -56,11 +56,17 @@ def md_cell(s, mark, bold):
     elif mark == "second": s = f"_{s}_"
     return s
 
-def esc(s): return str(s).replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
+def _esc_plain(t): return t.replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
+def esc(s):
+    """LaTeX-escape & % _ outside $...$; inline math (a row name with a delta or K_{cal} in it) passes through untouched."""
+    return "".join(p if (len(p) > 1 and p.startswith("$") and p.endswith("$")) else _esc_plain(p) for p in re.split(r"(\$[^$]*\$)", str(s)))
 
 LABELS = {}   # column -> display label, filled from --labels "AP50=AP$_{50}$,AP50_95=AP$_{50:95}$"
 def lab(c): return LABELS.get(c, esc(c))
 def lab_md(c): return LABELS.get(c, c).replace("$", "")
+DLABELS = {}   # dataset value -> display label, filled from --dataset-labels "prostate_t1=Prostate ($K{=}6$),..."
+def dlab(d): return DLABELS.get(d, esc(d))
+def dlab_md(d): return DLABELS.get(d, d).replace("$", "")
 
 # ------------------------------------------------------------------ sota / multi
 def sota_table(rows, cols, a, datasets=None):
@@ -75,10 +81,10 @@ def sota_table(rows, cols, a, datasets=None):
     L = [r"\begin{table" + ("*" if datasets and len(blocks) > 1 else "") + "}[t]", r"\centering", r"\caption{" + a.caption + "}", r"\label{" + a.label + "}", r"\small", r"\begin{tabular}{" + spec + "}", r"\toprule"]
     M = []
     if datasets:
-        L.append(r"\multirow{2}{*}{\textbf{Model}}" + "".join(" & " for _ in extra) + "".join(r" & \multicolumn{%d}{c}{\textbf{%s}}" % (len(metrics), esc(d)) for d, _ in blocks) + r" \\")
+        L.append(r"\multirow{2}{*}{\textbf{Model}}" + "".join(" & " for _ in extra) + "".join(r" & \multicolumn{%d}{c}{\textbf{%s}}" % (len(metrics), dlab(d)) for d, _ in blocks) + r" \\")
         L.append(" ".join(r"\cmidrule(lr){%d-%d}" % (2 + len(extra) + i * len(metrics), 1 + len(extra) + (i + 1) * len(metrics)) for i in range(len(blocks))))
         L.append(" & ".join([""] + [lab(e) for e in extra] + [lab(m) for _ in blocks for m in metrics]) + r" \\")
-        M.append("| Model | " + " | ".join([lab_md(e) for e in extra] + [f"{d} {lab_md(m)}" for d, _ in blocks for m in metrics]) + " |"); M.append("|---|" + "---|" * (len(extra) + len(metrics) * len(blocks)))
+        M.append("| Model | " + " | ".join([lab_md(e) for e in extra] + [f"{dlab_md(d)} {lab_md(m)}" for d, _ in blocks for m in metrics]) + " |"); M.append("|---|" + "---|" * (len(extra) + len(metrics) * len(blocks)))
     else:
         L.append(r"\textbf{Model} & " + " & ".join([r"\textbf{%s}" % lab(e) for e in extra] + [lab(m) for m in metrics]) + r" \\")
         M.append("| Model | " + " | ".join([lab_md(e) for e in extra] + [lab_md(m) for m in metrics]) + " |"); M.append("|---|" + "---|" * (len(extra) + len(metrics)))
@@ -238,7 +244,7 @@ def main():
         p.add_argument("--numbers", action="store_true", help="also register every cell in <out-dir>/numbers.csv for the G6 numbers gate")
         if n in ("sota", "multi"):
             p.add_argument("--name-col", default="method"); p.add_argument("--group-col", default=""); p.add_argument("--ours", default=""); p.add_argument("--extra", default="", help="non-ranked columns e.g. Params,FLOPs"); p.add_argument("--cite-col", default="")
-        if n == "multi": p.add_argument("--datasets", required=True); p.add_argument("--dataset-col", default="dataset")
+        if n == "multi": p.add_argument("--datasets", required=True); p.add_argument("--dataset-col", default="dataset"); p.add_argument("--dataset-labels", default="", help='display names for the dataset headers, e.g. "prostate_t1=Prostate ($K{=}6$),kidney_t1=Kidney"')
         if n == "ablation": p.add_argument("--components", required=True); p.add_argument("--ablation-plain", action="store_true", help="no red/blue, only bold full row")
         if n == "seeds": p.add_argument("--setting-col", default="setting"); p.add_argument("--seed-col", default="seed")
     g = sub.add_parser("grid"); g.add_argument("--root", required=True); g.add_argument("--methods", required=True); g.add_argument("--samples", required=True); g.add_argument("--out", required=True)
@@ -247,6 +253,8 @@ def main():
     a = ap.parse_args()
     for kv in filter(None, a.labels.split(",")):
         k, v = kv.split("=", 1); LABELS[k] = v
+    for kv in filter(None, (getattr(a, "dataset_labels", "") or "").split(",")):
+        k, v = kv.split("=", 1); DLABELS[k] = v
     if a.cmd == "grid": return det_grid(a)
     rows, cols = read_csv(a.csv)
     if a.cmd == "ablation": tex, md, src = ablation_table(rows, a)

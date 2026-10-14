@@ -298,11 +298,19 @@ SCOPE_STRONG = re.compile(
     r"|(?:for|on|across) (?:any|all|every|arbitrary) (?:\w+[- ]){0,2}(?:dataset|domain|platform|sensor|task|subject|patient|modality)s?"
     r"|robust to (?:any|all|every|arbitrary))\b", re.I)
 
+# Impossibility wording ("no procedure can ...", "is impossible", "cannot be improved"): a proposition's job, not a claims-table row, so it is NOT part of
+# SCOPE_STRONG (claims_check demands a claims row for those); the scope gate only lists it so the review seats trace each sentence to a proof.
+SCOPE_IMPOSSIBLE = re.compile(
+    r"\b(no (?:valid |such |known |distribution-free |possible )*(?:procedure|bound|method|algorithm|estimator|guarantee|test) (?:can|could|will|is able to)"
+    r"|(?:is|are|proves? to be|remains?) (?:provably )?(?:impossible|unattainable|unachievable)"
+    r"|impossibility (?:result|theorem|of)"
+    r"|cannot (?:ever )?be (?:improved|avoided|attained|achieved|beaten))\b", re.I)
+
 def gate_scope(a):
     text = body_only(read(a.manuscript))
     strong, weak = [], []
     for i, line in enumerate(text.splitlines(), 1):
-        if SCOPE_STRONG.search(line):
+        if SCOPE_STRONG.search(line) or SCOPE_IMPOSSIBLE.search(line):
             strong.append((i, line.strip()[:140]))
         elif re.search(SCOPE_WORDS, line, re.I):
             weak.append((i, line.strip()[:110]))

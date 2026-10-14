@@ -393,3 +393,18 @@ def test_g6b_zero_risk_baseline_is_not_strongest(research):
     r = run("draft_plan.py", "check", "--project", ".", cwd=research)
     assert r.fails == 0, r.out
     assert "baseA" in read(research / "paper" / "draft_plan.md") and "最强基线 trivial" not in read(research / "paper" / "draft_plan.md")
+
+
+# ------------------------------------------------------------------ scope gate: impossibility wording
+def test_scope_flags_impossibility_wording(research):
+    m = research / "paper" / "manuscript.md"
+    edit(m, "## References", "No procedure can do better than this bound, and the task is impossible without further assumptions.\n\n## References", 1)
+    r = run("gate_check.py", "scope", cwd=research)
+    assert "CLAIM" in r.out and "No procedure can do better" in r.out, r.out
+
+
+def test_scope_ignores_plain_bound_wording(research):
+    m = research / "paper" / "manuscript.md"
+    edit(m, "## References", "We prove a lower bound on the probability of the trivial set.\n\n## References", 1)
+    r = run("gate_check.py", "scope", cwd=research)
+    assert "lower bound on the probability" not in r.out, r.out
