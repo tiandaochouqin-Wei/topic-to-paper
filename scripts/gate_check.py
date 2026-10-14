@@ -488,6 +488,48 @@ def gate_dpi(a):
         say("PASS", "dpi", f"{n} 张图全部 ≥{min_dpi} dpi 且有来源、已目测（容差带 {band}，小图豁免 {tiny}）")
     _dpi_print_fonts(a)
     _dpi_coverage(a)
+    _dpi_count(a)
+
+def _norm_floor(venue, family, col):
+    """25th percentile of <col> (n_fig | n_tab) among published papers at this venue; falls back to the family
+    when the venue is not in references/figure-norms-per-paper.csv. Returns (floor, group_label, n) or None."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "references", "figure-norms-per-paper.csv")
+    if not os.path.exists(path): return None
+    rows = list(csv.DictReader(open(path, encoding="utf-8-sig")))
+    for key, label in ((venue, "venue"), (family, "family")):
+        if not key: continue
+        vals = sorted(int(r[col]) for r in rows if (r.get(label) or "").lower() == key.lower() and r.get(col, "").isdigit())
+        if len(vals) >= 10:
+            return vals[int(0.25 * (len(vals) - 1))], f"{label} {key}", len(vals)
+    return None
+
+def _dpi_count(a):
+    """figure / table counts below the 25th percentile of the target venue's published papers -> WARN
+    (figure-norms-per-paper.csv, 590-paper sample). Waive with target.figure_count_waiver: '<why>'."""
+    venue = family = waiver = ""
+    try:
+        import yaml
+        t = (yaml.safe_load(read(a.state)) or {}).get("target") or {}
+        venue, family, waiver = t.get("venue") or "", t.get("family") or "", t.get("figure_count_waiver") or ""
+    except Exception:
+        pass
+    if not os.path.exists(a.manuscript): return
+    text = read(a.manuscript)
+    n_fig = len({m.group(2) for m in CAP.finditer(text) if m.group(1).lower().startswith("fig") and not m.group(2).upper().startswith("S")})
+    n_tab = len({m.group(2) for m in CAP.finditer(text) if m.group(1).lower() == "table" and not m.group(2).upper().startswith("S")})
+    short = []; checked = 0
+    for col, n, what in (("n_fig", n_fig, "图"), ("n_tab", n_tab, "表")):
+        fl = _norm_floor(venue, family, col)
+        if fl is None: continue
+        checked += 1; floor, label, m = fl
+        if n < floor: short.append(f"{what} {n} 张 < {label} 四分之三的论文有的 {floor} 张（{m} 篇样本）")
+    if not checked: return   # no venue/family in the norms table: nothing to compare against
+    if short and waiver:
+        say("INFO", "dpi", f"图表数量低于目标刊常态但已豁免（{waiver}）：" + "；".join(short))
+    elif short:
+        say("WARN", "dpi", "；".join(short) + "。补图表，或在 state.target.figure_count_waiver 写明为什么不需要（references/figure-norms.md）")
+    else:
+        say("PASS", "dpi", f"正文 {n_fig} 图 {n_tab} 表，不低于 {venue or family} 已发表论文的下四分位")
 
 FAMILY_MUST_TYPES = {"cs_journal": ["overview", "qualitative", "comparison", "ablation"], "cs_conf": ["overview", "qualitative", "comparison"], "nature": []}
 # types that >= 70% of published papers in the family carry (references/figure-norms.md, "按家族" table, 590-paper sample); nature families
