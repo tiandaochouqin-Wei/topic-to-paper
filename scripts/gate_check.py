@@ -487,6 +487,8 @@ def gate_dpi(a):
     if bad == 0:
         say("PASS", "dpi", f"{n} 张图全部 ≥{min_dpi} dpi 且有来源、已目测（容差带 {band}，小图豁免 {tiny}）")
     _dpi_print_fonts(a)
+    _dpi_fonts_embedded(a)
+    _dpi_grayscale(a)
     _dpi_coverage(a)
     _dpi_count(a)
 
@@ -576,6 +578,48 @@ def _dpi_print_fonts(a):
             if any(x < 0.15 * W for x in xs) and any(x > 0.85 * W for x in xs):
                 say("WARN", "dpi", f"{f} 左右两侧都有纵向轴标签：双纵轴图。两种量纲各画一个面板，或归一到同一底（dataviz 规则）")
     if checked and bad == 0: say("PASS", "dpi", f"{checked} 张矢量图的印刷字号全部 ≥ {min_pt:g} pt")
+
+def _dpi_fonts_embedded(a):
+    """Type 3 or unembedded fonts in a registered PDF -> FAIL (IEEE / Elsevier production reject them; matplotlib's default
+    pdf.fonttype=3 produces exactly this). After scipilot-figure-skill check_figure. Needs pypdf; INFO if absent."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        say("INFO", "dpi", "未安装 pypdf（pip install pypdf），跳过字体嵌入检查"); return
+    bad = 0; checked = 0
+    for row in csv.DictReader(open(a.figures, encoding="utf-8-sig")):
+        f = row["file"]
+        if not f.lower().endswith(".pdf") or not os.path.exists(f): continue
+        checked += 1; t3 = set(); noemb = set()
+        try:
+            for pg in PdfReader(f).pages:
+                fonts = (pg.get("/Resources") or {}).get("/Font") or {}
+                for _, fo in fonts.items():
+                    fo = fo.get_object(); sub = str(fo.get("/Subtype", "")); base = str(fo.get("/BaseFont", "?"))
+                    # fonttype 42 emits a Type0 composite font: the embedded program sits on the descendant's descriptor
+                    cands = [fo] + [c.get_object() for c in (fo.get("/DescendantFonts") or [])]
+                    emb = False
+                    for c in cands:
+                        d = c.get("/FontDescriptor"); d = d.get_object() if d else None
+                        if d and any(k in d for k in ("/FontFile", "/FontFile2", "/FontFile3")): emb = True; break
+                    if "Type3" in sub: t3.add(base)
+                    elif not emb and "Type1" not in sub: noemb.add(base)
+        except Exception as ex:
+            say("WARN", "dpi", f"{f} 读不了字体表: {ex}"); continue
+        if t3:
+            bad += 1; say("FAIL", "dpi", f"{f} 含 Type 3 字体 {sorted(t3)[:3]}：IEEE / Elsevier 制作拒收；matplotlib 设 rcParams['pdf.fonttype']=42 重出（make_figure.py 已默认）")
+        elif noemb:
+            say("WARN", "dpi", f"{f} 字体可能未嵌入 {sorted(noemb)[:3]}：别人机器上会变替代字体")
+    if checked and bad == 0: say("PASS", "dpi", f"{checked} 张 PDF 字体全部嵌入且无 Type 3")
+
+def _dpi_grayscale(a):
+    """a _gray.png next to each raster figure means the B&W / colour-vision check was possible; missing -> INFO"""
+    miss = []
+    for row in csv.DictReader(open(a.figures, encoding="utf-8-sig")):
+        f = row["file"]; base = os.path.splitext(f)[0]
+        if os.path.exists(f) and not os.path.exists(base + "_gray.png") and not os.path.exists(base + ".png"): continue
+        if os.path.exists(f) and not os.path.exists(base + "_gray.png"): miss.append(f)
+    if miss: say("INFO", "dpi", f"{len(miss)} 张图没有灰度预览 (_gray.png)：make_figure.py 自动出；手画的图用 PIL convert('L') 看一眼黑白能否分辨")
 
 def _dpi_coverage(a):
     """figure types the venue family expects (>= 70% of published papers) must match a caption or be waived in figures.csv issues ('no <type>: <why>')"""

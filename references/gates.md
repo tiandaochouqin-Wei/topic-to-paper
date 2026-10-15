@@ -59,6 +59,9 @@
 **双纵轴**：同一页左右两侧都有纵向轴标签 → WARN（dataviz 规则：两种量纲各画一个面板）。
 **图类型覆盖**：按 `target.family` 取 references/figure-norms.md 里 ≥70% 已发表论文含有的图类型（cs_journal：overview / qualitative / comparison / ablation；cs_conf：前三），每种至少命中一条题注（`figure_norms.FIGURE_TYPES` 的关键词规则），否则要在 figures.csv 的 issues 列写 `no <type>: <为什么不需要>`；缺且未豁免 → WARN（题注关键词是启发式，不 FAIL）。为什么：tpami_medimg 关口全绿时没有总览图也没有定性图，同类期刊 89% / 81% 的论文都有。
 
+**字体嵌入（验证轮 18 新增）**：登记的 PDF 用 pypdf 读字体表，含 Type 3 → FAIL，未嵌入 → WARN。为什么：matplotlib 默认 `pdf.fonttype=3`，本 skill 出的每张图都是 Type 3，IEEE / Elsevier 制作部拒收，G5 从没查过。`make_figure.py` 已改默认 42。
+**版面自检 + 灰度预览（验证轮 18 新增）**：`make_figure.py` 存图前在内存里渲染一次：缺字 FAIL（退出 1）、文字压到别的面板 / 刻度标签重叠 WARN，结果写进 figures.csv 的 issues；同时出 `_gray.png`，G5 对没有灰度预览的图 INFO。来源：scipilot-figure-skill 的 visual_qa / export_figure。
+
 **图表数量（验证轮 16 新增）**：正文图数、表数各与 `references/figure-norms-per-paper.csv` 里目标 venue（没有则按 family）已发表论文的下四分位比，低于 → WARN；`target.figure_count_waiver` 写明理由即豁免。为什么：med-world-model 稿第一版 1 图 6 表时 G5 全绿，NeurIPS 四分之三的论文 ≥4 图；类型覆盖查的是"有没有"，不查"够不够"。
 
 ## G6 正文六项

@@ -166,7 +166,7 @@ def ablation_table(rows, a):
 
 # ------------------------------------------------------------------ seeds (Table VII style: per-seed values + mean ± std per setting)
 def seeds_table(rows, a):
-    """CSV long form: setting,seed,<metric>. One row per setting; columns = seeds..., Mean ± Std. Best mean in bold."""
+    """CSV long form: setting,seed,<metric>. One row per setting; columns = seeds..., Mean ± Std. Best mean in bold (lowest for lower-is-better metrics, see higher_for)."""
     import statistics
     metric = a.metrics.split(",")[0]
     settings = collections.OrderedDict()

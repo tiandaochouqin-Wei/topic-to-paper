@@ -61,6 +61,12 @@
 | 关口全绿，用户一眼看出图表不像好刊 | G5 只查 dpi 与"已目测"，目测看的是放大 PNG；图画大后缩进半栏，字号 3.5 pt | 按印刷宽度画；G5 读文本层算印刷字号；目测看渲染后的页面 |
 | 没有总览图、定性图 | 选图单只在细则里，没进关口 | G5 按家族查图类型覆盖，缺的要写理由 |
 | 关口全绿，稿子只有 1 图 6 表 | 类型覆盖只查"有没有"，数量没人查；写手先交薄版 | G5 按目标刊下四分位查图/表数；第一版就配足 |
+| 12 张图里 skill 只画了 3 张，曲线图全靠手写 matplotlib | make_figure 只有 main / ablation / seeds，cs 论文 33–55% 有曲线图 | `curves` 子命令读长表画多系列曲线带种子带 |
+| 逐种子表把 NLL 最大的那行加粗 | make_comparison seeds 一律取最大均值 | `--lower` 贯通 make_figure 与 make_comparison seeds；未写 `--lower` 时按 state 的 metric_direction / primary_direction，再按列名正则（metric_direction.py） |
+| P5 把其它图路由到本机没有的 skill | 路由表写了未安装的 skill 名 | 路由只指向存在的 skill；make_figure 先试 |
+| 本 skill 出的每张 PDF 都嵌 Type 3 字体 | matplotlib 默认 pdf.fonttype=3，没人改；G5 不查字体表 | rcParams fonttype 42；G5 用 pypdf 查 Type 3 → FAIL |
+| 图存出来才发现缺字方框 / 刻度挤成一团 | 存图后才看 PNG | 存图前内存渲染一次审版面（scipilot 的做法），缺字直接退出 |
+| 非标准数据图没有默认去处，每次现想 | 路由只列了泛用画图 skill，没有"先剖析数据再选图型"的那一个 | 装 `scipilot-figure-skill`，路由默认指它；R / Nature QA 走 nature-figure |
 | 双纵轴图四条线挤在一起 | 想省一张图 | 一个面板一个轴；G5 对左右都有轴标签的页 WARN |
 | 主表里方法行与基线行数字相同还标红加粗 | 方法退化为基线却照常排名 | 合并为一行并写明，或展示为一族 |
 

@@ -10,7 +10,7 @@
 |---|---|
 | `academic-paper-reviewer`、`rigor-reviewer` | 按 [review-seats.md](review-seats.md) 的五席逐席审，写 review_log.md 的固定格式；`review_check.py` 照常 |
 | `nature-writing`、`academic-intro-writing`、`nature-polishing` | 直接写：骨架 `templates/skeleton-<family>.md`，画像 [venue-profiles.md](venue-profiles.md)，必写清单 `draft_plan.py plan`；G6 / G6b / G6c 照常 |
-| `nature-figure`、`cs-experiment-figure-studio`、`academic-plotting`、`dataviz` | 主结果 / 消融 / seed 图已由 `make_figure.py` 生成；其它数据图用 matplotlib（serif 7.5 pt，≥300 dpi@印刷宽度，同时写 .source.csv），登记 figures.csv |
+| `scipilot-figure-skill`、`nature-figure`、`dataviz` | 主结果 / 消融 / seed / 曲线图已由 `make_figure.py` 生成；其它数据图先走 `scipilot-figure-skill`（先剖析数据再推荐图型，拦小样本均值柱 / 双 Y 轴 / 截断轴，Nature / IEEE / 中文核心期刊版式，CJK 字体自动配）；输出仍按本 skill 规则：PDF、印刷宽度、同时写 .source.csv，登记 figures.csv |
 | `scientific-schematics`、`image2pptx` | 示意图先用文字框图占位，不阻塞 G5；投稿前再补 |
 | `nature-response` | 逐条回复表：意见 / 回应 / 改在哪，一条一行，与 review_log.md 的处置对齐 |
 | `nature-data` | 数据可用性声明三句：数据在哪（仓库 / 访问条件）、代码在哪、结果文件在哪 |
@@ -61,7 +61,7 @@
 | 动作 | 工具 |
 |---|---|
 | 主结果图 / 消融 Δ 图 / seed 图（从 results 表生成，登记 figures.csv） | `scripts/make_figure.py main \| ablation \| seeds` |
-| 数据图 | skill `nature-figure`（先问 Python/R）或 `cs-experiment-figure-studio` |
+| 数据图 | 先试 `make_figure.py main\|ablation\|seeds\|curves`；不够再用 `scipilot-figure-skill`（Python，含中文期刊版式）；要 R 或 Nature 系 QA 清单时用 `nature-figure`（先问 Python/R） |
 | 定性对比网格（检测/分割结果，Origin+各方法×样本，inset 放大） | `scripts/make_comparison.py grid`；行数 = 样本数，`--cols` 决定每行几个方法（TGRS 常见 12），超出自动换行并在每组下标方法名 |
 | 示意图/架构图 | skill `scientific-schematics`、`academic-plotting` |
 | 配色与可读性 | skill `dataviz` |
