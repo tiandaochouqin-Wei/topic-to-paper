@@ -26,6 +26,7 @@ convention string from prereg §4 appears in the table header/note; (3) seeds �
 set across methods; (4) ablation rows ⊇ prereg §6 items, baselines ⊇ prereg §5 items (fuzzy token match); (5) sign of each
 pre-stated prediction. Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections, statistics
+from decimal import Decimal, InvalidOperation
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import metric_direction as mdir
@@ -77,6 +78,15 @@ def read_csv(p):
     rows = list(csv.DictReader(open(p, encoding="utf-8-sig")))
     return rows, (list(rows[0].keys()) if rows else [])
 
+def cell_matches(s, v):
+    """True when CSV cell s is v printed to s's own precision. Precision comes from the Decimal exponent,
+    so scientific notation ("9.07e-05", "1.2E+3") counts its digits correctly; ties at half a last digit pass."""
+    try: d = Decimal(s)
+    except InvalidOperation: return False
+    if not d.is_finite(): return d.is_nan() and v != v or (d.is_infinite() and float(d) == v)
+    if float(d) == v: return True                                  # shortest repr / full-precision dump
+    return abs(Decimal(v) - d) <= Decimal(5).scaleb(d.as_tuple().exponent - 1)   # half a unit in the last printed digit, exact arithmetic
+
 def check_rows(cfg, root, rows, label):
     rd, ef, fr = cfg.get("runs_dir", "runs"), cfg.get("eval_file", "eval.json"), cfg.get("freshness_ref", "log.json")
     mm = cfg.get("metric_map") or {}
@@ -101,9 +111,9 @@ def check_rows(cfg, root, rows, label):
             try: v = float(get_path(ev, path))
             except Exception:
                 bad += 1; say("FAIL", "trace", f"{label} {rid}: {ef} 里没有 {path}"); continue
-            s = r[col].strip(); dec = len(s.split(".")[1]) if "." in s else 0
-            if round(v, dec) != float(s):
-                bad += 1; say("FAIL", "trace", f"{label} {rid}.{col} = {s}，但 {ef}#{path} = {round(v, dec)}")
+            s = r[col].strip()
+            if not cell_matches(s, v):
+                bad += 1; say("FAIL", "trace", f"{label} {rid}.{col} = {s}，但 {ef}#{path} = {v!r}（按 {s} 的打印精度不一致）")
     if bad == 0: say("PASS", "trace", f"{label} {len(rows)} 行全部回溯到 {ef} 且数值一致、评估不陈旧")
 
 def main():

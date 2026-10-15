@@ -80,6 +80,51 @@ def read_csv(p):
 
 def numbers_in(s): return set(re.findall(r"\d+(?:\.\d+)?", s))
 
+def _seed_key(s):
+    try: return (0, float(s), s)
+    except ValueError: return (1, 0.0, s)
+
+def seed_means(rows, gk, pm):
+    """{method: mean of pm} over all seeds every method shares (per-seed mean first, so repeat rows or extra seeds
+    of one method cannot shift its mean), and a note naming those seeds for the checklist line."""
+    cell = collections.defaultdict(lambda: collections.defaultdict(list))
+    for r in rows:
+        try: cell[r[gk]][str(r.get("seed", "")).strip()].append(float(r[pm]))
+        except Exception: pass
+    if not cell: return {}, ""
+    common = set.intersection(*(set(d) for d in cell.values()))
+    if common == {""}: return {k: statistics.mean(d[""]) for k, d in cell.items()}, "全部行均值（无 seed 列）"
+    use = common - {""} if common - {""} else None
+    out = {k: statistics.mean(statistics.mean(v) for s, v in d.items() if use is None or s in use) for k, d in cell.items()}
+    if use is None: return out, "各方法 seed 无交集：按各自全部 seed 平均"
+    seeds = sorted(use, key=_seed_key); extra = any(set(d) - use for d in cell.values())
+    return out, f"{len(seeds)} 个共同 seed 的均值（seed {', '.join(seeds)}）" + ("；只在部分方法出现的 seed 不计" if extra else "")
+
+_UP, _DOWN = r"higher|increas|rise|rose|raise|larger|greater|more|above|提高|增加|上升|增大", r"lower|reduc|decreas|drop|fell|fall|smaller|less|fewer|below|降低|减少|下降|减小"
+def direction_words(better, lower_better):
+    """Regex of words that state the sign of ref-vs-baseline in prose ("4% lower RMSE", "4% worse AUC")."""
+    w = (r"improv|better|outperform|gain|advantage|提升|改善|优于|改进|" + (_DOWN if lower_better else _UP)) if better else \
+        (r"worse|degrad|underperform|trail|lag|behind|short\s+of|劣于|变差|退化|落后|" + (_UP if lower_better else _DOWN))
+    return r"(?<![A-Za-z])(?:" + w + ")"
+
+_MINUS = "-\u2212"
+def pct_change_stated(v, hay, dirw=None):
+    """number_pm1: the relative change v (signed, whole %) appears within ±1. Positive: "4%" or "+4%", never as "-4%".
+    Negative: "-4%" / "\u22124%", or "4%" plus a direction word (dirw) in the same sentence. A range "3-4%" is not a sign."""
+    def signed_neg(m, hay): return m.start() > 0 and hay[m.start() - 1] in _MINUS and not (m.start() > 1 and hay[m.start() - 2].isdigit())
+    for x in (v - 1, v, v + 1):
+        a = abs(x); num = r"(?<![\d.])%d(?:\.\d+)?\s*%%" % a
+        if x == 0:
+            if re.search(num, hay): return True
+        elif x > 0:
+            if any(not signed_neg(m, hay) for m in re.finditer(num, hay)): return True
+        else:
+            if any(signed_neg(m, hay) for m in re.finditer(num, hay)): return True
+            if dirw:
+                for sent in re.split(r"(?<=[.!?;。！？；])\s+|\n", hay):
+                    if any(not signed_neg(m, sent) for m in re.finditer(num, sent)) and re.search(dirw, sent, re.I): return True
+    return False
+
 # ------------------------------------------------------------------ plan
 def build(root):
     items = []
@@ -148,20 +193,17 @@ def build(root):
     mt = os.path.join(root, res.get("main_table", "results/main.csv")); rows = read_csv(mt)
     pm = res.get("primary_metric"); gk = res.get("group_key", "method"); ref = res.get("reference_method", "ours")
     if rows and pm and pm in rows[0]:
-        by = collections.defaultdict(list)
-        seed0 = min((r.get("seed") for r in rows if str(r.get("seed", "")).strip() != ""), key=lambda x: float(x), default=None)   # one slice: the first seed (repeat rows must not shift one method's mean)
-        for r in rows:
-            if seed0 is not None and str(r.get("seed", "")).strip() not in ("", str(seed0)): continue
-            try: by[r[gk]].append(float(r[pm]))
-            except Exception: pass
+        by, seed_note = seed_means(rows, gk, pm)
         if ref in by and len(by) > 1:
             try: lower_better = mdir.lower_is_better(pm, res)   # results.metric_direction / primary_direction, else the name regex
             except ValueError as e: print(f"[FAIL] research-state.yaml {e}"); sys.exit(1)
-            rv = statistics.mean(by[ref]); others = {k: statistics.mean(v) for k, v in by.items() if k != ref}
+            rv = by[ref]; others = {k: v for k, v in by.items() if k != ref}
             if lower_better: others = {k: v for k, v in others.items() if v > 0} or others   # a risk identically 0 is a trivial set, not a strongest baseline
             best = min(others, key=others.get) if lower_better else max(others, key=others.get)
             rel = (others[best] - rv) / others[best] * 100 if lower_better else (rv - others[best]) / others[best] * 100
-            add("results", "main.csv 主指标", f"结果节必须给出 {ref} 相对最强基线 {best} 在 {pm} 上的相对变化（约 {rel:.0f}%，正文可取整到 ±1）", f"{rel:.0f}", "number_pm1")
+            add("results", "main.csv 主指标", f"结果节必须给出 {ref} 相对最强基线 {best} 在 {pm} 上的相对变化（约 {rel:.0f}%，{seed_note}；正文可取整到 ±1，"
+                f"写成带符号的 {rel:.0f}% 或绝对值加方向词，如 {abs(rel):.0f}% {'better' if rel >= 0 else 'worse'}）", f"{rel:.0f}", "number_pm1")
+            items[-1]["dir"] = direction_words(rel >= 0, lower_better)
             add("results", "main.csv 主指标", f"结果节必须出现最强基线的名字 {best}", best, "name")
     # ---- ablation resolution
     at = os.path.join(root, res.get("ablation_table", "results/ablation.csv"))
@@ -223,8 +265,7 @@ def check(a):
         elif k == "numbers": ok = all(n in hay for n in p.split())
         elif k == "number": ok = p in hay
         elif k == "number_prefix": ok = p in hay
-        elif k == "number_pm1":
-            v = int(p); ok = any(re.search(r"(?<![\d.])%d(?:\.\d+)?\s*%%" % x, hay) for x in (v - 1, v, v + 1))
+        elif k == "number_pm1": ok = pct_change_stated(int(p), hay, it.get("dir"))
         elif k == "regex": ok = bool(re.search(p, hay, re.I))
         else: ok = overlap(p, hay) >= a.min_overlap
         done[it["id"]] = ok
