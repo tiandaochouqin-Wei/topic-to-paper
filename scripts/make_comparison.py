@@ -10,7 +10,8 @@
                                    [--inset x,y,w,h] [--cols 12] [--width-mm 183]
 
 Conventions (IEEE/TGRS style, matched against SKYDET TGRS 2026 Tables II–V and Fig. 5):
-  * best value per metric in \\textcolor{red}, second-best in \\textcolor{blue}; direction per metric via --higher/--lower
+  * best value per metric in \\textcolor{red}, second-best in \\textcolor{blue}; direction per metric: --lower > --higher (unlisted = lower)
+    > research-state.yaml results.metric_direction / primary_direction (with --project) > name regex (metric_direction.py) > higher
   * rows grouped by --group-col with an italic group header line; "ours" rows bold and separated by \\midrule
   * every number formatted to --decimals; the same CSV drives both the .tex and the .md mirror so the two never diverge
   * ablation: components as ✓/✗ columns (\\checkmark / $\\times$), rows numbered, last row (all ✓) bold
@@ -30,6 +31,15 @@ def fnum(v, d):
     except Exception: return str(v) if v not in (None, "") else "--"
     if abs(x) >= 1000: return f"{x:,.0f}"
     return f"{x:.{d}f}"
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import metric_direction as mdir
+STATE = {}   # research-state.yaml results block, filled from --project
+def higher_for(m, a):
+    lower = set(filter(None, a.lower.split(","))); higher = set(filter(None, a.higher.split(",")))
+    if m in lower: return False
+    if m in higher: return True
+    if higher: return False   # --higher lists the higher-is-better metrics; the rest are lower
+    return not mdir.lower_is_better(m, STATE)
 
 def rank_marks(rows, metric, higher):
     """-> {row_index: 'best'|'second'}; ties share a mark."""
@@ -70,7 +80,7 @@ def dlab_md(d): return DLABELS.get(d, d).replace("$", "")
 
 # ------------------------------------------------------------------ sota / multi
 def sota_table(rows, cols, a, datasets=None):
-    metrics = a.metrics.split(","); higher = set(a.higher.split(",")) if a.higher else set(metrics); lower = set(a.lower.split(",")) if a.lower else set()
+    metrics = a.metrics.split(",")
     extra = [c for c in (a.extra.split(",") if a.extra else []) if c in cols]
     ours = [o.strip() for o in a.ours.split(",")] if a.ours else []
     name_col = a.name_col
@@ -102,7 +112,7 @@ def sota_table(rows, cols, a, datasets=None):
         by_name = {r[name_col]: r for r in brows}
         ordered = [by_name[n] for n in names if n in by_name]
         for m in metrics:
-            mk = rank_marks(ordered, m, m in higher and m not in lower)
+            mk = rank_marks(ordered, m, higher_for(m, a))
             for i, r in enumerate(ordered): marks[(bi, r[name_col], m)] = mk.get(i)
     src = []
     first_group = True
@@ -131,7 +141,7 @@ def sota_table(rows, cols, a, datasets=None):
 
 # ------------------------------------------------------------------ ablation
 def ablation_table(rows, a):
-    comps = a.components.split(","); metrics = a.metrics.split(","); higher = set(a.higher.split(",")) if a.higher else set(metrics)
+    comps = a.components.split(","); metrics = a.metrics.split(",")
     def on(v): return str(v).strip().lower() in ("1", "true", "yes", "y", "✓", "on")
     spec = "c|" + "c" * len(comps) + "|" + "c" * len(metrics)
     L = [r"\begin{table}[t]", r"\centering", r"\caption{" + a.caption + "}", r"\label{" + a.label + "}", r"\small", r"\begin{tabular}{" + spec + "}", r"\toprule",
@@ -140,7 +150,7 @@ def ablation_table(rows, a):
          " & ".join([""] * (1 + len(comps)) + [lab(m) for m in metrics]) + r" \\", r"\midrule"]
     M = ["| Group | " + " | ".join(comps + [lab_md(m) for m in metrics]) + " |", "|---|" + "---|" * (len(comps) + len(metrics))]
     full = [i for i, r in enumerate(rows) if all(on(r.get(c, "")) for c in comps)]
-    marks = {m: rank_marks(rows, m, m in higher) for m in metrics}
+    marks = {m: rank_marks(rows, m, higher_for(m, a)) for m in metrics}
     src = []
     for i, r in enumerate(rows):
         bold = i in full
@@ -166,7 +176,7 @@ def seeds_table(rows, a):
         for s, _ in v:
             if s not in seeds: seeds.append(s)
     stats = {k: (statistics.mean(x for _, x in v), statistics.stdev(x for _, x in v) if len(v) > 1 else 0.0, len(v)) for k, v in settings.items()}
-    best = max(stats, key=lambda k: stats[k][0])
+    best = (max if higher_for(metric, a) else min)(stats, key=lambda k: stats[k][0])
     d = a.decimals
     L = [r"\begin{table}[t]", r"\centering", r"\caption{" + a.caption + "}", r"\label{" + a.label + "}", r"\small", r"\begin{tabular}{l" + "c" * len(seeds) + "|c}", r"\toprule",
          r"\textbf{Setting} & " + " & ".join(r"\textbf{Seed %s}" % esc(s) for s in seeds) + r" & \textbf{Mean $\pm$ Std} \\", r"\midrule"]
@@ -240,7 +250,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     for n in ("sota", "multi", "ablation", "seeds"):
         p = sub.add_parser(n); p.add_argument("--csv", required=True); p.add_argument("--out", required=True); p.add_argument("--metrics", required=True)
-        p.add_argument("--higher", default=""); p.add_argument("--lower", default=""); p.add_argument("--caption", default="Caption."); p.add_argument("--label", default="tab:x"); p.add_argument("--decimals", type=int, default=3); p.add_argument("--md", action="store_true")
+        p.add_argument("--higher", default=""); p.add_argument("--lower", default=""); p.add_argument("--project", default="", help="read results.metric_direction / primary_direction from <project>/research-state.yaml"); p.add_argument("--caption", default="Caption."); p.add_argument("--label", default="tab:x"); p.add_argument("--decimals", type=int, default=3); p.add_argument("--md", action="store_true")
         p.add_argument("--numbers", action="store_true", help="also register every cell in <out-dir>/numbers.csv for the G6 numbers gate")
         if n in ("sota", "multi"):
             p.add_argument("--name-col", default="method"); p.add_argument("--group-col", default=""); p.add_argument("--ours", default=""); p.add_argument("--extra", default="", help="non-ranked columns e.g. Params,FLOPs"); p.add_argument("--cite-col", default="")
@@ -256,6 +266,10 @@ def main():
     for kv in filter(None, (getattr(a, "dataset_labels", "") or "").split(",")):
         k, v = kv.split("=", 1); DLABELS[k] = v
     if a.cmd == "grid": return det_grid(a)
+    if a.project:
+        import yaml
+        sp = os.path.join(a.project, "research-state.yaml")
+        if os.path.exists(sp): STATE.update((yaml.safe_load(io.open(sp, encoding="utf-8")) or {}).get("results") or {})
     rows, cols = read_csv(a.csv)
     if a.cmd == "ablation": tex, md, src = ablation_table(rows, a)
     elif a.cmd == "seeds": tex, md, src = seeds_table(rows, a)

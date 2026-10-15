@@ -45,7 +45,7 @@
 ## G4 结果可回溯（`scripts/results_check.py` + `scripts/ablation_plan.py resolve`，全部机械）
 消融分辨率：Δ/(σ_ref·√2) < 2 的格不可解读；可解读格数 ≤ 1.5 × 零假设期望（0.0455 × 格数）→ 整体在分辨率极限；可解读且反号 → FAIL。参照来自 main.csv 同硬件 ≥2 seeds，单 seed 参照直接 FAIL。
 配置在 state 的 `results:` 段。
-判据：main.csv/ablation.csv 每行 run_id 的 `eval_file` 存在、`metric_map` 每列与文件按 CSV 小数位相等、eval 的 mtime ≥ `freshness_ref`、无 `_tainted`；`primary_metric` 是表列且在 prereg §2 出现；prereg §3/§4 的口径记号（如 `|F|≥0.1 N`、`contact-window`）出现在表头或同名 .md 注释；每个 `group_key` 的 seed 数 ≥ `min_seeds` 或 `seed_waiver` 非空，seed 集合跨方法一致；ablation 项 ⊇ prereg §6、方法 ⊇ prereg §5（词元模糊匹配，容忍 "no_dom" vs "no_dom (domain adversarial)"）；`predictions` 的 (b−a) 符号与事前一致。
+判据：main.csv/ablation.csv 每行 run_id 的 `eval_file` 存在、`metric_map` 每列与文件按 CSV 小数位相等、eval 的 mtime ≥ `freshness_ref`、无 `_tainted`；`primary_metric` 是表列且在 prereg §2 出现；`primary_direction` / `metric_direction` 的值只能是 lower|higher（否则 FAIL），未设且列名正则猜不出方向时 WARN（下游按 higher-is-better）；prereg §3/§4 的口径记号（如 `|F|≥0.1 N`、`contact-window`）出现在表头或同名 .md 注释；每个 `group_key` 的 seed 数 ≥ `min_seeds` 或 `seed_waiver` 非空，seed 集合跨方法一致；ablation 项 ⊇ prereg §6、方法 ⊇ prereg §5（词元模糊匹配，容忍 "no_dom" vs "no_dom (domain adversarial)"）；`predictions` 的 (b−a) 符号与事前一致。
 失败分析：results/failure_slices.md（`failure_slice.py` 对本文方法的输出）缺则 WARN。最差切片是总体几倍、最差 10% 样本占多少平方误差、sig 对 top-10% 误差的 AUROC，三者进正文。真实数据：EAAI 力估计 E5 平台迁移，本文方法（无域项）94% 的平方误差落在 |F| 最高五分位、AUROC 0.867（失败可预测），VS 基线 AUROC 0.547（对失败无感）——这本身就是一段可写的失败分析。
 反常触发器：`results.predictions` 符号反转、或 `results.reproductions` 的基线复现 |Δ| > tol（默认 2×reported_std）时，findings.md 里必须已有含该方法名与指标名的条目，否则 FAIL（有则 WARN，正文必须解释）。为什么：多数人把基线复现偏差和反号当 bug 修掉，实际上一半的时候它是论文；先记录再动配置，才留得下证据。
 附加规则（仍写在 SKILL.md，脚本不查）：训完看 log 条数（已在 G3）；参数量用加载真实 ckpt 的函数；不同 GPU 进 repro.csv；零结果先查分层变量量程；对照实验分解后才可写进论文。
@@ -84,7 +84,7 @@ state 的 `target.field` 填 cv/ml/medimg/nature 时自动加载 `references/acr
 字数、摘要字数、关键词数、参考文献数、图表数与 state.target 比对。
 
 ## G6b 各节必写清单（`scripts/draft_plan.py check`，机械）
-判据：paper/draft_plan.json 的每一项在指定章节里有对应（name 项精确词边界匹配；numbers 项数字逐个在；number_pm1 项允许 ±1 取整；regex 项按措辞；tokens 项内容词重合 ≥60%）。章节按标题别名定位（Introduction/Method/Experiments|Results/Discussion|Limitation），找不到的退化为全文搜索并 WARN。≤2 字符的名字匹配不可靠，降 WARN 要人工确认。正文里 `>` 开头的编辑日志行先剔除。
+判据：paper/draft_plan.json 的每一项在指定章节里有对应（name 项精确词边界匹配；numbers 项数字逐个在；number_pm1 项允许 ±1 取整；regex 项按措辞；tokens 项内容词重合 ≥60%）。章节按标题别名定位（Introduction/Method/Experiments|Results/Discussion|Limitation），找不到的退化为全文搜索并 WARN。≤2 字符的名字匹配不可靠，降 WARN 要人工确认。正文里 `>` 开头的编辑日志行先剔除。"ours 相对最强基线"一项的最强基线 = 主指标上最好的非 ours 方法，方向依次取 `results.metric_direction[<列>]` > `results.primary_direction` > 列名正则（`scripts/metric_direction.py`：rmse/mae/error/loss/…/drop/delta/shift/gap/degradation/decline/asr → lower，其余 higher）；正则猜错会把最差方法当成最强基线（cvpr2027_medical 的 delta_rel_Ta，2026-10-15），所以 delta/drop 类主指标要在 state 里写明方向。
 为什么：G6 查的是"写了的数字对不对"，不查"该写的有没有写"。清单来自 P1–P4 已有产物，所以"引言必须点名 GeoCenter 的失效点"这类要求不是凭空定的。
 测试：EAAI 稿 20 项 17 过（3 项是单字母基线名 S/V/VS 降 WARN）；删掉消融节的分辨率措辞后 RES18 FAIL。RS_nowcast 无正文时 plan 出 38 项，可作写作提纲。
 漏法：只能查"有没有提"，不能查"提得对不对"；tokens 重合 60% 对长句偏松。

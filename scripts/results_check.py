@@ -11,6 +11,8 @@ state.results:
   metric_map:                          # main.csv column -> dotted path inside eval_file (list index allowed)
     rmse_E1: E1_in_domain.rmse_contact
   primary_metric: rmse_E1              # must be a main.csv column AND named in prereg §2
+  primary_direction: lower             # lower|higher; unset = guessed from the name (WARN when the guess fails)
+  metric_direction: {}                 # optional per-column override, e.g. {delta_rel_Ta: lower}
   min_seeds: 3
   seed_waiver: ""                      # non-empty = reason accepted instead of ≥ min_seeds
   group_key: method                    # rows sharing this value are one method; seeds counted within
@@ -26,6 +28,7 @@ pre-stated prediction. Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections, statistics
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import metric_direction as mdir
 
 FAILS = 0
 def say(st, g, msg):
@@ -130,6 +133,12 @@ def main():
             if logged_conv: say("WARN", "convention", f"主指标 '{pm}' 不在 prereg §2，但 state.experiments.convention_changes 登记了它（代理口径）—— 投稿主表必须换回预注册指标")
             else: say("FAIL", "convention", f"prereg §2 没有提到主指标 '{pm}'（主表的主指标必须是预注册的那个；代理口径要在 state.experiments.convention_changes 登记）")
         else: say("PASS", "convention", f"主指标 {pm} 与 prereg §2 一致")
+    # direction of the primary metric: draft_plan picks the strongest baseline by it (min or max); a guessed-wrong direction names the worst one
+    try:
+        for c in (cfg.get("metric_direction") or {}): mdir.direction(c, cfg)
+        if pm and mdir.direction(pm, cfg) is None:
+            say("WARN", "convention", f"主指标 '{pm}' 的方向从名字猜不出（下游按 higher-is-better 选最强基线）—— 在 results.primary_direction 写 lower 或 higher")
+    except ValueError as e: say("FAIL", "convention", f"research-state.yaml {e}")
     if md:
         win = section(md, "inclusion_window"); den = section(md, "denominator")
         hdr = io.open(main_p, encoding="utf-8-sig").read().splitlines()[0] + " " + " ".join(main_cols) + " " + (open(main_p, encoding="utf-8-sig").read()[:400])

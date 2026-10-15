@@ -113,6 +113,10 @@ results:                    # G4，scripts/results_check.py 机械执行
   freshness_ref: log.json             # eval_file 必须新于它（训练结束前的评估 = 陈旧）
   metric_map: {}                      # main.csv 列 -> eval_file 内的点路径，如 {rmse_E1: E1_in_domain.rmse_contact}
   primary_metric: ""                  # 必须是 main.csv 的列且在 prereg §2 出现
+  primary_direction: ""               # lower | higher：主指标越低越好还是越高越好。draft_plan 按它取"最强基线"（min 或 max）；
+                                      #   空 = 按列名正则猜（metric_direction.py），猜不出时 G4 WARN、下游当 higher。delta/drop/gap 类指标务必写明
+  metric_direction: {}                # 逐列覆盖，优先于 primary_direction 与正则，如 {delta_rel_Ta: lower, auc_gain: higher}；
+                                      #   make_comparison.py --project . 的红/蓝最优、ablation_plan.py resolve 的符号翻转也读它
   min_seeds: 3
   seed_waiver: ""                     # 非空 = 接受此理由代替 ≥min_seeds
   group_key: method

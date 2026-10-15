@@ -10,6 +10,7 @@ Sources -> items (each item: section, what must be said, probe used to verify):
                §6 ablations -> Method (each component named) & Results; §8 failure 分支 + §7 最小改进量 -> Limitations/Discussion
   claims.csv   每条 statement 的数字 -> Introduction contributions AND the section its table_or_figure lives in
   results/     main.csv: ref vs strongest baseline on primary metric -> Results must state the relative change (±1 in last digit);
+               strongest = min or max by results.metric_direction / primary_direction (metric_direction.py; name regex if unset);
                ablation resolve: unresolvable cells -> Results must say "noise/resolution/not resolvable/within";
                failure_slices.md: worst slice + AUROC -> Results/Discussion must mention them
   transfer_scan.md  selected row's 失效点 -> Method/Introduction (tokens)
@@ -22,6 +23,7 @@ for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, w
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE); import metric_direction as mdir
 FAILS = 0
 def say(st, msg):
     global FAILS
@@ -153,7 +155,8 @@ def build(root):
             try: by[r[gk]].append(float(r[pm]))
             except Exception: pass
         if ref in by and len(by) > 1:
-            lower_better = bool(re.search(r"rmse|mae|mse|error|loss|nll|ece|fid|risk|fnr|fpr|miscoverage|brier|crps|width|size|latency|wer|cer", pm, re.I))
+            try: lower_better = mdir.lower_is_better(pm, res)   # results.metric_direction / primary_direction, else the name regex
+            except ValueError as e: print(f"[FAIL] research-state.yaml {e}"); sys.exit(1)
             rv = statistics.mean(by[ref]); others = {k: statistics.mean(v) for k, v in by.items() if k != ref}
             if lower_better: others = {k: v for k, v in others.items() if v > 0} or others   # a risk identically 0 is a trivial set, not a strongest baseline
             best = min(others, key=others.get) if lower_better else max(others, key=others.get)
