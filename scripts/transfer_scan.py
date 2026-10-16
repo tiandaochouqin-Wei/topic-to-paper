@@ -135,43 +135,72 @@ def col(r, name):
 
 EMPTY = re.compile(r"^\s*(|—|-|–|n/?a|none|未知|无|tbd|\?)\s*$", re.I)
 
+def domain_terms(domain):
+    """--domain "RGB-infrared,RGB-thermal" -> ['RGB-infrared', 'RGB-thermal']: comma/semicolon-separated terms are OR alternatives"""
+    out = []
+    for t in re.split(r"[,;，；]", domain or ""):
+        t = re.sub(r'["\s]+', " ", t).strip()
+        if t and t.lower() not in [o.lower() for o in out]: out.append(t)
+    return out
+
+def count_queries(method, terms):
+    """one candidate x domain terms -> the query each source gets. Commas, quotes, pipes, colons and parentheses in the method name or
+    the terms would split an OpenAlex filter (HTTP 400) or act as operators, so they are stripped / quoted; the terms stay OR alternatives."""
+    m = re.sub(r"\s+", " ", re.sub(r'[,;:"()|]', " ", method)).strip()
+    terms = [re.sub(r'[,;:"()|]', " ", t).strip() for t in terms]; terms = [t for t in terms if t]
+    mw = re.sub(r"\s+", " ", m.replace("-", " ")).strip()
+    mwords = re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", m)
+    alt_words = [re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", t) for t in terms]; alt_words = [w for w in alt_words if w]
+    ax = " AND ".join(f"all:{w}" for w in mwords)
+    if alt_words: ax += (" AND " if ax else "") + "(" + " OR ".join("(" + " AND ".join(f"all:{w}" for w in ws) + ")" for ws in alt_words) + ")"
+    return {
+        "label": m + (" " + " | ".join(terms) if terms else ""),
+        "oa": f"({m}) AND (" + " OR ".join(f'"{t}"' for t in terms) + ")" if terms else m,
+        "s2": f"({mw}) + (" + " | ".join(f'"{t}"' for t in terms) + ")" if terms else mw,
+        "arxiv": ax,
+        "local": [f"{m} {t}" for t in terms] or [m],
+    }
+
 def count(a):
     md = io.open(a.scan, encoding="utf-8").read(); hdr, rows = parse_scan(md)
     if not rows: say("FAIL", f"{a.scan} 没有候选表"); sys.exit(1)
     years = tuple(int(x) for x in a.years.split("-"))
     import lit_scout
     con = sqlite3.connect(a.db).cursor() if a.db and os.path.exists(a.db) else None
-    new = {}
+    new = {}; terms = domain_terms(a.domain)
     for r in rows:
         m = col(r, "方法");
         if not m: continue
-        q = re.sub(r"\s*[\(（][^\)）]*[\)）]", "", m).strip() + " " + a.domain   # drop "(2403.15356)"-style IDs from the query
+        qs = count_queries(re.sub(r"\s*[\(（][^\)）]*[\)）]", "", m).strip(), terms)   # drop "(2403.15356)"-style IDs from the query
+        q = qs["label"]
         time.sleep(1.5)
         # source chain: OpenAlex -> Semantic Scholar bulk -> arXiv; first one that answers wins (OpenAlex free credits run out daily: Retry-After ~4 h)
         n_oa = -1; src = "?"
         if not a.no_net:
-            url = "https://api.openalex.org/works?" + urllib.parse.urlencode({"filter": f"title_and_abstract.search:{q},publication_year:{years[0]}-{years[1]}", "per-page": 1, "mailto": os.environ.get("T2P_CONTACT_EMAIL", "topic-to-paper@example.org")})
+            url = "https://api.openalex.org/works?" + urllib.parse.urlencode({"filter": f"title_and_abstract.search:{qs['oa']},publication_year:{years[0]}-{years[1]}", "per-page": 1, "mailto": os.environ.get("T2P_CONTACT_EMAIL", "topic-to-paper@example.org")})
             x = http(url, tries=1)
             try: n_oa = int(json.loads(x).get("meta", {}).get("count")) if x else -1
             except Exception: n_oa = -1
             src = "oa" if n_oa >= 0 else src
             if n_oa < 0:
                 time.sleep(3)
-                x = http("https://api.semanticscholar.org/graph/v1/paper/search/bulk?" + urllib.parse.urlencode({"query": q, "year": f"{years[0]}-{years[1]}", "fields": "title", "limit": 1}), tries=2)
+                x = http("https://api.semanticscholar.org/graph/v1/paper/search/bulk?" + urllib.parse.urlencode({"query": qs["s2"], "year": f"{years[0]}-{years[1]}", "fields": "title", "limit": 1}), tries=2)
                 try: n_oa = int(json.loads(x)["total"]); src = "s2"
                 except Exception: n_oa = -1
             if n_oa < 0:
                 time.sleep(3)
-                words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", q)]
-                x = http("https://export.arxiv.org/api/query?" + urllib.parse.urlencode({"search_query": " AND ".join(f"all:{w}" for w in words), "max_results": 0}), tries=2)
+                x = http("https://export.arxiv.org/api/query?" + urllib.parse.urlencode({"search_query": qs["arxiv"], "max_results": 0}), tries=2) if qs["arxiv"] else ""
                 mm = re.search(r"totalResults[^>]*>(\d+)<", x or "")   # not `m`: that is the method name
                 if mm: n_oa = int(mm.group(1)); src = "arxiv"
         n_oa = n_oa if isinstance(n_oa, int) else -1          # any source may hand back null
         n_loc = 0
         if con is not None:
             try:
-                hits = con.execute("SELECT year, title, abstract FROM papers WHERE papers MATCH ? LIMIT 2000", (lit_scout.fts_query(q),)).fetchall()
-                n_loc = sum(1 for y, t, ab in hits if str(y).isdigit() and years[0] <= int(y) <= years[1] and lit_scout.strict_match(q, t, ab))
+                seen = set()   # union over the OR alternatives, a paper matching two terms counts once
+                for qa in qs["local"]:
+                    for y, t, ab in con.execute("SELECT year, title, abstract FROM papers WHERE papers MATCH ? LIMIT 2000", (lit_scout.fts_query(qa),)).fetchall():
+                        if str(y).isdigit() and years[0] <= int(y) <= years[1] and lit_scout.strict_match(qa, t, ab): seen.add(t)
+                n_loc = len(seen)
             except Exception: pass
         new[m] = f"{src}:{n_oa if n_oa >= 0 else '?'}+local:{n_loc}"
         print(f"  {m:28s} {src} {n_oa:>4}  local {n_loc:>3}   ({q})")

@@ -28,6 +28,11 @@ PT_MM = 25.4 / 72.27
 FAILS = 0
 
 
+def _relpath(path, start=None):
+    """os.path.relpath that falls back to the absolute path when the two are on different Windows drives (ValueError)"""
+    try: return os.path.relpath(path) if start is None else os.path.relpath(path, start)
+    except ValueError: return os.path.abspath(path)
+
 def say(st, msg):
     global FAILS
     if st == "FAIL": FAILS += 1
@@ -76,7 +81,7 @@ def expand_inputs(path, seen=None, files=None):
         name = m.group(1).strip()
         cand = [os.path.join(base, name), os.path.join(base, name + ".tex")]
         p = next((c for c in cand if os.path.isfile(c)), None)
-        if p is None: say("FAIL", f"\\input{{{name}}} 找不到文件（相对 {os.path.relpath(base)}）"); return m.group(0)
+        if p is None: say("FAIL", f"\\input{{{name}}} 找不到文件（相对 {_relpath(base)}）"); return m.group(0)
         if os.path.abspath(p) in seen: return ""
         inner, _ = expand_inputs(p, seen, files)
         return "\n" + inner + "\n"
@@ -147,7 +152,7 @@ def check(a):
     tgt = st.get("target") or {}
     latex_dir = tgt.get("latex_dir") or "paper/latex"
     tex = os.path.join(root, a.tex or os.path.join(latex_dir, "main.tex"))
-    if not os.path.exists(tex): say("FAIL", f"{os.path.relpath(tex, root)} 不存在"); return
+    if not os.path.exists(tex): say("FAIL", f"{_relpath(tex, root)} 不存在"); return
     texdir = os.path.dirname(os.path.abspath(tex))
     text, files = expand_inputs(tex)
     rows = load_templates(); venue = tgt.get("venue") or ""; family = tgt.get("family") or ""
@@ -217,7 +222,7 @@ def check(a):
     if bibs:
         for b in bibs:
             p = next((c for c in (os.path.join(texdir, b), os.path.join(texdir, b + ".bib")) if os.path.isfile(c)), None)
-            if p is None: say("FAIL", f"\\bibliography{{{b}}} 的 .bib 不存在（相对 {os.path.relpath(texdir, root)}）")
+            if p is None: say("FAIL", f"\\bibliography{{{b}}} 的 .bib 不存在（相对 {_relpath(texdir, root)}）")
         else: say("PASS", f"bib 文件在: {bibs}")
     elif re.search(r"\\begin\{thebibliography\}", text): say("PASS", "内嵌 thebibliography")
     else: say("WARN", "没有 \\bibliography / \\addbibresource / thebibliography")
@@ -236,7 +241,7 @@ def check(a):
     unreg = []; off = []
     for g, p, ext in resolved:
         key = os.path.normpath(p)
-        if key not in reg: unreg.append(os.path.relpath(p, root).replace("\\", "/")); continue
+        if key not in reg: unreg.append(_relpath(p, root).replace("\\", "/")); continue
         if g.start() in sub_scale:
             frac, base = sub_scale[g.start()]; inner = width_mm(g.group(1), 1.0, 1.0)   # fraction of the subfigure's linewidth
             mm = frac * base * (inner if inner is not None else 1.0)
@@ -249,8 +254,8 @@ def check(a):
     # --- derived manuscript freshness
     md = os.path.join(root, "paper", "manuscript.md")
     newest = max(os.path.getmtime(f) for f in files)
-    if not os.path.exists(md): say("WARN", f"无 paper/manuscript.md：关口要它，跑 `tex_to_md.py {os.path.relpath(tex, root)} . --bib <bib>` 生成")
-    elif os.path.getmtime(md) + 1 < newest: say("FAIL", f"paper/manuscript.md 比 LaTeX 源旧 —— 关口检查的是旧正文；改完 .tex 先 `tex_to_md.py {os.path.relpath(tex, root).replace(os.sep, '/')} . --bib <bib>` 再 `t2p.py check`")
+    if not os.path.exists(md): say("WARN", f"无 paper/manuscript.md：关口要它，跑 `tex_to_md.py {_relpath(tex, root)} . --bib <bib>` 生成")
+    elif os.path.getmtime(md) + 1 < newest: say("FAIL", f"paper/manuscript.md 比 LaTeX 源旧 —— 关口检查的是旧正文；改完 .tex 先 `tex_to_md.py {_relpath(tex, root).replace(os.sep, '/')} . --bib <bib>` 再 `t2p.py check`")
     else: say("PASS", "paper/manuscript.md 新于全部 .tex 源（派生正文是最新的）")
     if FAILS == 0: say("PASS", f"LaTeX 投稿形态：{n_fig} 个 figure（{n_multi} 个组合图逐子图引用），{len(files)} 个 .tex 源文件")
 
@@ -258,7 +263,7 @@ def check(a):
 # ------------------------------------------------------------------ figure block
 def figure_block(panels, labels, caption, label, width, style, env, texdir, twocol):
     base = "\\columnwidth" if (twocol and not env.endswith("*")) else "\\textwidth"
-    rel = [os.path.relpath(os.path.abspath(p), texdir).replace("\\", "/") for p in panels]
+    rel = [_relpath(os.path.abspath(p), texdir).replace("\\", "/") for p in panels]
     L = [f"\\begin{{{env}}}[t]", "  \\centering"]
     for i, (p, lab) in enumerate(zip(rel, labels)):
         sub = f"{label}-{chr(97 + i)}"
@@ -299,8 +304,8 @@ def figure(a):
     out = os.path.join(texdir, a.out or os.path.join("figs", re.sub(r"\W+", "_", label.split(":", 1)[-1]) + ".tex"))
     os.makedirs(os.path.dirname(out), exist_ok=True)
     io.open(out, "w", encoding="utf-8", newline="\n").write(block)
-    inp = os.path.splitext(os.path.relpath(out, texdir))[0].replace("\\", "/")
-    print(block); print(f"-> {os.path.relpath(out, root)}  ({style}, {len(panels)} 个子图)；正文里写 \\input{{{inp}}}；每个面板登记 figures.csv，印刷宽度 = {a.width} × 版心")
+    inp = os.path.splitext(_relpath(out, texdir))[0].replace("\\", "/")
+    print(block); print(f"-> {_relpath(out, root)}  ({style}, {len(panels)} 个子图)；正文里写 \\input{{{inp}}}；每个面板登记 figures.csv，印刷宽度 = {a.width} × 版心")
 
 
 # ------------------------------------------------------------------ skeleton
@@ -335,9 +340,9 @@ def skeleton(a):
     bibstyle = tpl["bibstyle"] if tpl else "plainnat"
     out_dir = os.path.join(root, a.out); os.makedirs(out_dir, exist_ok=True)
     main = os.path.join(out_dir, "main.tex")
-    if os.path.exists(main) and not a.force: say("FAIL", f"{os.path.relpath(main, root)} 已存在（--force 覆盖）"); sys.exit(1)
-    figrel = os.path.relpath(os.path.join(root, "figures"), out_dir).replace("\\", "/") + "/"
-    bibrel = os.path.relpath(os.path.join(root, "paper", "refs"), out_dir).replace("\\", "/")
+    if os.path.exists(main) and not a.force: say("FAIL", f"{_relpath(main, root)} 已存在（--force 覆盖）"); sys.exit(1)
+    figrel = _relpath(os.path.join(root, "figures"), out_dir).replace("\\", "/") + "/"
+    bibrel = _relpath(os.path.join(root, "paper", "refs"), out_dir).replace("\\", "/")
     title = a.title or "<Title>"
     L = [f"\\documentclass[{opts}]{{{cls}}}" if opts else f"\\documentclass{{{cls}}}"]
     if tpl: L.append(f"% template: {tpl['key']} — put the class/style file(s) in this folder; source: {tpl['sty_source']}")
@@ -368,10 +373,10 @@ def skeleton(a):
     L += [""] + [ln if ln.startswith("%") else "% " + ln for ln in example]
     L += ["", f"\\bibliographystyle{{{bibstyle}}}", f"\\bibliography{{{bibrel}}}", "\\end{document}", ""]
     io.open(main, "w", encoding="utf-8", newline="\n").write("\n".join(L))
-    print(f"-> {os.path.relpath(main, root)}  class {cls}{'[' + opts + ']' if opts else ''}，family {family}，{len(secs)} 个节，子图风格 {style}")
-    if tpl: print(f"模板文件来源: {tpl['sty_source']}\n版心（{tpl['measured']}）: 单栏 {tpl['single_col_mm']} mm / 全宽 {tpl['full_width_mm']} mm；`latex_check.py widths --tex {os.path.relpath(main, root).replace(os.sep, '/')}` 可实测")
+    print(f"-> {_relpath(main, root)}  class {cls}{'[' + opts + ']' if opts else ''}，family {family}，{len(secs)} 个节，子图风格 {style}")
+    if tpl: print(f"模板文件来源: {tpl['sty_source']}\n版心（{tpl['measured']}）: 单栏 {tpl['single_col_mm']} mm / 全宽 {tpl['full_width_mm']} mm；`latex_check.py widths --tex {_relpath(main, root).replace(os.sep, '/')}` 可实测")
     else: print("latex-templates.csv 没有这个刊的行：用了 article；把目标刊的 class 放进来后改 \\documentclass")
-    print(f"写作流程：改 main.tex → `tex_to_md.py {os.path.relpath(main, root).replace(os.sep, '/')} . --bib paper/refs.bib` 派生 paper/manuscript.md → `t2p.py check`（G6d = latex_check.py check）")
+    print(f"写作流程：改 main.tex → `tex_to_md.py {_relpath(main, root).replace(os.sep, '/')} . --bib paper/refs.bib` 派生 paper/manuscript.md → `t2p.py check`（G6d = latex_check.py check）")
 
 
 # ------------------------------------------------------------------ widths
@@ -408,7 +413,7 @@ def widths(a):
             print("用法：figures.csv 的 print_width_mm = width 份额 × 上面的值；make_figure.py --width-mm 取同一数")
             return
         miss = re.search(r"! LaTeX Error: File `([^']+)' not found", out)
-        say("WARN", f"pdflatex 未能编译（{'缺 ' + miss.group(1) if miss else '见日志'}）：class/style 文件要放在 {os.path.relpath(texdir, root) or '.'}；下面是表值")
+        say("WARN", f"pdflatex 未能编译（{'缺 ' + miss.group(1) if miss else '见日志'}）：class/style 文件要放在 {_relpath(texdir, root) or '.'}；下面是表值")
     else: say("INFO", "本机没有 pdflatex；下面是 references/latex-templates.csv 的表值")
     if tpl: print(f"table ({tpl['measured']}): class {cls}  textwidth ≈ {tpl['full_width_mm']} mm  columnwidth ≈ {tpl['single_col_mm'] if tpl['twocolumn'] == 'yes' else tpl['full_width_mm']} mm  (two-column: {tpl['twocolumn']})")
     else: print(f"table: no row for class {cls}; typical defaults textwidth 170 mm, two-column column 85 mm")
