@@ -81,6 +81,57 @@ def parse_codebook(p):
         fields[col] = (vs if vs else None, joined)
     return fields
 
+def _ndoi(d):
+    """identifier as a human copies it (https://doi.org/10.1016/J.X, doi: 10.1016/j.x) -> the bare lower-case DOI"""
+    d = (d or "").strip().lower()
+    return re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", d).strip().rstrip(".")
+
+def _eligibility_from_sheet(rows):
+    """(assessed, excluded_at_title, decided): records that passed title screening = decided rows minus title-level excludes."""
+    dec = [r for r in rows if (r.get("decision") or "").strip().lower() in ("include", "exclude")]
+    t_ex = [r for r in dec if (r.get("decision") or "").strip().lower() == "exclude" and (r.get("screen_pass") or "").strip().lower().startswith("title")]
+    return len(dec) - len(t_ex), len(t_ex), len(dec)
+
+def prisma_counts(pr, rows=None, log=None):
+    """-> (counts for identified/deduplicated/screened_title/screened_abstract/included, notes). Tolerates the InfoFusion naming
+    (candidates, P1+P2, include, by_tier). `screened_abstract` is the PRISMA "assessed for eligibility" stage = records that passed
+    title screening; a narrower `abstract_screened` count (only the title-level maybes were read at abstract level) is replaced by the
+    sheet-derived figure when it is smaller than `included`, which cannot be right."""
+    num = lambda k: int(pr[k]) if isinstance(pr.get(k), (int, float)) and not isinstance(pr.get(k), bool) else None
+    first = lambda *ks: next((num(k) for k in ks if num(k) is not None), None)
+    log = log if isinstance(log, dict) else {}
+    got, notes = {}, []
+    got["identified"] = first("identified", "n_raw", "total_raw") or (int(log["total_raw"]) if isinstance(log.get("total_raw"), (int, float)) else None) or first("candidates")
+    got["deduplicated"] = first("deduplicated", "n_dedup", "total_deduplicated") or (int(log["total_deduplicated"]) if isinstance(log.get("total_deduplicated"), (int, float)) else None) or first("candidates")
+    got["screened_title"] = first("screened_title", "title_screened")
+    if got["screened_title"] is None and all(t in pr for t in ("P1", "P2")): got["screened_title"] = int(pr["P1"]) + int(pr["P2"])
+    got["included"] = first("included", "include")
+    sa = first("screened_abstract")
+    if sa is None:
+        sa = first("abstract_screened")
+        if sa is None:
+            ta = pr.get("by_tier") or {}
+            sa = sum(int(t.get("include", 0)) + int(t.get("maybe", 0)) for t in ta.values()) if ta else got.get("screened_title")
+    if rows and got["included"] is not None and (sa is None or sa < got["included"]):
+        assessed, t_ex, decided = _eligibility_from_sheet(rows)
+        if assessed >= got["included"]:
+            notes.append(f"screened_abstract 取自 screening_sheet：{decided} 条已决 − {t_ex} 条标题级排除 = {assessed} 条进入资格评估（prisma_flow.json 里的 {sa} 只是其中读过摘要的子集）")
+            sa = assessed
+    got["screened_abstract"] = sa
+    return {k: v for k, v in got.items() if v is not None}, notes
+
+def load_prisma(cfg, root, rows=None):
+    """-> (counts, notes) from cfg.prisma (+ search_log totals + screening sheet), or None when prisma_flow.json is absent"""
+    pp = os.path.join(root, cfg.get("prisma", "literature/prisma_flow.json"))
+    if not os.path.exists(pp): return None
+    pr = json.load(open(pp, encoding="utf-8"))
+    lp = os.path.join(root, cfg.get("search_log", "literature/search_log.json")); log = None
+    if os.path.exists(lp):
+        try: log = json.load(open(lp, encoding="utf-8"))
+        except Exception: log = None
+    counts, notes = prisma_counts(pr, rows, log)
+    return counts, notes, list(pr)
+
 # ------------------------------------------------------------------ protocol (S2)
 DECIDABLE = re.compile(r"(≥|>=|<=|≤|\bat least\b|\bno more than\b|\d{4}|\d+\s*(?:篇|个|years?|年|%)|\bboth\b|\bmust\b|命中|含|includes?|reports?|\bbefore\b|\bafter\b|\bbetween\b|\bto\b.*\bdate\b|\bpeer[- ]reviewed\b|English|英文|such as|e\.g\.|如|例如|covered by|由.*覆盖|\[\d+\])", re.I)
 
@@ -150,28 +201,18 @@ def check_coding(cfg, root):
             for c, cnt in bad_vals.items():
                 say("FAIL", "coding", f"coded.csv 列 {c} 有 {sum(cnt.values())} 个值不在 codebook 集合 {sorted(cb[c][0])[:8]}: {dict(cnt.most_common(6))} —— 要么改 codebook 加取值，要么重编")
         else: say("PASS", "coding", f"coded.csv {len(coded)} 行全部字段取值 ∈ codebook")
-    inc_ids = {(r.get("doi") or r.get("pmid") or r.get("arxiv_id") or "").strip() for r in rows if (r.get("decision") or "").lower() == "include"}
-    cod_ids = {(r.get("doi") or r.get("pmid") or r.get("arxiv_id") or "").strip() for r in coded}
+    inc_ids = {(_ndoi(r.get("doi")) or r.get("pmid") or r.get("arxiv_id") or "").strip() for r in rows if (r.get("decision") or "").lower() == "include"}
+    cod_ids = {(_ndoi(r.get("doi")) or r.get("pmid") or r.get("arxiv_id") or "").strip() for r in coded}
     if inc_ids and cod_ids:
         miss = inc_ids - cod_ids - {""}
         if miss: say("WARN", "coding", f"{len(miss)} 篇 include 未进 coded.csv（审计子集可以小于纳入集，但要在正文说明）")
-    pp = os.path.join(root, cfg.get("prisma", "literature/prisma_flow.json"))
-    if os.path.exists(pp):
-        pr = json.load(open(pp, encoding="utf-8"))
+    loaded = load_prisma(cfg, root, rows)
+    if loaded:
+        got, notes, keys_present = loaded
+        for n in notes: say("INFO", "coding", n)
         keys = ["identified", "deduplicated", "screened_title", "screened_abstract", "included"]
-        # tolerate the InfoFusion naming: candidates → identified/deduplicated, P1+P2 → screened_title, include → included
-        alias = {"identified": ("identified", "candidates", "n_raw"), "deduplicated": ("deduplicated", "candidates", "n_dedup"), "screened_title": ("screened_title", "title_screened"), "screened_abstract": ("screened_abstract", "abstract_screened"), "included": ("included", "include")}
-        got = {}
-        for k, names in alias.items():
-            for n in names:
-                if n in pr and isinstance(pr[n], (int, float)): got[k] = int(pr[n]); break
-        if "screened_title" not in got and all(t in pr for t in ("P1", "P2")): got["screened_title"] = int(pr["P1"]) + int(pr["P2"])
-        if "screened_abstract" not in got:
-            # abstract-level screening count = title-level includes + maybes that were then read at abstract level; fall back to title count
-            ta = pr.get("by_tier") or {}
-            got["screened_abstract"] = sum(int(t.get("include", 0)) + int(t.get("maybe", 0)) for t in ta.values()) if ta else got.get("screened_title", 0)
         missing = [k for k in keys if k not in got]
-        if missing: say("FAIL", "coding", f"prisma_flow.json 缺计数: {missing}（现有键 {list(pr)[:8]}）")
+        if missing: say("FAIL", "coding", f"prisma_flow.json 缺计数: {missing}（现有键 {keys_present[:8]}）")
         else:
             ok = got["identified"] >= got["deduplicated"] >= got["screened_title"] >= got["screened_abstract"] >= got["included"]
             hint = ""
@@ -182,19 +223,27 @@ def check_coding(cfg, root):
     else: say("WARN", "coding", "无 prisma_flow.json")
     kp = os.path.join(root, cfg.get("kappa", "coding/kappa_results.json")); mk = float(cfg.get("min_kappa", 0.6))
     if os.path.exists(kp):
-        k = json.load(open(kp, encoding="utf-8")); low = {f: v for f, v in k.items() if isinstance(v, (int, float)) and v < mk}
-        det = k.get("_detail") or {}
+        k = json.load(open(kp, encoding="utf-8"))
+        # flat {field: κ} (survey_tables.py kappa) or nested {field: {"kappa": κ, "agreement": …, "pabak": …}} (hand-made files)
+        det = dict(k.get("_detail") or {}); flat = {}
+        for f, v in k.items():
+            if f == "_detail": continue
+            if isinstance(v, (int, float)) and not isinstance(v, bool): flat[f] = v
+            elif isinstance(v, dict) and isinstance(v.get("kappa"), (int, float)): flat[f] = v["kappa"]; det.setdefault(f, v)
+        low = {f: v for f, v in flat.items() if v < mk}
         # prevalence paradox: 97.8 % raw agreement can give κ≈0.47 when one category dominates; PABAK ≥ 0.8 shows the coders agree
-        paradox = {f for f in low if isinstance(det.get(f), dict) and (det[f].get("pabak") or 0) >= 0.8}
+        # (only while κ > 0: κ ≤ 0 means the coders agree no better than chance, which a high raw agreement on the dominant class cannot excuse)
+        paradox = {f for f in low if isinstance(det.get(f), dict) and (det[f].get("pabak") or 0) >= 0.8 and flat[f] > 0}
         hard = {f: v for f, v in low.items() if f not in paradox}
-        say("FAIL" if hard else "PASS", "coding", f"κ: " + ", ".join(f"{f}={v:.2f}" for f, v in k.items() if isinstance(v, (int, float))) + (f" —— {list(hard)} < {mk}，该字段的 codebook 规则要改或正文明写" if hard else ""))
+        if not flat: say("WARN", "coding", f"{os.path.relpath(kp, root)} 里读不到任何数值 κ（要么 {{字段: κ}}，要么 {{字段: {{\"kappa\": κ, …}}}}）：编码可靠性未验证")
+        else: say("FAIL" if hard else "PASS", "coding", f"κ: " + ", ".join(f"{f}={v:.2f}" for f, v in flat.items()) + (f" —— {list(hard)} < {mk}，该字段的 codebook 规则要改或正文明写" if hard else ""))
         if paradox: say("WARN", "coding", f"{sorted(paradox)} κ < {mk} 但 PABAK ≥ 0.8（一个类别占绝大多数时 κ 被压低）：正文同时报一致率、κ 与 PABAK")
     else: say("WARN", "coding", "无 kappa_results.json：单人编码未验证（survey_tables.py kappa 从两份编码算）")
     check_qc(cfg, root, rows)
 
 def _ident(r):
     for k in ("doi", "pmid", "arxiv_id", "openalex_id"):
-        v = (r.get(k) or "").strip().lower()
+        v = _ndoi(r.get(k)) if k == "doi" else (r.get(k) or "").strip().lower()
         if v: return f"{k}:{v}"
     return ""
 
@@ -272,10 +321,20 @@ def check_claims(cfg, root):
 TENSION_A = {"contradiction", "conditional_difference", "no_material_conflict", "insufficient_overlap"}
 TENSION_R = {"resolved_in_synthesis", "flagged_unresolved", "not_applicable"}
 SYNTH = re.compile(r"\b(however|whereas|while|in contrast|by contrast|unlike|conversely|similarly|likewise|both|all|most|few|none of|across|together|common(?:ly)?|consistent(?:ly)?|inconsistent|conflict\w*|contradict\w*|disagree\w*|agree\w*|compared?|comparison|differ\w*|trade-?off|only when|depends? on|regardless|pattern|trend|majority|minority|in general|overall|taken together)\b|然而|相比|不同于|一致|矛盾|多数|少数|共同|总体|取决于", re.I)
-CITE = re.compile(r"\[@[^\]]+\]|\\cite[pt]?\{[^}]+\}|\[\d+(?:[,–-]\s*\d+)*\]|\(\w[\w-]+ et al\.,? \d{4}\)|\b\w[\w-]+ et al\. \(\d{4}\)")
+CITE = re.compile(r"\[@[^\]]+\]|\[[a-z][a-z-]*\d{4}[a-z0-9]*(?:\s*,\s*[a-z][a-z-]*\d{4}[a-z0-9]*)*\]|\\cite[pt]?\{[^}]+\}|\[\d+(?:[,–-]\s*\d+)*\]|\(\w[\w-]+ et al\.,? \d{4}\)|\b\w[\w-]+ et al\. \(\d{4}\)")
 OPENER = re.compile(r"^\s*(?:\[@[^\]]+\]|\\cite[pt]?\{[^}]+\}|\[\d+\]|[A-Z][\w-]+ et al\.|[A-Z][\w-]+ and [A-Z][\w-]+|In \[\d+\]|In \\cite|The authors of|They\b)", re.M)
 UNBOUNDED = re.compile(r"\b(no (?:prior|previous|existing) (?:study|work|survey|review)|no study has|has never been|all (?:contradictions|conflicts|inconsistencies) (?:are|were|have been) (?:resolved|addressed)|first (?:survey|review) (?:to|that))\b", re.I)
 BOUND = re.compile(r"\b(within|among|in) (?:the |our )?(?:searched|included|retrieved|reviewed) (?:sources|studies|literature|corpus|records)|\bto (?:the best of )?our knowledge|date range|as of \d{4}|检索范围内|纳入的研究中", re.I)
+
+REL_CLAUSE = re.compile(r"\b(?:whose|which|that|where|whereby|if|when|cells?|gaps?)\b", re.I)
+
+def _unbounded(line):
+    """an unbounded novelty claim; `has never been …` only counts when it states a fact about the field, not when it sits in a
+    definition or relative clause ("a gap is a cell whose gain has never been measured under missingness")"""
+    for m in UNBOUNDED.finditer(line):
+        if m.group(0).lower() == "has never been" and REL_CLAUSE.search(line[:m.start()].rsplit(". ", 1)[-1]): continue
+        return True
+    return False
 
 def _paragraphs(md):
     """body paragraphs with their first line number; headings, tables, lists, figure/table captions, and the reference list dropped."""
@@ -305,7 +364,7 @@ def check_writing(cfg, root):
         say("WARN" if cat else "PASS", "writing", f"{len(cat)}/{cited} 个带引用段落是逐篇罗列（多数句以单篇引用开头、无比较/归纳词）" + (f"，行 {cat[:8]}：改成 主题句 → 3–5 篇证据 → 对比/冲突 → 判断（编辑退稿理由「这是目录不是综述」）" if cat else ""))
         if share > 0.3: say("FAIL", "writing", f"逐篇罗列段占带引用段落 {share:.0%} > 30%：整篇读起来是目录")
     # 2. bounded novelty / completeness statements
-    unb = [i for i, l in enumerate(md.splitlines(), 1) if UNBOUNDED.search(l) and not BOUND.search(l)]
+    unb = [i for i, l in enumerate(md.splitlines(), 1) if _unbounded(l) and not BOUND.search(l)]
     if unb: say("WARN", "writing", f"行 {unb[:6]} 有无边界的「首个 / 无人研究 / 矛盾已全部解决」说法：改成「在检索的数据库与日期范围内」并指向 prior_surveys / tensions")
     # 3. every included study is cited somewhere (body or characteristics table)
     cp = os.path.join(root, cfg.get("coded", "coding/coded.csv"))
@@ -377,16 +436,30 @@ def check_scope(cfg, root, st):
 # ------------------------------------------------------------------ search (S1)
 ID_COLS = ("doi", "pmid", "arxiv_id", "openalex_id", "s2_id")
 
+SRC_HINT = ("query", "检索式", "q", "date", "日期", "run_at", "count", "n", "hits", "命中数")
+NOT_SOURCES = {"dedup_total", "meta", "terms", "prescreen_flags", "year_range", "queries", "date"}
+
 def _sources(log):
-    """search_log.json: {"sources": [{source, query, date, count}, ...]} or {source: {query, date, count}}; keys may be Chinese."""
+    """search_log.json: {"sources": [{source, query, date, count}, ...]} or {source: {query, date, count}}; keys may be Chinese.
+    A flat log also works: per-source dicts that carry any of query/date/count, `<name>_records: N` counts, and top-level `date` /
+    `query` / `terms` that every source inherits (a run-wide date and term list are not repeated per source). Dicts such as `terms`
+    or `prescreen_flags` are metadata, not sources."""
+    top_d = str(log.get("date") or "").strip() if isinstance(log, dict) else ""
+    top_q = ""
+    if isinstance(log, dict):
+        top_q = str(log.get("query") or "").strip()
+        if not top_q and isinstance(log.get("terms"), dict) and log["terms"]: top_q = "term groups: " + ", ".join(str(k) for k in log["terms"])
     if isinstance(log, dict) and isinstance(log.get("sources"), list): items = [(s.get("source") or s.get("name") or f"#{i}", s) for i, s in enumerate(log["sources"])]
     elif isinstance(log, list): items = [(s.get("source") or s.get("name") or f"#{i}", s) for i, s in enumerate(log)]
-    elif isinstance(log, dict): items = [(k, v) for k, v in log.items() if isinstance(v, dict) and k not in ("dedup_total", "meta")]
+    elif isinstance(log, dict):
+        items = [(k, v) for k, v in log.items() if isinstance(v, dict) and k not in NOT_SOURCES and any(h in v for h in SRC_HINT)]
+        have = {k for k, _ in items}
+        items += [(k[:-8], {"count": v}) for k, v in log.items() if k.endswith("_records") and isinstance(v, (int, float)) and not isinstance(v, bool) and k[:-8] not in have]
     else: items = []
     norm = []
     for name, s in items:
-        q = s.get("query") or s.get("检索式") or s.get("q") or ""
-        d = s.get("date") or s.get("日期") or s.get("run_at") or ""
+        q = s.get("query") or s.get("检索式") or s.get("q") or top_q
+        d = s.get("date") or s.get("日期") or s.get("run_at") or top_d
         n = s.get("count") if s.get("count") is not None else (s.get("n") if s.get("n") is not None else s.get("hits", s.get("命中数")))
         norm.append((str(name), str(q).strip(), str(d).strip(), n))
     return norm
@@ -417,7 +490,7 @@ def check_search(cfg, root):
             noid = [i for i, r in enumerate(rows, 2) if not any((r.get(c) or "").strip() for c in have_id)]
             if noid: say("FAIL", "search", f"candidates.csv {len(noid)} 行无任何标识符（行 {noid[:6]}）：没有 DOI/PMID/arXiv 的候选无法去重与核实")
             else: say("PASS", "search", f"candidates.csv {len(rows)} 行全部有标识符")
-            dois = [(r.get("doi") or "").strip().lower() for r in rows if (r.get("doi") or "").strip()]
+            dois = [_ndoi(r.get("doi")) for r in rows if (r.get("doi") or "").strip()]
             dup = len(dois) - len(set(dois))
             if dup: say("FAIL", "search", f"candidates.csv 有 {dup} 个重复 DOI：三源去重没做完")
     tp = os.path.join(root, cfg.get("prior_surveys", "literature/prior_surveys.csv"))
@@ -442,9 +515,14 @@ def check_seeds(cfg, root, cand_p):
     seeds = [r for r in csv.DictReader(open(sp, encoding="utf-8-sig")) if any((r.get(k) or "").strip() for k in ("doi", "pmid", "arxiv_id", "title"))]
     if not seeds: say("FAIL", "search", "seed_studies.csv 没有可匹配的行（doi / pmid / arxiv_id / title）"); return
     cands = list(csv.DictReader(open(cand_p, encoding="utf-8-sig"))) if os.path.exists(cand_p) else []
-    have = {(k, (r.get(k) or "").strip().lower()) for r in cands for k in ("doi", "pmid", "arxiv_id") if (r.get(k) or "").strip()}
+    norm = lambda k, v: _ndoi(v) if k == "doi" else (v or "").strip().lower()
+    have = {(k, norm(k, r.get(k))) for r in cands for k in ("doi", "pmid", "arxiv_id") if (r.get(k) or "").strip()}
     titles = {_ntitle(r.get("title")) for r in cands if (r.get("title") or "").strip()}
-    miss = [s for s in seeds if not any((k, (s.get(k) or "").strip().lower()) in have for k in ("doi", "pmid", "arxiv_id") if (s.get(k) or "").strip()) and _ntitle(s.get("title")) not in titles]
+    def title_hit(t):
+        n = _ntitle(t)
+        # a seed title copied from a table that cuts long titles (coded.csv with a 150-character title column) is a prefix of the full one
+        return bool(n) and (n in titles or (len(n.split()) >= 8 and any(c.startswith(n) for c in titles)))
+    miss = [s for s in seeds if not any((k, norm(k, s.get(k))) in have for k in ("doi", "pmid", "arxiv_id") if (s.get(k) or "").strip()) and not title_hit(s.get("title"))]
     rec = 1 - len(miss) / len(seeds); need = float(cfg.get("min_seed_recall", 1.0))
     lab = lambda s: (s.get("doi") or s.get("title") or s.get("pmid") or "")[:50]
     say("FAIL" if rec < need else "PASS", "search", f"种子召回 {len(seeds) - len(miss)}/{len(seeds)} = {rec:.2f}（要求 ≥ {need:.2f}）" + (f"；漏检 {[lab(s) for s in miss[:4]]}：逐条归因（缺同义词 / 主题词错 / 限定过窄），改检索式并在 search_log 记新版本" if miss else ""))
@@ -480,20 +558,39 @@ def check_tables(cfg, root):
         if r.returncode == 0: say("PASS", "tables", f"{os.path.relpath(spec, root)} 定义的表全部可从 coded.csv 逐格重算")
         elif "Traceback" in (r.stderr or ""): say("FAIL", "tables", "survey_tables.py summary --verify 崩溃: " + r.stderr.strip().splitlines()[-1][:120])
     elif not gens: say("FAIL", "tables", "coding/ 无 *summary*.py 生成脚本，也无 coding/tables.yaml：tables/*.csv 必须能从 coded.csv 重算（survey_tables.py summary）")
+    snap = lambda: {f: io.open(os.path.join(td, f), "rb").read() for f in os.listdir(td) if f.endswith(".csv")} if os.path.isdir(td) else {}
     for g in gens:
+        before = snap()
         r = subprocess.run([sys.executable, os.path.join("coding", g), "--verify"], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        after = snap()
+        cells = lambda b: list(csv.reader(io.StringIO(b.decode("utf-8-sig", errors="replace"))))   # line endings / quoting are not a difference, a cell is
+        changed = sorted(f for f in before if f in after and cells(before[f]) != cells(after[f]))
+        for f in before:
+            if f in after and before[f] != after[f]: io.open(os.path.join(td, f), "wb").write(before[f])      # the gate never rewrites the author's tables
+        has_flag = "verify" in io.open(os.path.join(root, "coding", g), encoding="utf-8", errors="replace").read()
         if r.returncode != 0 or "Traceback" in (r.stderr or ""):
             say("FAIL", "tables", f"coding/{g} --verify 退出码 {r.returncode}：汇总表与 coded.csv 不一致或脚本不可运行 | " + ((r.stdout + r.stderr).strip().splitlines() or ["(无输出)"])[-1][:120])
+        elif changed:
+            say("FAIL", "tables", f"coding/{g} 重跑后 {changed} 与 tables/ 里的不一致（已还原）：表是旧的或被手改过，重跑脚本再核对正文数字")
+        elif not has_flag: say("PASS", "tables", f"coding/{g} 没有 --verify 开关，重跑代替校验：{len(csvs)} 张表重跑后逐格不变")
         else: say("PASS", "tables", f"coding/{g} --verify 通过：{len(csvs)} 张表可从 coded.csv 重算")
-    # included count: PRISMA first, screening sheet second
-    inc = None
+    # the matrix is built from coded.csv, so its cells must add up to the coded rows (an audit subset smaller than the included set is
+    # legitimate: coding says so); without coded.csv fall back to PRISMA included, then to the screening sheet
+    inc, note = None, ""
     pp = os.path.join(root, cfg.get("prisma", "literature/prisma_flow.json"))
-    if os.path.exists(pp):
-        try: inc = int(json.load(open(pp, encoding="utf-8")).get("included"))
-        except Exception: inc = None
-    if inc is None:
-        sp = os.path.join(root, cfg.get("screening_sheet", "coding/screening_sheet.csv"))
-        if os.path.exists(sp): inc = sum(1 for r in csv.DictReader(open(sp, encoding="utf-8-sig")) if (r.get("decision") or "").strip().lower() == "include")
+    cdp = os.path.join(root, cfg.get("coded", "coding/coded.csv"))
+    if os.path.exists(cdp):
+        inc = sum(1 for _ in csv.DictReader(open(cdp, encoding="utf-8-sig")))
+        try: pi = int(json.load(open(pp, encoding="utf-8")).get("included"))
+        except Exception: pi = None
+        if pi is not None and pi != inc: note = f"（coded.csv {inc} 行是纳入集 {pi} 篇的子集，正文要说明矩阵只覆盖编码子集）"
+    else:
+        if os.path.exists(pp):
+            try: inc = int(json.load(open(pp, encoding="utf-8")).get("included"))
+            except Exception: inc = None
+        if inc is None:
+            sp = os.path.join(root, cfg.get("screening_sheet", "coding/screening_sheet.csv"))
+            if os.path.exists(sp): inc = sum(1 for r in csv.DictReader(open(sp, encoding="utf-8-sig")) if (r.get("decision") or "").strip().lower() == "include")
     cv = os.path.join(root, cfg.get("coverage", "coding/coverage.csv"))
     if not os.path.exists(cv): say("FAIL", "tables", f"{os.path.relpath(cv, root)} 不存在：覆盖矩阵（轴 × 任务/数据的篇数）找空白格，也是路线图节的依据")
     else:
@@ -509,7 +606,7 @@ def check_tables(cfg, root):
         tot = sum(cells)
         if inc is None: say("WARN", "tables", f"coverage.csv 格子合计 {tot}，但找不到纳入篇数（prisma_flow.json 的 included 或 screening 的 include 行）来核对")
         elif tot != inc: say("FAIL", "tables", f"coverage.csv 格子合计 {tot} ≠ 纳入篇数 {inc}：每篇纳入文献在矩阵里应恰好计一次")
-        else: say("PASS", "tables", f"coverage.csv {len(body)} 行 × {len(hdr)-1} 列，格子合计 = 纳入篇数 {inc}；空白格 {sum(1 for c in cells if c == 0)} 个")
+        else: say("PASS", "tables", f"coverage.csv {len(body)} 行 × {len(hdr)-1} 列，格子合计 = 纳入篇数 {inc}；空白格 {sum(1 for c in cells if c == 0)} 个{note}")
     fp = os.path.join(root, cfg.get("figures", "figures.csv"))
     nfig = max(len([l for l in open(fp, encoding="utf-8-sig").read().splitlines() if l.strip()]) - 1, 0) if os.path.exists(fp) else 0
     say("PASS" if nfig else "WARN", "tables", f"figures.csv {nfig} 张图" + ("" if nfig else "（survey_figure.py prisma / timeline / coverage 还没跑；S4 末至少一张）"))

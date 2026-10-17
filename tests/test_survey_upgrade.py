@@ -267,3 +267,169 @@ def test_figure_refuses_multivalued_and_bad_levels(survey):
     assert r.returncode == 1 and "--levels" in r.out
     r = run("survey_figure.py", "rob", "--out", "figures/r.png", "--domains", "ablation,missing_test", "--levels", "yes,no", "--labels", "ablation=Ablation", cwd=survey)
     assert r.returncode == 0, r.out
+
+
+# ================================================================== round 19: false positives found on the InfoFusion_multimodal project
+# (references/validation-round19-survey-upgrade-2026-10-18.md); each test reproduces the real-data shape on the small fixture.
+FLAT_LOG = {"date": "2026-10-04", "year_range": [2015, 2026], "terms": {"temporal": ["multimodal", "fusion"], "imaging": ["CT", "MRI"]},
+            "pubmed_records": 19203, "arxiv_records": 5723, "snowball": {"query": "forward+backward citation chasing", "count": 6924},
+            "snowball_records": 6924, "total_raw": 31850, "total_deduplicated": 30034, "prescreen_flags": {"A": 3226, "B": 3474}}
+
+
+def test_flat_search_log_inherits_date_and_terms_and_ignores_metadata_dicts(survey):
+    write(survey / "literature" / "search_log.json", json.dumps(FLAT_LOG))
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails == 0, r.out
+    assert "3 个检索源" in r.out and "pubmed=19203" in r.out and "terms=" not in r.out and "prescreen_flags" not in r.out
+    # a source that really has no query anywhere is still a FAIL
+    write(survey / "literature" / "search_log.json", json.dumps({"pubmed_records": 10, "date": "2026-10-04"}))
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails >= 1 and "pubmed" in r.out and "query" in r.out
+
+
+def test_seed_matches_doi_url_and_truncated_title(survey):
+    long_t = "A long multimodal fusion study of imaging records and genomics for prognosis in a large multicentre cohort"
+    with io.open(survey / "literature" / "candidates.csv", "a", encoding="utf-8", newline="") as f:
+        f.write(f"pubmed,10.1000/Fix.Z,30000009,,{long_t},2025,Radiology\n")
+    write(survey / "literature" / "seed_studies.csv", f"doi,pmid,arxiv_id,title\nhttps://doi.org/10.1000/FIX.A,,,\ndoi: 10.1000/fix.z,,,\n,,,{' '.join(long_t.split()[:9])}\n")
+    r = run("survey_check.py", "search", cwd=survey)
+    assert "种子召回 3/3" in r.out, r.out
+    write(survey / "literature" / "seed_studies.csv", "doi,pmid,arxiv_id,title\n,,,A short title\n,,,A long multimodal fusion study of something else entirely here\n")
+    r = run("survey_check.py", "search", cwd=survey)
+    assert r.fails == 1 and "种子召回 0/2" in r.out        # a short title must match exactly; a prefix needs >= 8 words AND to be a prefix
+
+
+INFOFUSION_PRISMA = {"stage": "abstract_v1", "candidates": 40, "P1": 20, "P2": 10, "include": 4, "exclude": 2, "abstract_screened": 2}
+
+
+def test_prisma_flow_with_narrow_abstract_count_uses_sheet_derived_stage(survey):
+    # fixture sheet: 6 decided, 2 excluded at title level -> 4 reached eligibility; the project's abstract_screened (2) is only the maybes
+    write(survey / "literature" / "prisma_flow.json", json.dumps(INFOFUSION_PRISMA))
+    r = run("survey_check.py", "coding", cwd=survey)
+    assert r.fails == 0, r.out
+    assert "screened_abstract 取自 screening_sheet" in r.out and "screened_abstract 4 ≥ included 4" in r.out
+    # no sheet evidence (nothing decided) -> the narrow count stands and the monotonicity FAIL is kept
+    ss = rows_of(survey / "coding" / "screening_sheet.csv")
+    for x in ss: x["decision"] = ""
+    set_rows(survey / "coding" / "screening_sheet.csv", ss)
+    r = run("survey_check.py", "coding", cwd=survey)
+    assert "取自 screening_sheet" not in r.out
+
+
+def test_prisma_identified_comes_from_search_log_total(survey):
+    write(survey / "literature" / "prisma_flow.json", json.dumps(INFOFUSION_PRISMA))
+    log = json.load(io.open(survey / "literature" / "search_log.json", encoding="utf-8")); log["total_raw"] = 44; log["total_deduplicated"] = 40
+    write(survey / "literature" / "search_log.json", json.dumps(log))
+    r = run("survey_check.py", "coding", cwd=survey)
+    assert "PRISMA identified 44 ≥ deduplicated 40" in r.out, r.out
+
+
+def test_prisma_figure_accepts_versioned_pass_names_and_separates_other_methods(survey):
+    write(survey / "literature" / "prisma_flow.json", json.dumps({"identified": 40, "deduplicated": 30, "screened_title": 30, "screened_abstract": 6, "included": 4}))
+    ss = rows_of(survey / "coding" / "screening_sheet.csv")
+    for x in ss: x["screen_pass"] = {"title": "title_v1", "abstract": "abstract_v1"}[x["screen_pass"]]
+    ss[4]["screen_pass"] = "abstract_v1"; ss[5]["screen_pass"] = "abstract_v1"          # the two excludes were abstract-level
+    set_rows(survey / "coding" / "screening_sheet.csv", ss)
+    log = json.load(io.open(survey / "literature" / "search_log.json", encoding="utf-8"))
+    log["sources"].append({"source": "snowball:s2", "query": "seeds", "date": "2026-09-21", "count": 5})
+    write(survey / "literature" / "search_log.json", json.dumps(log))
+    r = run("survey_figure.py", "prisma", "--out", "figures/fig_prisma.png", cwd=survey)
+    assert r.returncode == 0, r.out
+    src = {x["count"]: x["n"] for x in rows_of(survey / "figures" / "fig_prisma.source.csv")}
+    assert src["source:snowball:s2"] == "5" and src["excluded_assessed"] == "2"
+    assert any(k.startswith("reason:") for k in src), "abstract_v1 exclusions must be counted as reasons (prefix match on screen_pass)"
+
+
+def test_summary_unknown_group_row_and_known_count(survey):
+    rows = rows_of(survey / "coding" / "coded.csv"); rows[1]["L"] = "?"
+    set_rows(survey / "coding" / "coded.csv", rows)
+    write(survey / "coding" / "tables.yaml", "tables:\n  byL:\n    group_by: L\n    label: \"L{}\"\n    all: true\n    stats:\n      n: count\n      n_delta: count(delta_rep)\n")
+    r = run("survey_tables.py", "summary", cwd=survey); assert r.fails == 0, r.out
+    t = rows_of(survey / "tables" / "byL.csv")
+    assert [x["group"] for x in t] == ["L0", "L?", "all"]
+    allrow = [x for x in t if x["group"] == "all"][0]
+    assert sum(int(x["n"]) for x in t if x["group"] != "all") == int(allrow["n"])      # the group rows add up to "all"
+    assert allrow["n_delta"] == "4"
+    # explicit groups keep subset semantics: no unknown row
+    write(survey / "coding" / "tables.yaml", "tables:\n  byL:\n    group_by: L\n    groups: [\"0\"]\n    stats:\n      n: count\n")
+    run("survey_tables.py", "summary", cwd=survey)
+    assert [x["group"] for x in rows_of(survey / "tables" / "byL.csv")] == ["0"]
+
+
+def test_qc_sample_caps_near_miss(survey):
+    ss = rows_of(survey / "coding" / "screening_sheet.csv")
+    ss += [{"doi": f"10.1000/x{i}", "title": f"Extra fusion study {i}", "decision": "exclude", "reason": "off topic", "screen_pass": "title"} for i in range(30)]
+    set_rows(survey / "coding" / "screening_sheet.csv", ss)
+    r = run("survey_tables.py", "qc-sample", "--n", "5", "--near-miss", "fusion", cwd=survey)
+    qc = rows_of(survey / "coding" / "qc_exclusion_sample.csv")
+    assert sum(1 for q in qc if q["sample_type"] == "near_miss") == 5 and "命中 32" in r.out and "[WARN]" in r.out
+    run("survey_tables.py", "qc-sample", "--n", "5", "--near-miss", "fusion", "--max-near-miss", "40", cwd=survey)
+    assert sum(1 for q in rows_of(survey / "coding" / "qc_exclusion_sample.csv") if q["sample_type"] == "near_miss") == 32
+
+
+def test_hand_written_summary_script_without_verify_flag_cannot_hide_a_stale_table(survey):
+    gen = survey / "coding" / "audit_summary.py"
+    # a script that ignores --verify and just rewrites the table (as the InfoFusion audit_summary.py does)
+    write(gen, read(gen).replace("    if a.verify:", "    if False:  # no verify support"))
+    r = run("survey_check.py", "tables", cwd=survey); assert r.fails == 0, r.out
+    edit(survey / "tables" / "summary.csv", "M3,2,0.015", "M3,2,0.012")
+    stale = read(survey / "tables" / "summary.csv")
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert r.fails >= 1 and "不一致" in r.out
+    assert read(survey / "tables" / "summary.csv") == stale, "the gate must restore the author's file, not leave the regenerated one behind"
+
+
+def test_coverage_total_is_checked_against_coded_rows_when_coded_is_a_subset(survey):
+    # PRISMA says 4 included; only 3 are coded and the matrix counts those 3
+    set_rows(survey / "coding" / "coded.csv", rows_of(survey / "coding" / "coded.csv")[:3])
+    write(survey / "coding" / "coverage.csv", "mechanism,dx,prog\nconcat,1,0\nattn,1,1\ngraph,0,0\n")
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert "子集" in r.out and "≠ 纳入篇数" not in r.out, r.out
+    write(survey / "coding" / "coverage.csv", "mechanism,dx,prog\nconcat,1,0\nattn,1,1\ngraph,0,1\n")      # 4 cells but only 3 coded rows
+    r = run("survey_check.py", "tables", cwd=survey)
+    assert r.fails >= 1 and "≠ 纳入篇数 3" in r.out
+
+
+def test_nested_kappa_file_is_read_and_non_positive_kappa_is_never_a_paradox(survey):
+    write(survey / "coding" / "kappa_results.json", json.dumps({"fusion_level": {"n": 100, "agreement": 0.55, "kappa": 0.472, "ci": [0.36, 0.58]}, "domain": {"n": 100, "agreement": 0.86, "kappa": 0.839}}))
+    r = run("survey_check.py", "coding", cwd=survey)
+    assert r.fails == 1 and "fusion_level=0.47" in r.out and "domain=0.84" in r.out
+    write(survey / "coding" / "kappa_results.json", json.dumps({"missing_test": -0.02, "_detail": {"missing_test": {"n": 76, "agree": 0.96, "kappa": -0.02, "pabak": 0.92}}}))
+    r = run("survey_check.py", "coding", cwd=survey)
+    assert r.fails == 1 and "missing_test" in r.out                       # 96 % raw agreement with κ ≤ 0: no agreement on the rare class
+    write(survey / "coding" / "kappa_results.json", json.dumps({"x": "n/a"}))
+    r = run("survey_check.py", "coding", cwd=survey)
+    assert "读不到任何数值 κ" in r.out
+
+
+def test_bibkey_style_citations_count_as_citations(survey):
+    keyed = "# Fusion methods\n\nMost reported gains shrink once the unimodal baseline is matched: concatenation [williams2010pid] and attention [schouten2025navigating] gain 0.06, whereas matched comparisons [liang2023multibench, liang2024quantifying] gain 0.02 or less.\n"
+    write(survey / "paper" / "manuscript.md", keyed)
+    r = run("survey_check.py", "writing", cwd=survey)
+    assert "0/1 个带引用段落" in r.out, r.out
+    cat = "# Methods\n\nSmith et al. [smith2020a] proposed a concat model. Lee et al. [lee2021b] used attention over text. Wang et al. [wang2022c] built a graph of records. Chen et al. [chen2023d] added a gating layer.\n"
+    write(survey / "paper" / "manuscript.md", cat)
+    r = run("survey_check.py", "writing", cwd=survey)
+    assert r.fails >= 1 and "逐篇罗列" in r.out                           # bibkey-only paragraphs used to be invisible to the detector
+
+
+def test_has_never_been_in_a_definition_is_not_a_novelty_claim(survey):
+    write(survey / "paper" / "manuscript.md", SYNTHESIS + "\nA gap is a cell that is populated but whose gain has never been measured under missingness.\n")
+    r = run("survey_check.py", "writing", cwd=survey); assert "无边界" not in r.out, r.out
+    write(survey / "paper" / "manuscript.md", SYNTHESIS + "\nThe effect of modality dropout on matched baselines has never been studied.\n")
+    r = run("survey_check.py", "writing", cwd=survey); assert "无边界" in r.out
+
+
+def test_rob_unrated_levels_get_distinct_colours_and_timeline_runs(survey):
+    import sys
+    sys.path.insert(0, str(__import__("conftest").SCRIPTS))
+    import survey_figure as sf
+    c = sf.level_colours(["low", "some", "high", "unclear"])
+    assert c["low"] != c["high"] and c["unclear"] == sf.ROB_COLOURS["unclear"]
+    c = sf.level_colours(["0", "1", "2", "3", "?"])
+    assert len({c[k] for k in ("0", "1", "2", "3")}) == 4 and c["?"] == sf.ROB_COLOURS["unclear"]
+    r = run("survey_figure.py", "rob", "--out", "figures/r.png", "--domains", "M,L", "--levels", "0,1,2,3,?", cwd=survey)
+    assert r.returncode == 0, r.out
+    assert "none of the levels" in r.out                                  # no "domain with most high-risk ratings: M (0)"
+    r = run("survey_figure.py", "timeline", "--out", "figures/t.png", "--since", "2015", "--until", "2026", cwd=survey)
+    assert r.returncode == 0, r.out

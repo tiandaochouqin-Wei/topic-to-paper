@@ -39,6 +39,21 @@ def rob_colour(level):
     if l.startswith("some") or l.startswith("mod") or "concern" in l: return ROB_COLOURS["some"]
     return ROB_COLOURS["unclear"]
 
+def level_colours(levels):
+    """robvis colours for rating words; when two or more levels are not rating words at all (0/1/2/3, yes/no), give each its own palette
+    colour instead of painting them all the same grey; an explicit unclear / unknown / ? level stays grey"""
+    import re
+    cols = {lv: rob_colour(lv) for lv in levels}
+    grey = lambda lv: re.match(r"(?i)\s*(unclear|unknown|\?|not reported|nr|na|n/a)\s*$", lv)
+    unk = [lv for lv in levels if cols[lv] == ROB_COLOURS["unclear"] and not grey(lv)]
+    if len(unk) > 1:
+        for i, lv in enumerate(unk): cols[lv] = mf.PALETTE[(i + 2) % len(mf.PALETTE)]
+    return cols
+
+def ink(col):
+    from matplotlib.colors import to_rgb
+    r, g, b = to_rgb(col); return "white" if 0.299 * r + 0.587 * g + 0.114 * b < 0.55 else "#222222"
+
 def fail(msg): print(f"[FAIL] survey_figure: {msg}"); sys.exit(1)
 
 def ctx(a):
@@ -75,13 +90,16 @@ def _arrow(ax, x0, y0, x1, y1):
 
 def fig_prisma(a):
     root, cfg = ctx(a)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import survey_check
+    sp = os.path.join(root, cfg.get("screening_sheet", "coding/screening_sheet.csv"))
+    sheet = list(csv.DictReader(io.open(sp, encoding="utf-8-sig"))) if os.path.exists(sp) else []
     pp = os.path.join(root, cfg.get("prisma", "literature/prisma_flow.json"))
     if not os.path.exists(pp): fail(f"{os.path.relpath(pp, root)} 不存在（S3 的 triage 写它）")
-    pr = json.load(io.open(pp, encoding="utf-8"))
+    n, notes, _keys = survey_check.load_prisma(cfg, root, sheet)        # same alias rules and sheet-derived stage count as G-S3
+    for x in notes: print(f"[INFO] survey_figure: {x}")
     need = ["identified", "deduplicated", "screened_title", "screened_abstract", "included"]
-    miss = [k for k in need if not isinstance(pr.get(k), (int, float))]
+    miss = [k for k in need if k not in n]
     if miss: fail(f"prisma_flow.json 缺 {miss}")
-    n = {k: int(pr[k]) for k in need}
     if not (n["identified"] >= n["deduplicated"] >= n["screened_title"] >= n["screened_abstract"] >= n["included"]): fail(f"PRISMA 计数不单调 {n}（先过 G-S3）")
     # per-source counts; snowball rows are "other methods" in PRISMA 2020
     db, other = [], []
@@ -92,12 +110,10 @@ def fig_prisma(a):
             (other if any(k in name.lower() for k in ("snowball", "citation", "s2", "manual", "hand")) else db).append((name, c))
     # exclusion reasons at the assessed-for-eligibility stage
     reasons = collections.Counter()
-    sp = os.path.join(root, cfg.get("screening_sheet", "coding/screening_sheet.csv"))
-    passes = {p.strip() for p in a.reasons_pass.split(",")}
-    if os.path.exists(sp):
-        for r in csv.DictReader(io.open(sp, encoding="utf-8-sig")):
-            if (r.get("decision") or "").strip().lower() == "exclude" and (r.get("screen_pass") or "").strip() in passes and not (r.get("reason") or "").startswith("rule:"):
-                reasons[(r.get("reason_code") or r.get("reason") or "unspecified").strip()] += 1
+    passes = [p.strip().lower() for p in a.reasons_pass.split(",") if p.strip()]       # prefix match: "abstract" covers abstract_v1, abstract_v2
+    for r in sheet:
+        if (r.get("decision") or "").strip().lower() == "exclude" and any((r.get("screen_pass") or "").strip().lower().startswith(p) for p in passes) and not (r.get("reason") or "").startswith("rule:"):
+            reasons[(r.get("reason_code") or r.get("reason") or "unspecified").strip()] += 1
     excl_title = n["screened_title"] - n["screened_abstract"]; excl_full = n["screened_abstract"] - n["included"]
     if reasons and sum(reasons.values()) != excl_full:
         fail(f"排除理由合计 {sum(reasons.values())} ≠ 全文/摘要级排除数 {excl_full}（screened_abstract − included）：screening_sheet 与 prisma_flow.json 不同步，或 --reasons-pass 选错了")
@@ -106,12 +122,16 @@ def fig_prisma(a):
 
     fig = size(a, a.height_in or 3.3); ax = fig.add_axes([0, 0, 1, 1]); ax.set_xlim(0, 100); ax.set_ylim(0, 100); ax.axis("off")
     L, W, R, RW = 4, 46, 58, 40          # main column x, width; side column x, width
-    src_line = "\n".join(f"{nm} (n = {c})" for nm, c in db[:4]) if db else ""
-    h0 = max(13.0, 3.6 * (2 + (src_line.count("\n") + 1 if src_line else 0)) + 3.5)   # grows with the per-source lines
+    tot_other = sum(int(c or 0) for _, c in other)
+    id_lines = [f"Records identified (n = {n['identified']})"]            # PRISMA 2020: databases and other methods are two arms of the same box, not "removed" records
+    if db or other:
+        id_lines += [f"Databases (n = {n['identified'] - tot_other})"] + [f"  {nm} (n = {c})" for nm, c in db[:4]]
+        if other: id_lines += [f"Other methods (n = {tot_other})"] + [f"  {nm} (n = {c})" for nm, c in other[:2]]
+    h0 = max(13.0, 3.6 * (len(id_lines) + 1) + 3.5)   # grows with the per-source lines
     gap = (97 - h0 - 4 - 3 * 11) / 3                     # three equal gaps between the four stages
     rows_y = [97 - h0] + [97 - h0 - (k + 1) * (gap + 11) for k in range(3)]; H = [h0, 11, 11, 11]
-    _box(ax, L, rows_y[0], W, H[0], f"Records identified from databases\n(n = {n['identified'] - sum(int(c or 0) for _, c in other)})" + ("\n" + src_line if src_line else ""))
-    _box(ax, R, rows_y[0] + H[0] / 2 - 6, RW, 12, f"Records removed before screening:\nduplicates (n = {n['identified'] - n['deduplicated']})" + (f"\nOther methods (n = {sum(int(c or 0) for _, c in other)})" if other else ""))
+    _box(ax, L, rows_y[0], W, H[0], "\n".join(id_lines))
+    _box(ax, R, rows_y[0] + H[0] / 2 - 5, RW, 10, f"Records removed before screening:\nduplicates (n = {n['identified'] - n['deduplicated']})")
     _box(ax, L, rows_y[1], W, H[1], f"Records screened\n(title, n = {n['screened_title']})")
     _box(ax, R, rows_y[1], RW, H[1], f"Records excluded\n(n = {excl_title})")
     _box(ax, L, rows_y[2], W, H[2], f"Reports assessed for eligibility\n(n = {n['screened_abstract']})")
@@ -148,7 +168,8 @@ def fig_timeline(a):
         if a.cumulative: v = np.cumsum(v)
         ax.bar(xs, v, 0.72, bottom=bottom, color=mf.PALETTE[(i + 2) % len(mf.PALETTE)] if len(order) > 1 else mf.PALETTE[4], edgecolor="white", lw=0.3, label=g if a.by else None, zorder=3)
         bottom += v; src += [[x, g, int(c)] for x, c in zip(xs, v)]
-    ax.set_xticks(xs[:: max(1, len(xs) // 12)]); ax.set_ylabel("cumulative studies" if a.cumulative else "studies"); ax.grid(axis="y", lw=0.3, color="#dddddd", zorder=0)
+    ax.set_xticks(xs[:: max(1, -(-len(xs) // max(2, int(a.width_mm / 11))))])      # ~11 mm per 4-digit label at 7.5 pt: never print years on top of each other
+    ax.set_ylim(0, max(float(bottom.max()), 1.0) * 1.08); ax.set_ylabel("cumulative studies" if a.cumulative else "studies"); ax.grid(axis="y", lw=0.3, color="#dddddd", zorder=0)
     if a.by: ax.legend(fontsize=6, ncol=min(4, len(order)), loc="upper left", handlelength=1, columnspacing=0.8)
     out_of = sum(1 for y in yrs if y < lo or y > hi)
     if out_of: print(f"[WARN] survey_figure: {out_of} 篇在 {lo}–{hi} 之外，未画")
@@ -233,20 +254,23 @@ def fig_rob(a):
     bad = collections.Counter((d, (r.get(d) or "").strip()) for r in rows for d in doms if (r.get(d) or "").strip() not in levels)
     if bad: fail(f"偏倚风险列里有不在 --levels {levels} 的值: {dict(bad.most_common(6))}（空/? 也要明确记为 unclear）")
     fig = size(a, a.height_in or 0.24 * len(doms) + 0.75); ax = fig.add_subplot(111)
-    src = []
+    colours = level_colours(levels); src = []
     for i, d in enumerate(doms[::-1]):
         c = collections.Counter((r.get(d) or "").strip() for r in rows); left = 0.0
         for lv in levels:
             w = 100 * c[lv] / len(rows)
-            col = rob_colour(lv)
+            col = colours[lv]
             ax.barh(i, w, left=left, color=col, edgecolor="white", lw=0.4, height=0.68, label=lv if i == 0 else None, zorder=3)
-            if w >= 9: ax.text(left + w / 2, i, str(c[lv]), ha="center", va="center", fontsize=5.5, color="white" if lv.lower() in ("low", "high") else "#222222", zorder=4)
+            if w >= 9: ax.text(left + w / 2, i, str(c[lv]), ha="center", va="center", fontsize=5.5, color=ink(col), zorder=4)
             left += w; src.append([d, lv, c[lv], f"{100 * c[lv] / len(rows):.1f}"])
     ax.set_yticks(range(len(doms))); ax.set_yticklabels([labels.get(d, d) for d in doms[::-1]]); ax.set_xlim(0, 100); ax.set_xlabel("studies (%)")
     ax.legend(fontsize=6, ncol=len(levels), loc="lower center", bbox_to_anchor=(0.5, 1.0), handlelength=1, columnspacing=0.8)
     finish(fig, a, src, ["domain", "level", "n", "percent"], root, f"risk-of-bias summary over {len(doms)} domains, {len(rows)} studies")
-    worst = max(doms, key=lambda d: sum(1 for r in rows if (r.get(d) or "").strip().lower() == "high"))
-    print(f"caption numbers: {len(rows)} studies; domain with most high-risk ratings: {labels.get(worst, worst)} ({sum(1 for r in rows if (r.get(worst) or '').strip().lower() == 'high')})")
+    highs = {lv for lv in levels if rob_colour(lv) == ROB_COLOURS["high"]}
+    if not highs: print(f"caption numbers: {len(rows)} studies; none of the levels {levels} reads as a high-risk rating"); return
+    nhigh = lambda d: sum(1 for r in rows if (r.get(d) or "").strip() in highs)
+    worst = max(doms, key=nhigh)
+    print(f"caption numbers: {len(rows)} studies; domain with most high-risk ratings: {labels.get(worst, worst)} ({nhigh(worst)})")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)

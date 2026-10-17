@@ -20,6 +20,7 @@
   python survey_tables.py qc-sample [--n 100] [--seed 20261018] [--near-miss "fusion|multimodal;baseline|unimodal"]
       blind re-screen sample of excluded records: every exclude matching >=1 term of each keyword group (near miss) plus a
       seeded random sample of the rest -> coding/qc_exclusion_sample.csv WITHOUT the first decision; fill qc_decision/qc_reason
+      near-miss rows are capped at --max-near-miss (default = --n, sampled by seed) so the blind re-screen stays doable
 
 Spec (coding/tables.yaml):
   tables:
@@ -34,7 +35,7 @@ Spec (coding/tables.yaml):
         median_delta: median(delta_rep)
         share_delta_ci: share(delta_ci=yes)
       digits: 3
-  Statistics: count | median(c) | mean(c) | q1(c) | q3(c) | iqr(c) | min(c) | max(c) | sum(c) | count(c=v[|v]) | share(c=v[|v])
+  Statistics: count | count(c) (studies with a known value) | median(c) | mean(c) | q1(c) | q3(c) | iqr(c) | min(c) | max(c) | sum(c) | count(c=v[|v]) | share(c=v[|v])
   Numeric statistics skip empty and "?" cells and report n_used in the source line; share() divides by the group size.
 """
 import argparse, csv, io, json, os, re, statistics, sys, collections
@@ -87,8 +88,9 @@ def stat(expr, sel, digits):
     if not m: raise ValueError(f"无法解析的统计量 {expr!r}（count | median(c) | share(c=v) …）")
     fn, col, val = m.group(1).lower(), m.group(2), m.group(3)
     if fn == "count" and not col: return str(len(sel))
+    if fn == "count" and col and val is None: return str(sum(1 for r in sel if (r.get(col) or "").strip() not in ("", "?")))   # studies with a known value
     if fn in ("count", "share"):
-        if not col or val is None: raise ValueError(f"{expr!r}: {fn} 需要 列=值")
+        if not col or val is None: raise ValueError(f"{expr!r}: {fn} 需要 列=值（count(列) 数该列有已知值的篇数）")
         k = sum(1 for r in sel if _match(r, col, val))
         return str(k) if fn == "count" else (f"{k / len(sel):.{digits}f}" if sel else "")
     xs = [x for x in (_num(r.get(col)) for r in sel) if x is not None]
@@ -110,6 +112,9 @@ def derive(spec, coded):
     if gb:
         vals = [str(v) for v in spec["groups"]] if spec.get("groups") else sorted({(r.get(gb) or "").strip() for r in base} - {"", "?"}, key=lambda s: (_num(s) is None, _num(s) or 0, s))
         groups = [(label.format(v), [r for r in base if (r.get(gb) or "").strip() == v]) for v in vals]
+        if not spec.get("groups"):          # unknown / empty values get their own row, otherwise the group rows silently stop adding up to "all"
+            unk = [r for r in base if (r.get(gb) or "").strip() in ("", "?")]
+            if unk: groups.append((label.format("?"), unk))
     if spec.get("all", not gb): groups.append(("all", base))
     first = spec.get("group_col", "group")
     out = []
@@ -267,8 +272,11 @@ def cmd_qc_sample(a):
     if not excl: say("FAIL", "screening_sheet 没有带标识符的 exclude 行"); return
     text = lambda r: " ".join((r.get(c) or "") for c in ("title", "abstract")).lower()
     groups = [[p.strip().lower() for p in g.split("|") if p.strip()] for g in a.near_miss.split(";") if g.strip()]
-    near = [r for r in excl if groups and all(any(p in text(r) for p in g) for g in groups)]
-    rng = random.Random(a.seed); pool = [r for r in excl if r not in near]
+    near_all = [r for r in excl if groups and all(any(p in text(r) for p in g) for g in groups)]
+    rng = random.Random(a.seed); cap = a.max_near_miss or a.n
+    near = near_all if len(near_all) <= cap else rng.sample(near_all, cap)     # a near-miss set of 1 000+ rows will never be re-screened blind
+    if len(near_all) > cap: say("WARN", f"near-miss 命中 {len(near_all)} 篇 > 上限 {cap}：按 seed 抽 {cap} 篇（--max-near-miss 调上限；关键词组太宽时先收窄）")
+    taken = {id(r) for r in near_all}; pool = [r for r in excl if id(r) not in taken]
     rand = rng.sample(pool, min(a.n, len(pool)))
     out = os.path.join(root, cfg.get("qc_sample", a.out)); os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     cols = idc + ["title", "abstract", "sample_type", "qc_decision", "qc_reason"]
@@ -276,13 +284,14 @@ def cmd_qc_sample(a):
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore"); w.writeheader()
         for t, sel in (("near_miss", near), ("random", rand)):
             for r in sel: w.writerow({**{c: r.get(c, "") for c in idc + ["title", "abstract"]}, "sample_type": t, "qc_decision": "", "qc_reason": ""})
-    say("INFO", f"排除 {len(excl)} 篇中抽 near_miss {len(near)} + random {len(rand)}（seed {a.seed}）-> {os.path.relpath(out, root)}；"
+    say("INFO", f"排除 {len(excl)} 篇中抽 near_miss {len(near)}（命中 {len(near_all)}）+ random {len(rand)}（seed {a.seed}）-> {os.path.relpath(out, root)}；"
                 "复核时只看标题/摘要与协议，不看原决定，逐行填 qc_decision ∈ include | exclude 与 qc_reason")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     qs = sub.add_parser("qc-sample"); qs.add_argument("--n", type=int, default=100); qs.add_argument("--seed", type=int, default=20261018)
     qs.add_argument("--near-miss", default="", help='keyword groups "a|b;c|d": an exclude matching >=1 term of EVERY group is a near miss (one group per core criterion)')
+    qs.add_argument("--max-near-miss", type=int, default=0, help="cap on near-miss rows (0 = same as --n)")
     qs.add_argument("--out", default="coding/qc_exclusion_sample.csv"); qs.add_argument("--project", default=".")
     s = sub.add_parser("summary"); s.add_argument("--spec", default=""); s.add_argument("--verify", action="store_true")
     c = sub.add_parser("crosstab"); c.add_argument("--rows", required=True); c.add_argument("--cols", required=True); c.add_argument("--out", default="coding/coverage.csv")
