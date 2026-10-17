@@ -174,6 +174,17 @@ survey:                     # 综述分支（branch: survey 时填），scripts/
   coverage: coding/coverage.csv
   prior_surveys: literature/prior_surveys.csv
   claims: paper/claims.csv
+  review_type: narrative    # narrative | scoping | systematic；后两者必做排除复核（qc_sample）与 PRISMA 清单
+  seed_studies: literature/seed_studies.csv   # S1 金标准种子集（templates/seed_studies.csv），检索必须全部找回
+  min_seed_recall: 1.0
+  saturation_rounds: 2      # 滚雪球最后 N 轮 new_included = 0 才算饱和
+  qc_sample: coding/qc_exclusion_sample.csv   # S3 survey_tables.py qc-sample：排除记录盲复核
+  tables_spec: coding/tables.yaml             # S4 survey_tables.py summary 的表定义（templates/tables.yaml）
+  skew_dims: []             # S4 分布偏斜提示的列（某值 ≥70% 即提示）
+  tensions: coding/tensions.csv               # S5 跨研究张力清单（templates/tensions.csv）
+  manuscript: paper/manuscript.md
+  reporting_checklist: paper/prisma_checklist.csv   # S5 systematic/scoping：templates/prisma2020_checklist.csv 逐项填 location
+  this_survey: {}           # survey_tables.py prior 的末行：本文在各 covers_* 维度的取值
 
 # gate_check.py 读取的两个列表
 acronym_ok: []              # 不需展开的缩略语：期刊名、品牌名、单位（GB, GPU 已内置）

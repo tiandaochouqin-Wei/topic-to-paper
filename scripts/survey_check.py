@@ -6,7 +6,10 @@
   python survey_check.py protocol [--protocol protocol.md] [--codebook coding/codebook.md] [--state research-state.yaml]   G-S2
   python survey_check.py coding   [--state research-state.yaml] [--project .]   G-S3
   python survey_check.py tables   [--state ...] [--project .]                   G-S4: *summary*.py --verify, coverage.csv sums, figures.csv
-  python survey_check.py claims   [--state research-state.yaml] [--project .]   G-S5
+  python survey_check.py claims   [--state research-state.yaml] [--project .]   G-S5 (claims + writing)
+  python survey_check.py writing  [--state ...] [--project .]                   G-S5 writing part only: tensions ledger, catalogue
+                                                                                paragraphs, bounded novelty, included studies cited,
+                                                                                reporting checklist
 
 state.survey:
   scope_in: ""              scope_out: ""          axis: ""              thesis: ""
@@ -20,6 +23,16 @@ state.survey:
   coverage: coding/coverage.csv                    # axis × facet counts; row/col totals must equal included count
   prior_surveys: literature/prior_surveys.csv      # title, year, venue, doi, how_this_differs
   claims: paper/claims.csv                         # claim_id, statement, evidence_file, evidence_key, scope_words, verified
+  review_type: narrative                           # narrative | scoping | systematic — systematic/scoping make the QC sample and the PRISMA checklist mandatory
+  seed_studies: literature/seed_studies.csv        # gold set the search must retrieve (doi|pmid|arxiv_id|title); recall ≥ min_seed_recall
+  min_seed_recall: 1.0
+  saturation_rounds: 2                             # the last N snowball rounds in search_log.json must have new_included = 0
+  qc_sample: coding/qc_exclusion_sample.csv        # survey_tables.py qc-sample: random + near-miss exclusions re-screened blind
+  tables_spec: coding/tables.yaml                  # survey_tables.py summary spec (alternative to a hand-written coding/*summary*.py)
+  skew_dims: []                                    # coded columns where one value ≥ 70 % of known values is reported (advisory)
+  tensions: coding/tensions.csv                    # cross-study tension ledger (see check_tensions)
+  manuscript: paper/manuscript.md
+  reporting_checklist: paper/prisma_checklist.csv  # item, topic, location — every item located (systematic / scoping)
 Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
@@ -110,7 +123,10 @@ def check_coding(cfg, root):
     if not os.path.exists(sp): say("FAIL", "coding", f"{sp} 不存在"); return
     rows = list(csv.DictReader(open(sp, encoding="utf-8-sig")))
     dec = collections.Counter((r.get("decision") or "").strip().lower() for r in rows)
-    bad_dec = sum(1 for r in rows if (r.get("decision") or "").strip().lower() not in ("include", "maybe", "exclude", ""))
+    bad_dec = sum(1 for r in rows if (r.get("decision") or "").strip().lower() not in ("include", "maybe", "exclude", "pending", ""))
+    if dec["pending"]:
+        # a failed or unfinished screening call stays pending; it is never silently an exclude, and no final count is reported meanwhile
+        say("FAIL", "coding", f"{dec['pending']} 行 decision=pending（调用失败或待复核）：pending 清零前 PRISMA 计数与方法节数字都不是终值")
     no_reason = sum(1 for r in rows if (r.get("decision") or "").strip() and not (r.get("reason") or "").strip())
     no_id = sum(1 for r in rows if (r.get("decision") or "").strip() and not any((r.get(k) or "").strip() for k in ("doi", "pmid", "arxiv_id", "openalex_id")))
     say("FAIL" if (bad_dec or no_reason) else "PASS", "coding", f"screening {len(rows)} 行: include {dec['include']} maybe {dec['maybe']} exclude {dec['exclude']} 未决 {dec['']}；非法 decision {bad_dec}；有决定无理由 {no_reason}")
@@ -167,8 +183,40 @@ def check_coding(cfg, root):
     kp = os.path.join(root, cfg.get("kappa", "coding/kappa_results.json")); mk = float(cfg.get("min_kappa", 0.6))
     if os.path.exists(kp):
         k = json.load(open(kp, encoding="utf-8")); low = {f: v for f, v in k.items() if isinstance(v, (int, float)) and v < mk}
-        say("FAIL" if low else "PASS", "coding", f"κ: " + ", ".join(f"{f}={v:.2f}" for f, v in k.items() if isinstance(v, (int, float))) + (f" —— {list(low)} < {mk}，该字段的 codebook 规则要改或正文明写" if low else ""))
-    else: say("WARN", "coding", "无 kappa_results.json：单人编码未验证")
+        det = k.get("_detail") or {}
+        # prevalence paradox: 97.8 % raw agreement can give κ≈0.47 when one category dominates; PABAK ≥ 0.8 shows the coders agree
+        paradox = {f for f in low if isinstance(det.get(f), dict) and (det[f].get("pabak") or 0) >= 0.8}
+        hard = {f: v for f, v in low.items() if f not in paradox}
+        say("FAIL" if hard else "PASS", "coding", f"κ: " + ", ".join(f"{f}={v:.2f}" for f, v in k.items() if isinstance(v, (int, float))) + (f" —— {list(hard)} < {mk}，该字段的 codebook 规则要改或正文明写" if hard else ""))
+        if paradox: say("WARN", "coding", f"{sorted(paradox)} κ < {mk} 但 PABAK ≥ 0.8（一个类别占绝大多数时 κ 被压低）：正文同时报一致率、κ 与 PABAK")
+    else: say("WARN", "coding", "无 kappa_results.json：单人编码未验证（survey_tables.py kappa 从两份编码算）")
+    check_qc(cfg, root, rows)
+
+def _ident(r):
+    for k in ("doi", "pmid", "arxiv_id", "openalex_id"):
+        v = (r.get(k) or "").strip().lower()
+        if v: return f"{k}:{v}"
+    return ""
+
+def check_qc(cfg, root, screening):
+    """joint-exclusion audit: a random sample of excludes plus near-miss excludes, re-screened by a reviewer who does not see
+    the first decision. Two runs of the same model share misreadings, so agreement alone does not show the excludes are right."""
+    qp = os.path.join(root, cfg.get("qc_sample", "coding/qc_exclusion_sample.csv"))
+    strict = str(cfg.get("review_type", "narrative")).lower() in ("systematic", "scoping")
+    if not os.path.exists(qp):
+        say("FAIL" if strict else "WARN", "coding", f"无 {os.path.relpath(qp, root)}：排除记录没有抽样复核（survey_tables.py qc-sample 生成，复核者看不到原决定）" + ("；系统/范围综述必做" if strict else ""))
+        return
+    qc = list(csv.DictReader(open(qp, encoding="utf-8-sig")))
+    undone = [q for q in qc if (q.get("qc_decision") or "").strip().lower() not in ("include", "exclude")]
+    if undone: say("FAIL", "coding", f"QC 抽样 {len(undone)}/{len(qc)} 行未复核（qc_decision ∈ include | exclude）")
+    cur = {_ident(r): (r.get("decision") or "").strip().lower() for r in screening}
+    flips = [q for q in qc if (q.get("qc_decision") or "").strip().lower() == "include"]
+    stale = [_ident(q) for q in flips if cur.get(_ident(q)) == "exclude"]
+    if stale: say("FAIL", "coding", f"QC 复核判 include 的 {len(stale)} 篇在 screening_sheet 里仍是 exclude: {stale[:4]} —— 改成 include/maybe 并重算 PRISMA")
+    if qc and not undone:
+        by = collections.Counter((q.get("sample_type") or "random").strip() for q in qc); fl = collections.Counter((q.get("sample_type") or "random").strip() for q in flips)
+        rate = {t: f"{fl[t]}/{n}" for t, n in by.items()}
+        say("WARN" if flips else "PASS", "coding", f"排除复核 {len(qc)} 篇，误排 {len(flips)}（{rate}）" + ("：误排 > 0 说明排除规则有漏，相近记录要整层重看，正文报误排率" if flips else ""))
 
 # ------------------------------------------------------------------ claims (S5)
 def lookup(root, file, key):
@@ -215,8 +263,94 @@ def check_claims(cfg, root):
     td = os.path.join(root, cfg.get("tables_dir", "tables"))
     if os.path.isdir(td):
         gen = [f for f in os.listdir(os.path.join(root, "coding")) if f.endswith(".py") and "summary" in f] if os.path.isdir(os.path.join(root, "coding")) else []
-        say("PASS" if gen else "WARN", "claims", f"tables/ 有 {len([f for f in os.listdir(td) if f.endswith('.csv')])} 张 csv" + ("，coding/ 有生成脚本" if gen else "，但 coding/ 无 *summary*.py 生成脚本：汇总表必须能从 coded.csv 重算"))
+        if os.path.exists(os.path.join(root, cfg.get("tables_spec", "coding/tables.yaml"))): gen.append("tables.yaml")
+        say("PASS" if gen else "WARN", "claims", f"tables/ 有 {len([f for f in os.listdir(td) if f.endswith('.csv')])} 张 csv" + ("，有生成定义" if gen else "，但无 *summary*.py 或 tables.yaml：汇总表必须能从 coded.csv 重算"))
     if bad == 0: say("PASS", "claims", f"{len(rows)} 条主张全部能回到证据文件的具体行且满足判据")
+    check_writing(cfg, root)
+
+# ------------------------------------------------------------------ writing (S5): synthesis, not catalogue
+TENSION_A = {"contradiction", "conditional_difference", "no_material_conflict", "insufficient_overlap"}
+TENSION_R = {"resolved_in_synthesis", "flagged_unresolved", "not_applicable"}
+SYNTH = re.compile(r"\b(however|whereas|while|in contrast|by contrast|unlike|conversely|similarly|likewise|both|all|most|few|none of|across|together|common(?:ly)?|consistent(?:ly)?|inconsistent|conflict\w*|contradict\w*|disagree\w*|agree\w*|compared?|comparison|differ\w*|trade-?off|only when|depends? on|regardless|pattern|trend|majority|minority|in general|overall|taken together)\b|然而|相比|不同于|一致|矛盾|多数|少数|共同|总体|取决于", re.I)
+CITE = re.compile(r"\[@[^\]]+\]|\\cite[pt]?\{[^}]+\}|\[\d+(?:[,–-]\s*\d+)*\]|\(\w[\w-]+ et al\.,? \d{4}\)|\b\w[\w-]+ et al\. \(\d{4}\)")
+OPENER = re.compile(r"^\s*(?:\[@[^\]]+\]|\\cite[pt]?\{[^}]+\}|\[\d+\]|[A-Z][\w-]+ et al\.|[A-Z][\w-]+ and [A-Z][\w-]+|In \[\d+\]|In \\cite|The authors of|They\b)", re.M)
+UNBOUNDED = re.compile(r"\b(no (?:prior|previous|existing) (?:study|work|survey|review)|no study has|has never been|all (?:contradictions|conflicts|inconsistencies) (?:are|were|have been) (?:resolved|addressed)|first (?:survey|review) (?:to|that))\b", re.I)
+BOUND = re.compile(r"\b(within|among|in) (?:the |our )?(?:searched|included|retrieved|reviewed) (?:sources|studies|literature|corpus|records)|\bto (?:the best of )?our knowledge|date range|as of \d{4}|检索范围内|纳入的研究中", re.I)
+
+def _paragraphs(md):
+    """body paragraphs with their first line number; headings, tables, lists, figure/table captions, and the reference list dropped."""
+    md = re.split(r"(?m)^#{1,3}\s*(?:References|Bibliography|参考文献)\b", md)[0]
+    out, buf, start = [], [], 0
+    for i, l in enumerate(md.splitlines() + [""], 1):
+        if l.strip() and not re.match(r"\s*(#|\||[-*+]\s|\d+[.)]\s|!\[|>|<!--|(?:Table|Figure|Fig\.)\s*\d)", l): buf.append(l); start = start or i; continue
+        if buf: out.append((start, " ".join(buf))); buf, start = [], 0
+    return out
+
+def check_writing(cfg, root):
+    mp = os.path.join(root, cfg.get("manuscript", "paper/manuscript.md"))
+    md = io.open(mp, encoding="utf-8").read() if os.path.exists(mp) else ""
+    check_tensions(cfg, root, md)
+    if not md: say("WARN", "writing", f"无 {os.path.relpath(mp, root)}：目录式段落、引用覆盖与报告清单未查"); return
+    # 1. catalogue paragraphs: ≥3 sentences, most of them open on a single citation, and no comparative or synthesising word
+    cat, cited = [], 0
+    for ln, p in _paragraphs(md):
+        sents = [s for s in re.split(r"(?<=[.!?。])\s+", p) if len(s.split()) >= 4]
+        if not CITE.search(p): continue
+        cited += 1
+        if len(sents) < 3: continue
+        led = sum(1 for s in sents if OPENER.match(s) or (len(CITE.findall(s)) == 1 and CITE.search(s).start() < 40))
+        if led / len(sents) >= 0.6 and not SYNTH.search(p): cat.append(ln)
+    if cited:
+        share = len(cat) / cited
+        say("WARN" if cat else "PASS", "writing", f"{len(cat)}/{cited} 个带引用段落是逐篇罗列（多数句以单篇引用开头、无比较/归纳词）" + (f"，行 {cat[:8]}：改成 主题句 → 3–5 篇证据 → 对比/冲突 → 判断（编辑退稿理由「这是目录不是综述」）" if cat else ""))
+        if share > 0.3: say("FAIL", "writing", f"逐篇罗列段占带引用段落 {share:.0%} > 30%：整篇读起来是目录")
+    # 2. bounded novelty / completeness statements
+    unb = [i for i, l in enumerate(md.splitlines(), 1) if UNBOUNDED.search(l) and not BOUND.search(l)]
+    if unb: say("WARN", "writing", f"行 {unb[:6]} 有无边界的「首个 / 无人研究 / 矛盾已全部解决」说法：改成「在检索的数据库与日期范围内」并指向 prior_surveys / tensions")
+    # 3. every included study is cited somewhere (body or characteristics table)
+    cp = os.path.join(root, cfg.get("coded", "coding/coded.csv"))
+    if os.path.exists(cp):
+        coded = list(csv.DictReader(open(cp, encoding="utf-8-sig")))
+        if coded and "bibkey" in coded[0]:
+            pool = md
+            for f in ("tables/characteristics.tex", "tables/characteristics.md"):
+                if os.path.exists(os.path.join(root, f)): pool += io.open(os.path.join(root, f), encoding="utf-8").read()
+            keys = [(r.get("bibkey") or "").strip() for r in coded]
+            miss = [k for k in keys if k and not re.search(r"(?<![\w:-])" + re.escape(k) + r"(?![\w:-])", pool)]
+            nokey = sum(1 for k in keys if not k)
+            say("WARN" if (miss or nokey) else "PASS", "writing", f"纳入 {len(keys)} 篇" + (f"，{len(miss)} 篇正文与特征表都没引: {miss[:5]}" if miss else "，每篇在正文或特征表被引") + (f"；{nokey} 篇 bibkey 为空" if nokey else ""))
+    # 4. reporting checklist (PRISMA 2020 / PRISMA-ScR): every item has a location
+    strict = str(cfg.get("review_type", "narrative")).lower() in ("systematic", "scoping")
+    rp = os.path.join(root, cfg.get("reporting_checklist", "paper/prisma_checklist.csv"))
+    if os.path.exists(rp):
+        items = list(csv.DictReader(open(rp, encoding="utf-8-sig")))
+        nl = [r.get("item") for r in items if not (r.get("location") or "").strip() or (r.get("location") or "").strip().lower() in ("todo", "tbd", "?")]
+        na = [r.get("item") for r in items if (r.get("location") or "").strip().lower() in ("n/a", "na", "not applicable")]
+        say("FAIL" if (nl and strict) else ("WARN" if nl else "PASS"), "writing", f"报告清单 {len(items)} 项，{len(items) - len(nl)} 项已定位" + (f"，未定位: {nl[:8]}" if nl else "") + (f"；{len(na)} 项标 N/A（审稿人会看理由）" if na else ""))
+    elif strict: say("FAIL", "writing", f"review_type={cfg.get('review_type')} 但无 {os.path.relpath(rp, root)}（templates/prisma2020_checklist.csv 拷过去逐项填 location）")
+
+def check_tensions(cfg, root, md):
+    """cross-study tension ledger. Two orthogonal axes: is it a real conflict (pair_assessment), and did the review deal with it
+    (resolution_status). A real contradiction cannot be not_applicable; a resolved one must point at the place in the manuscript."""
+    tp = os.path.join(root, cfg.get("tensions", "coding/tensions.csv"))
+    if not os.path.exists(tp):
+        say("WARN", "writing", f"无 {os.path.relpath(tp, root)}：没有逐对记录研究间的冲突（study_a, study_b, topic, pair_assessment, resolution_status, resolution_pointer）"); return
+    rows = list(csv.DictReader(open(tp, encoding="utf-8-sig"))); bad = []
+    for i, r in enumerate(rows, 2):
+        a = (r.get("pair_assessment") or "").strip(); s = (r.get("resolution_status") or "").strip(); ptr = (r.get("resolution_pointer") or "").strip()
+        if a not in TENSION_A: bad.append(f"行 {i} pair_assessment={a!r} ∉ {sorted(TENSION_A)}"); continue
+        if s not in TENSION_R: bad.append(f"行 {i} resolution_status={s!r} ∉ {sorted(TENSION_R)}"); continue
+        if a in ("contradiction", "conditional_difference") and s == "not_applicable": bad.append(f"行 {i} 真冲突不能标 not_applicable")
+        if a in ("no_material_conflict", "insufficient_overlap") and s != "not_applicable": bad.append(f"行 {i} {a} 只能配 not_applicable")
+        if s == "resolved_in_synthesis":
+            if not ptr: bad.append(f"行 {i} resolved_in_synthesis 缺 resolution_pointer（正文哪一节/哪句话处理了它）")
+            elif md and ptr.lower() not in md.lower(): bad.append(f"行 {i} resolution_pointer {ptr[:30]!r} 在正文里找不到")
+    for b in bad: say("FAIL", "writing", "tensions: " + b)
+    real = [r for r in rows if (r.get("pair_assessment") or "").strip() in ("contradiction", "conditional_difference")]
+    unres = [r for r in real if (r.get("resolution_status") or "").strip() == "flagged_unresolved"]
+    if unres and md and not re.search(r"unresolved|open question|remain(?:s)? unclear|inconsistent|conflicting|未解决|尚无定论|结论不一", md, re.I):
+        say("FAIL", "writing", f"{len(unres)} 对冲突标 flagged_unresolved，但正文没有任何「未解决 / 结论不一」的表述")
+    if not bad: say("PASS" if real else "WARN", "writing", f"tensions {len(rows)} 对，真冲突 {len(real)}（已在综合中处理 {len(real) - len(unres)}，标未解决 {len(unres)}）" + ("" if real else "：没有记录到任何真冲突——综述没有找到分歧通常是没去找"))
 
 # ------------------------------------------------------------------ scope (S0)
 AXES = {"method-level", "method", "task", "data", "time", "方法层级", "任务", "数据", "时间"}
@@ -231,6 +365,11 @@ def check_scope(cfg, root, st):
     if axis and axis not in AXES: say("FAIL", "scope", f"state.survey.axis={axis!r} 不是 method-level | task | data | time 之一（只选一个主轴）")
     thesis = str(cfg.get("thesis") or "")
     if thesis and NOT_A_THESIS.match(thesis): say("FAIL", "scope", f"state.survey.thesis 是目录句不是论点：{thesis[:60]!r}（要一句可证伪的话，如\"报告的融合增益随基线匹配严格度缩小\"）")
+    rt = str(cfg.get("review_type") or "narrative").strip().lower()
+    if rt not in ("narrative", "scoping", "systematic"): say("FAIL", "scope", f"state.survey.review_type={rt!r} 不是 narrative | scoping | systematic")
+    title = str((st.get("project") or {}).get("title") or "")
+    if rt != "systematic" and re.search(r"systematic|系统综述|系统性综述", title + " " + thesis, re.I):
+        say("FAIL", "scope", f"标题/论点自称 systematic，但 review_type={rt}：没有锁定协议、可复现检索、双人筛选与 PRISMA 清单就不能叫系统综述")
     gf = ((st.get("target") or {}).get("guide_file")) or "submission/guide.txt"
     if not os.path.exists(os.path.join(root, gf)): say("FAIL", "scope", f"{gf} 不存在（S0 同 P0：先下载 Guide for Authors）")
     if FAILS == 0: say("PASS", "scope", f"scope_in / scope_out / axis={axis} / thesis 四项齐，论点是可证伪句，guide 在")
@@ -289,6 +428,40 @@ def check_search(cfg, root):
         if not ps: say("FAIL", "search", "prior_surveys.csv 为空：查过没有同主题综述也要写一行说明（title 填 none，how_this_differs 写检索式）")
         elif nodiff: say("FAIL", "search", f"prior_surveys.csv {len(nodiff)} 行未写本文差异: {nodiff[:3]}")
         else: say("PASS", "search", f"已有综述 {len(ps)} 篇，每篇写了本文差异")
+    check_seeds(cfg, root, cp)
+    if os.path.exists(lp): check_saturation(cfg, lp)
+
+def _ntitle(t): return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+def check_seeds(cfg, root, cand_p):
+    """search validation: a gold set of studies that must be in scope (from the anchor papers' reference lists or prior surveys)
+    has to be retrieved by the search. A seed missing after dedup is a search problem; a seed excluded later is a rule problem."""
+    sp = os.path.join(root, cfg.get("seed_studies", "literature/seed_studies.csv"))
+    if not os.path.exists(sp):
+        say("WARN", "search", f"无 {os.path.relpath(sp, root)}：检索召回率不可算。从 2–5 篇锚点文献的参考文献表里取 ≥10 篇确定在范围内的研究作金标准"); return
+    seeds = [r for r in csv.DictReader(open(sp, encoding="utf-8-sig")) if any((r.get(k) or "").strip() for k in ("doi", "pmid", "arxiv_id", "title"))]
+    if not seeds: say("FAIL", "search", "seed_studies.csv 没有可匹配的行（doi / pmid / arxiv_id / title）"); return
+    cands = list(csv.DictReader(open(cand_p, encoding="utf-8-sig"))) if os.path.exists(cand_p) else []
+    have = {(k, (r.get(k) or "").strip().lower()) for r in cands for k in ("doi", "pmid", "arxiv_id") if (r.get(k) or "").strip()}
+    titles = {_ntitle(r.get("title")) for r in cands if (r.get("title") or "").strip()}
+    miss = [s for s in seeds if not any((k, (s.get(k) or "").strip().lower()) in have for k in ("doi", "pmid", "arxiv_id") if (s.get(k) or "").strip()) and _ntitle(s.get("title")) not in titles]
+    rec = 1 - len(miss) / len(seeds); need = float(cfg.get("min_seed_recall", 1.0))
+    lab = lambda s: (s.get("doi") or s.get("title") or s.get("pmid") or "")[:50]
+    say("FAIL" if rec < need else "PASS", "search", f"种子召回 {len(seeds) - len(miss)}/{len(seeds)} = {rec:.2f}（要求 ≥ {need:.2f}）" + (f"；漏检 {[lab(s) for s in miss[:4]]}：逐条归因（缺同义词 / 主题词错 / 限定过窄），改检索式并在 search_log 记新版本" if miss else ""))
+
+def check_saturation(cfg, lp):
+    """stopping rule: snowball until the last N rounds add no new eligible study. Rounds are search_log entries whose source names
+    snowball/citation, in log order, each with new_included (eligible studies first found in that round)."""
+    try: log = json.load(open(lp, encoding="utf-8"))
+    except Exception: return
+    items = log.get("sources") if isinstance(log, dict) and isinstance(log.get("sources"), list) else (log if isinstance(log, list) else [])
+    rounds = [s for s in items if isinstance(s, dict) and re.search(r"snowball|citation|chain", str(s.get("source") or s.get("name") or ""), re.I)]
+    if not rounds: say("WARN", "search", "search_log 没有滚雪球轮次：停止规则无从判断（每轮记 new_included）"); return
+    n = int(cfg.get("saturation_rounds", 2)); ni = [s.get("new_included") for s in rounds]
+    if any(v is None for v in ni): say("WARN", "search", f"{sum(v is None for v in ni)}/{len(rounds)} 个滚雪球轮次没记 new_included（该轮首次发现的合格研究数），饱和不可判"); return
+    tail = ni[-n:]
+    ok = len(tail) == n and all(int(v) == 0 for v in tail)
+    say("PASS" if ok else "WARN", "search", f"滚雪球 {len(rounds)} 轮，各轮新增合格 {ni}" + ("：最后 %d 轮无新增，已饱和" % n if ok else f"：最后 {n} 轮仍有新增或不足 {n} 轮，继续滚或在局限节写明停止理由"))
 
 # ------------------------------------------------------------------ tables (S4)
 def check_tables(cfg, root):
@@ -298,7 +471,15 @@ def check_tables(cfg, root):
     csvs = sorted(f for f in os.listdir(td) if f.endswith(".csv")) if os.path.isdir(td) else []
     if not csvs: say("FAIL", "tables", f"{os.path.relpath(td, root)}/ 没有 csv：汇总表必须落盘（正文数字要指向它的行）")
     gens = sorted(f for f in os.listdir(os.path.join(root, "coding")) if f.endswith(".py") and "summary" in f) if os.path.isdir(os.path.join(root, "coding")) else []
-    if not gens: say("FAIL", "tables", "coding/ 无 *summary*.py 生成脚本：tables/*.csv 必须能从 coded.csv 重算（脚本带 --verify）")
+    spec = os.path.join(root, cfg.get("tables_spec", "coding/tables.yaml"))
+    if os.path.exists(spec):
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "survey_tables.py"), "summary", "--verify", "--project", root, "--spec", os.path.relpath(spec, root)],
+                           cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        for l in (r.stdout or "").splitlines():
+            if l.startswith("[FAIL]"): say("FAIL", "tables", l.split(":", 1)[1].strip())
+        if r.returncode == 0: say("PASS", "tables", f"{os.path.relpath(spec, root)} 定义的表全部可从 coded.csv 逐格重算")
+        elif "Traceback" in (r.stderr or ""): say("FAIL", "tables", "survey_tables.py summary --verify 崩溃: " + r.stderr.strip().splitlines()[-1][:120])
+    elif not gens: say("FAIL", "tables", "coding/ 无 *summary*.py 生成脚本，也无 coding/tables.yaml：tables/*.csv 必须能从 coded.csv 重算（survey_tables.py summary）")
     for g in gens:
         r = subprocess.run([sys.executable, os.path.join("coding", g), "--verify"], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0 or "Traceback" in (r.stderr or ""):
@@ -331,17 +512,31 @@ def check_tables(cfg, root):
         else: say("PASS", "tables", f"coverage.csv {len(body)} 行 × {len(hdr)-1} 列，格子合计 = 纳入篇数 {inc}；空白格 {sum(1 for c in cells if c == 0)} 个")
     fp = os.path.join(root, cfg.get("figures", "figures.csv"))
     nfig = max(len([l for l in open(fp, encoding="utf-8-sig").read().splitlines() if l.strip()]) - 1, 0) if os.path.exists(fp) else 0
-    say("PASS" if nfig else "WARN", "tables", f"figures.csv {nfig} 张图" + ("" if nfig else "（时间线 / 覆盖热图还没登记；S4 末至少一张）"))
+    say("PASS" if nfig else "WARN", "tables", f"figures.csv {nfig} 张图" + ("" if nfig else "（survey_figure.py prisma / timeline / coverage 还没跑；S4 末至少一张）"))
+    check_skew(cfg, root)
+
+def check_skew(cfg, root):
+    """advisory only: when one value holds ≥ 70 % of the known values of a dimension, the corpus (not the field) may be skewed —
+    the discussion has to say whether that is the field or the search."""
+    dims = cfg.get("skew_dims") or []
+    cp = os.path.join(root, cfg.get("coded", "coding/coded.csv"))
+    if not dims or not os.path.exists(cp): return
+    rows = list(csv.DictReader(open(cp, encoding="utf-8-sig")))
+    for d in dims:
+        vals = [v.strip() for r in rows for v in (r.get(d) or "").split("|") if v.strip() and v.strip() != "?"]
+        if not vals: say("WARN", "tables", f"skew_dims 列 {d} 无已知值"); continue
+        top, n = collections.Counter(vals).most_common(1)[0]
+        if n / len(vals) >= 0.7: say("WARN", "tables", f"分布偏斜：{d}={top} 占已知值 {n}/{len(vals)} = {n / len(vals):.0%}（≥70%）——讨论节说明这是领域本身还是检索造成的")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("protocol"); p.add_argument("--protocol", default="protocol.md"); p.add_argument("--codebook", default="coding/codebook.md"); p.add_argument("--state", default="research-state.yaml")
-    for n in ("scope", "search", "coding", "tables", "claims"):
+    for n in ("scope", "search", "coding", "tables", "claims", "writing"):
         q = sub.add_parser(n); q.add_argument("--state", default="research-state.yaml"); q.add_argument("--project", default=".")
     a = ap.parse_args()
     if a.cmd == "protocol": check_protocol(a.protocol, a.codebook, a.state)
     else:
         root = os.path.abspath(a.project); st = load_state(os.path.join(root, a.state)); cfg = st.get("survey") or {}
         if a.cmd == "scope": check_scope(cfg, root, st)
-        else: {"search": check_search, "coding": check_coding, "tables": check_tables, "claims": check_claims}[a.cmd](cfg, root)
+        else: {"search": check_search, "coding": check_coding, "tables": check_tables, "claims": check_claims, "writing": check_writing}[a.cmd](cfg, root)
     print("\n" + ("ALL PASS" if FAILS == 0 else f"{FAILS} FAIL")); sys.exit(0 if FAILS == 0 else 1)

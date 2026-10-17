@@ -126,11 +126,20 @@ family 来自 state.target.family，否则按 venue 名推断（Nature/Science/n
 ## 综述分支关口（`scripts/survey_check.py`）
 ### G-S0
 state.survey 的 scope_in / scope_out / axis / thesis 非空；guide.txt 在。漏法：5 月 synopsis 四维并列被编辑批为"目录"，根因是没有 thesis。
+2.11：review_type ∈ narrative | scoping | systematic；标题或论点自称 systematic 而 review_type 不是 → FAIL。
+
 ### G-S1
 search_log.json 每源有检索式+日期+计数；candidates.csv 每行有标识符；prior_surveys.csv ≥1 行且每行 how_this_differs 非空。漏法：PubMed E-utilities 在 retstart 10 000 截断，要按年切片。
+2.11：金标准种子召回 `literature/seed_studies.csv`（按 doi/pmid/arxiv_id 或归一化标题匹配 candidates）< min_seed_recall（默认 1.0）FAIL，无种子集 WARN；滚雪球轮次（search_log 中 source 含 snowball/citation 的条目，按记录顺序）每轮记 new_included，最后 saturation_rounds 轮不全为 0 → WARN。为什么：没有金标准，检索好坏无从谈起；种子在看结果前定。
+
 ### G-S2（protocol）
 inclusion/exclusion 每条含可判定词（阈值、数量、年份、"such as"、"covered by [n]"）；codebook 每字段有取值集合或标明 free text/float/int（`{...}` 内为集合，"joined/subset" 表示多值用 `|` 连接）；claims 表每条有可从 coded.csv 算出的判据；κ 计划；sha256 锁。在 InfoFusion_multimodal 真实 codebook 上：22 字段全部解析。
 ### G-S3（coding）
 screening 每行 decision ∈ {include, maybe, exclude} 且有 reason；已决行必有标识符；coded.csv 每字段取值 ∈ codebook（多值字段拆 `|` 后逐个查）；PRISMA 五个计数单调且 included = screening include 数；κ ≥ min_kappa。在 InfoFusion_multimodal 真实数据上：抓到 mechanism 列 68 个值（nomogram/late/LR/stacking/ensemble…）与 metric 列 177 个 AUC 不在 codebook 集合——codebook 写的是 AUROC，编码时全写成 AUC，正文汇总按哪个算就是口径问题。
+2.11：decision=pending 允许出现但 FAIL（pending 清零前不出终值；失败调用不得默认 exclude）；排除复核 `coding/qc_exclusion_sample.csv`（survey_tables.py qc-sample，无原决定）每行 qc_decision 已填，判 include 的在 screening 中仍为 exclude → FAIL，误排 > 0 → WARN，文件缺失 systematic/scoping FAIL、narrative WARN；κ < min_kappa 而 kappa_results.json `_detail` 的 PABAK ≥ 0.8 → 降 WARN（患病率悖论）。借自 Imbad0202 sr-screener（joint-exclusion audit、no silent defaults、κ+PABAK）。
+
+### G-S4（tables）
+每张 tables/*.csv 可从 coded.csv 逐格重算：coding/tables.yaml 存在时跑 `survey_tables.py summary --verify`，否则跑 coding/*summary*.py --verify（两者都没有 FAIL）；coverage.csv 格子合计 = 纳入篇数；figures.csv 至少一张（WARN）；skew_dims 中某值 ≥ 已知值 70% → WARN（借自 Imbad0202 bibliography_agent 的分布偏斜提示，只提示不阻断）。图由 `survey_figure.py` 生成（PRISMA 排除理由合计与计数不符时脚本自己 FAIL）。
 ### G-S5（claims）
 claims.csv 每条 evidence_file#evidence_key 能取到值且满足 expected 判据；first/only 类主张必须有 prior_surveys.csv 且每行写明差异；tables/ 必须有 *summary*.py 生成脚本。
+2.11 写作部分（`survey_check.py writing`，claims 子命令末尾也跑）：tensions.csv 两轴取值合法、真冲突不得 not_applicable、resolved 的 pointer 在正文可找到、有 flagged_unresolved 时正文有"未解决"类表述；逐篇罗列段（≥3 句、≥60% 句子以单篇引用开头、无比较/归纳词）WARN 并给行号，占带引用段落 > 30% FAIL；无边界的"首个 / 无人研究 / 矛盾已全部解决"WARN；coded.csv 有 bibkey 时每篇纳入研究在正文或特征表被引（WARN）；报告清单 paper/prisma_checklist.csv 每项有 location（systematic/scoping FAIL，narrative WARN；无清单时 systematic/scoping FAIL）。漏法：罗列检测只看句首与比较词，换个句式的堆砌能逃过；张力清单只查形式，不查冲突找全了没有——R3/DA 席位人工补。

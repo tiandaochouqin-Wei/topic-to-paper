@@ -1,0 +1,24 @@
+# coding/tables.yaml — 汇总表定义；survey_tables.py summary 按它从 coding/coded.csv 算出 tables/<name>.csv，
+# G-S4 跑 summary --verify 逐格重算。改 coded.csv 后重跑 summary，不要手改表。
+# 统计量：count | median(c) | mean(c) | q1(c) | q3(c) | iqr(c) | min(c) | max(c) | sum(c) | count(c=v[|v]) | share(c=v[|v])
+# 下面是融合增益综述的写法，换成本项目 codebook 的列。
+tables:
+  summary:                       # -> tables/summary.csv；claims.csv 的 evidence_key 写 "group=M3,median_delta"
+    group_by: M                  # 按这一列的取值分组（省略则只出一行 all）
+    groups: ["1", "3"]           # 可选：只要这些组、按这个顺序
+    label: "M{}"                 # 可选：组名写法
+    all: true                    # 末尾加一行全体
+    stats:
+      n: count
+      median_delta: median(delta_rep)
+      q1_delta: q1(delta_rep)
+      q3_delta: q3(delta_rep)
+      share_delta_ci: share(delta_ci=yes)
+    digits: 3
+  by_task:
+    group_by: task
+    where: "L=0"                 # 可选过滤：列=值[|值]，多个条件用 ; 连接
+    stats:
+      n: count
+      share_ext_val: share(ext_val=yes)
+      share_missing_test: share(missing_test=yes)

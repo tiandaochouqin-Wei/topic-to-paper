@@ -117,10 +117,14 @@
 | 系统检索（PubMed 按年切片 / arXiv / OpenAlex）与三源去重，写 search_log.json + candidates.csv | `scripts/survey_search.py search --query "<q>" [--pubmed-query/--arxiv-query/--openalex-query] --since 2015 [--abstracts]`（原项目内 lit/search_literature.py 的通用版） |
 | 滚雪球 | `scripts/survey_search.py snowball --dois <种子 DOI> [--direction both\|references\|citations]`（Semantic Scholar 一层） |
 | 规则预筛 / PRISMA 计数 / DOI 修复 | `scripts/survey_search.py triage --include-any ... --exclude ... --since ...`（写 screening_sheet.csv，不覆盖 Claude 已决的行，更新 prisma_flow.json）；`fix-dois`（efetch 只取 PubmedData 的 DOI） |
-| 标题级与摘要级筛选 | Claude 本会话内按批做，写回 screening_sheet.csv |
-| 编码 | Claude 按 codebook 本会话内按批做，写 coded.csv；κ 样本盲编 |
-| 汇总表 | 项目内 `coding/audit_summary.py --verify` → tables/*.csv |
-| G-S2 / G-S3 / G-S5 | `scripts/survey_check.py protocol | coding | claims` |
-| 写作 | 论点段 `nature-writing`，对比表与覆盖矩阵 `nature-figure`，润色 `nature-polishing` |
+| 检索验证 | `literature/seed_studies.csv` 金标准种子集（G-S1 算召回）；滚雪球每轮在 search_log 记 new_included（饱和判定） |
+| 标题级与摘要级筛选 | Claude 本会话内按批做，写回 screening_sheet.csv；拿不准或调用失败写 pending，不默认 exclude |
+| 排除复核 | `scripts/survey_tables.py qc-sample --n 100 --near-miss "<词|词>;<词|词>"`（无原决定的盲复核样本） |
+| 编码 | Claude 按 codebook 本会话内按批做，写 coded.csv；κ 样本盲编，`scripts/survey_tables.py kappa --b <第二份>` 算 κ / PABAK |
+| 汇总表 / 覆盖矩阵 / 特征表 / 已有综述对比表 | `scripts/survey_tables.py summary`（coding/tables.yaml）、`crosstab`、`characteristics`、`prior` |
+| PRISMA 流程图 / 时间线 / 覆盖热图 / 证据气泡图 / 偏倚风险图 | `scripts/survey_figure.py prisma | timeline | coverage | bubble | rob` |
+| 跨研究张力清单 | Claude 写 coding/tensions.csv（模板 templates/tensions.csv） |
+| G-S0 … G-S5 | `scripts/survey_check.py scope | search | protocol | coding | tables | claims`（claims 含 writing） |
+| 写作 | 论点段 `nature-writing`，分类树与概念图 `nature-figure`，润色 `nature-polishing` |
 | 审稿 | `academic-paper-reviewer` full，席位换成领域编辑/方法学/领域专家/读者/魔鬼代言人 |
 | 投稿包 | 同 P8 |

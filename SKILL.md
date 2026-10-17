@@ -1,7 +1,7 @@
 ---
 name: topic-to-paper
 description: "Gated topic-to-submission pipeline. One sentence from the user (a topic, a draft path, or 'resume <project>') and Claude runs every script to a submission package: research branch P0–P8 and survey branch S0–S6, each stage closed by a machine-checked gate (preregistration lock, leakage/effective-config audit, number traceability, ablation resolution, figure dpi, manuscript shape, review loop, submission consistency). Single session, no subagents, state in research-state.yaml. Triggers: 用 topic-to-paper, 从选题到论文, 投稿包, 端到端论文, 自动化科研, 帮我做一篇综述, 写一篇综述, write a survey on X, 这是我的稿子帮我过一遍关口, check my draft against the gates, resume/继续 <项目>. Not for a single writing, citation or figure task (nature-writing, nature-citation, nature-figure do those)."
-version: 2.10.0
+version: 2.11.0
 author: Wei Zhang (KI) + Claude
 license: MIT
 ---
@@ -81,7 +81,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 | **S1 检索与饱和** [细则](references/phases/S1.md) | 先查已有综述（≥3 篇要在 thesis 里写差异）；PubMed 按年切片 / arXiv / OpenAlex 三源去重；Semantic Scholar 正反向滚雪球 | literature/search_log.json、candidates.csv、prior_surveys.csv | `lit_scout.py scout` + 项目内检索脚本 | G-S1 = 每源有检索式、日期、计数；每行有标识符；已有综述表每行写差异 |
 | **S2 协议** [细则](references/phases/S2.md) | protocol.md：纳入/排除规则可机械判定、编码表每字段有取值集合、主张清单每条有判据、事前预测、κ 计划 | protocol.md（sha256 锁进 state.gates.G-S2）、coding/codebook.md | `survey_check.py protocol` | G-S2 全绿 |
 | **S3 筛选与编码** [细则](references/phases/S3.md) | 标题级 → 摘要级；零 token 的部分交脚本，要判断的部分本会话按批做；生成 PRISMA 计数 | coding/screening_sheet.csv、coded.csv、literature/prisma_flow.json、coding/kappa_results.json | `survey_check.py coding` | G-S3 全绿（κ ≥ 0.6） |
-| **S4 汇总表与图** [细则](references/phases/S4.md) | 汇总表由脚本从 coded.csv 算出并落盘（自带 --verify）；覆盖矩阵找空白格 | tables/*.csv、coding/coverage.csv、figures.csv | 项目内 `coding/audit_summary.py --verify`；图走 `nature-figure` | G-S4 = 每个数可重算；行列合计 = 纳入篇数 |
+| **S4 汇总表与图** [细则](references/phases/S4.md) | 汇总表由脚本从 coded.csv 算出并落盘（自带 --verify）；覆盖矩阵找空白格 | tables/*.csv、coding/coverage.csv、figures.csv | `survey_tables.py`、`survey_figure.py` | G-S4 = 每个数可重算；行列合计 = 纳入篇数 |
 | **S5 写作** [细则](references/phases/S5.md) | 论点段 → 已有综述对比表 → 分类法 → 审计/汇总 → 空白与路线图 → 自身局限；每个数字登记 numbers.csv | paper/manuscript.md、claims.csv、numbers.csv | `gate_check.py all`；`survey_check.py claims` | G-S5 全绿（first/only 主张逐行对照已有综述） |
 | **S6 审稿、修订、投稿包** [细则](references/phases/S6.md) | 同 P7/P8；席位换成领域编辑 / 方法学 / 领域专家 / 读者 / 魔鬼代言人 | paper/review_log.md、submission/* | `review_check.py`；`gate_check.py submission` | G7 / G8 |
 
@@ -92,7 +92,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 
 入口 `t2p.py`（init / check / status / doctor）；`check` 对综述分支额外跑 `survey_check.py`。
 研究分支：`lit_scout.py` `baseline_miner.py` `prereg_check.py` `ablation_plan.py` `audit_check.py` `bundle.py` `results_check.py` `gate_check.py` `claims_check.py`。
-综述分支：`survey_check.py`（protocol / coding / claims 三个子命令）+ `gate_check.py`。
+综述分支：`survey_check.py`（scope…writing）、`survey_tables.py`、`survey_figure.py` + `gate_check.py`。
 输入转换：`tex_to_md.py`（LaTeX）、`pdf_to_md.py`（已发表 PDF）、`jats_to_md.py`（Europe PMC XML）。
 校准：`calibrate.py` `venue_norms.py`（在已发表语料上重算关口阈值与刊物规范）。
 模板在 `templates/`（研究：prereg.md run-card.md；综述：protocol.md codebook.md）。改任何脚本后先跑 `python -m pytest tests -q`（tests/README.md），全绿才算改完。每站细则在 `references/phases/P0.md`–`P8.md` 与 `S0.md`–`S6.md`（进站前读）。验证记录在 `references/validation-*.md`，失败模式总表 [references/lessons.md](references/lessons.md)，路由 [references/routing.md](references/routing.md)。
