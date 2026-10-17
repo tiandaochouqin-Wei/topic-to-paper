@@ -1,4 +1,6 @@
-# Teaser / motivation schematic for make_teaser.py schematic (naive fusion vs ours, RGB-X detection example).
+# Paradigm-comparison schematic for make_motivation.py schematic (naive fusion vs ours, RGB-X detection example).
+# Use it only when the motivation is a structural difference; a measured phenomenon is better shown with
+# condition / paired / tradeoff (references/motivation-figures.md).
 # Coordinates are millimetres on the printed figure, origin bottom-left; xy = centre of the node, wh = width, height.
 # Replace every image with a real one: the input pair from the dataset and the detector outputs of the two models on the
 # SAME frame. Tiles (kind: tile) are illustrations, not measured feature maps; the caption must say so, or replace them

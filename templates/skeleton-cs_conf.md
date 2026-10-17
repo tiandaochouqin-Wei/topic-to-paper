@@ -4,7 +4,7 @@
 <150–200 words. Problem → limitation of existing methods (one sentence, specific) → what we propose (name it) → key mechanism → headline results on named benchmarks with numbers → code link.>
 
 ## 1. Introduction
-<≤20 % of body, 5–7 paragraphs. Para 1: task and why it matters. Para 2: what existing methods do and the specific failure (gap_map 失效点, cited; prereg §0 现象). Para 3: why it fails (prereg §0 原因假设) — this is the insight paragraph. Para 4: our approach in one paragraph. Para 5: "Our contributions are summarised as follows:" 3–4 bullets, each = one claims.csv row with its number. Optional teaser figure (Fig. 1) on page 1 showing the failure and the fix.>
+<≤20 % of body, 5–7 paragraphs. Para 1: task and why it matters. Para 2: what existing methods do and the specific failure (gap_map 失效点, cited; prereg §0 现象), shown in the motivation figure (references/motivation-figures.md). Para 3: why it fails (prereg §0 原因假设) — this is the insight paragraph. Para 4: our approach in one paragraph. Para 5: "Our contributions are summarised as follows:" 3–4 bullets, each = one claims.csv row with its number. Optional teaser figure (Fig. 1) on page 1 showing the failure and the fix.>
 
 ## 2. Related Work
 <2–3 paragraphs or 2.1–2.3 subsections by theme; each paragraph ends with how our work differs. Covers problem_table rows.>
