@@ -8,7 +8,7 @@
 
 | 缺失的 skill | Claude 自己怎么做 |
 |---|---|
-| `academic-paper-reviewer`、`rigor-reviewer` | 按 [review-seats.md](review-seats.md) 的五席逐席审，写 review_log.md 的固定格式；`review_check.py` 照常 |
+| `academic-paper-reviewer`、`rigor-reviewer` | 本 skill 内置同等流程（2.9.0 起）：[review-seats.md](review-seats.md) 的盲读 + 五席 + 魔鬼代言人 + 复审，口径 [review-rubrics.md](review-rubrics.md)，写 review_log.md 的固定格式；`review_check.py` 照常 |
 | `nature-writing`、`academic-intro-writing`、`nature-polishing` | 直接写：骨架 `templates/skeleton-<family>.md`，画像 [venue-profiles.md](venue-profiles.md)，必写清单 `draft_plan.py plan`；G6 / G6b / G6c 照常 |
 | `scipilot-figure-skill`、`nature-figure`、`dataviz` | 主结果 / 消融 / seed / 曲线图已由 `make_figure.py` 生成；其它数据图先走 `scipilot-figure-skill`（先剖析数据再推荐图型，拦小样本均值柱 / 双 Y 轴 / 截断轴，Nature / IEEE / 中文核心期刊版式，CJK 字体自动配）；输出仍按本 skill 规则：PDF、印刷宽度、同时写 .source.csv，登记 figures.csv |
 | `scientific-schematics`、`image2pptx` | 示意图先用文字框图占位，不阻塞 G5；投稿前再补 |
@@ -93,7 +93,7 @@
 | 动作 | 工具 |
 |---|---|
 | 审稿闭环核对 = G7 | `scripts/review_check.py` |
-| 模拟审稿 | skill `academic-paper-reviewer` full → re-review |
+| 模拟审稿 | 内置流程 [review-seats.md](review-seats.md)（装有 `academic-paper-reviewer` 时可用其 full → re-review） |
 | 严谨性审查 | skill `rigor-reviewer` |
 | 审稿回复 | skill `nature-response` |
 

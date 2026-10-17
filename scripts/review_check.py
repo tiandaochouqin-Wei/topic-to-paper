@@ -25,7 +25,11 @@ def say(st, msg):
     print(f"[{st}] review: {msg}")
 
 SEV = re.compile(r"\[(major|minor)(?:→[^\]]*)?\]", re.I)
-DISPO = re.compile(r"复核通过|accept|已改|fixed|rebut|驳回|partial|部分采纳|自证|closed|关闭|已修|已补|已加|已删|无需改|不改", re.I)
+DISPO = re.compile(r"复核通过|accept|已改|fixed|rebut|驳回|partial|部分采纳|自证|closed|关闭|已修|已补|已加|已删|无需改|不改|需新实验|待补实验", re.I)
+NEG_I = re.compile(r"\b(?:not|isn't|never)\s+(?:yet\s+)?(?:closed|resolved|fixed|accepted)|\bstill\s+open|未(?:关闭|解决|通过|修|改|补|闭)|尚未|没有(?:关闭|解决)|仍(?:未|然未|然开放)", re.I)   # a negated closing word is not a closing
+NEG_CASE = re.compile(r"\bOPEN\b")                                                                                                    # the log format marks an unclosed major "OPEN: …"
+def negated(span): return bool(NEG_I.search(span) or NEG_CASE.search(span))
+
 RE_REVIEW = re.compile(r"^#{1,3}\s*.*(re-review|第二轮|round\s*2|复审|re-?review)", re.I | re.M)
 
 def main():
@@ -56,9 +60,10 @@ def main():
         if it["closed_inline"]: continue
         key = re.sub(r"^\s*\d+\.\s*|\[.*?\]|\*", "", it["text"]).strip()[:12]      # text without ordinal/tags
         hit = False
+        def closes(prefix): return any(not negated(mm.group(0)) for mm in re.finditer(prefix + CLOSED, re_review, re.I | re.S))
         if re_review:
-            if it["id"] and re.search(r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])" + CLOSED, re_review, re.I | re.S): hit = True
-            elif key and re.search(re.escape(key) + CLOSED, re_review, re.I | re.S): hit = True
+            if it["id"] and closes(r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])"): hit = True
+            elif key and closes(re.escape(key)): hit = True
         if hit: it["dispo"] = True
         else: open_major.append(it)
     nod = [it for it in items if not it["dispo"]]
@@ -66,6 +71,10 @@ def main():
     else: say("PASS", f"{len(items)} 条意见全部有处置（major {len(majors)} / minor {len(minors)}）")
     if majors and not re_review and open_major: say("FAIL", f"有 {len(majors)} 条 major 但 review_log 无 Re-review/第二轮 小节：修完必须复审，每条 major 在复审节里标 closed")
     elif open_major: say("FAIL", f"{len(open_major)} 条 major 未在复审节关闭: " + "; ".join(f"L{it['line']} {it['text'][:50]}" for it in open_major[:4]))
+    elif majors and any(it["closed_inline"] and it["id"] and not re.search(r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])", re_review) for it in majors):
+        solo = [it["id"] for it in majors if it["closed_inline"] and it["id"] and not re.search(r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])", re_review)]
+        say("WARN", f"{len(solo)} 条 major 只靠行内 →已改/closed 关闭，复审节没有逐条核对: {', '.join(solo[:6])}（复审的意义是换一遍眼睛看改后的稿子）")
+        say("PASS", f"{len(majors)} 条 major 全部关闭（含行内关闭）")
     elif majors: say("PASS", f"{len(majors)} 条 major 全部关闭（inline 自证 {sum(1 for it in majors if it['closed_inline'])} / 复审节 {len(majors)-sum(1 for it in majors if it['closed_inline'])}）")
     else: say("PASS", "无 major")
     # state

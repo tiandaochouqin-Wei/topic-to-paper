@@ -114,7 +114,7 @@ family 来自 state.target.family，否则按 venue 名推断（Nature/Science/n
 漏法：以前 LaTeX 稿只能靠 tex_to_md 转 md 后过文字关口，图的格式、组合方式、class 是否对刊无人查；manuscript.md 过时了也照常 PASS。
 
 ## G7 审稿闭环（`scripts/review_check.py`，机械）
-判据：review_log.md 每条 [major]/[minor] 有处置（同行或后两行的 复核通过|已改|rebut|partial|自证，或在 Phase 2 编辑综合表里按 R1-3 编号出现）；每条 major 在 `## Re-review` 小节里按编号或前 12 字 + closed/已改 关闭（inline "→已自证" 也算）；state.review.round ≥1 且 open_major 空；gate_report.md 新于 manuscript.md；处置里的 §x.y / Table n 在正文存在（缺 WARN）。
+判据：review_log.md 每条 [major]/[minor] 有处置（同行或后两行的 复核通过|已改|rebut|partial|自证，或在 Phase 2 编辑综合表里按 R1-3 编号出现）；每条 major 在 `## Re-review` 小节里按编号或前 12 字 + closed/已改 关闭（inline "→已自证" 也算；2.9.0 起带否定的句子 `NOT closed` / `未关闭` / `OPEN:` 不算关闭，只靠行内箭头关闭而复审节没提到该编号 → WARN；处置词表加「需新实验 / 待补实验」）；state.review.round ≥1 且 open_major 空；gate_report.md 新于 manuscript.md；处置里的 §x.y / Table n 在正文存在（缺 WARN）。
 测试：EAAI 真实 review_log 7 条全绿；追加一条无处置 major → 2 FAIL；加 Re-review 关闭后 ALL PASS。
 为什么：修订会引入新的数字与新的引用，第一次过关不代表第二次过。
 

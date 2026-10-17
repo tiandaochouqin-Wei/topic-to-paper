@@ -307,6 +307,44 @@ def test_g7_manuscript_edited_after_last_gate_run(research):
     assert r.fails >= 1 and "没重跑" in r.out
 
 
+def _no_inline_close(research):
+    """strip the arrows so that the two majors can only be closed by the Re-review section"""
+    edit(research / "paper" / "review_log.md", "→ 已改: Section 4.4 now marks", "处置: 已改: Section 4.4 now marks")
+    edit(research / "paper" / "review_log.md", "→ 已改: Section 4.1 states", "处置: 已改: Section 4.1 states")
+
+
+def test_g7_negated_closing_word_is_not_a_closing(research):
+    _g6(research); _no_inline_close(research)
+    assert run("review_check.py", cwd=research).fails == 0                                   # control: still closes by the Re-review section
+    edit(research / "paper" / "review_log.md", "- R1-1 closed: Table 2 and Section 4.4 updated.", "- R1-1 NOT closed: Table 2 still lacks seeds.")
+    r = run("review_check.py", cwd=research)
+    assert r.fails >= 1 and "未在复审节关闭" in r.out, r.out
+
+
+def test_g7_open_marker_is_not_a_closing(research):
+    _g6(research); _no_inline_close(research)
+    edit(research / "paper" / "review_log.md", "- R2-1 closed: convention stated in Section 4.1 and in the Table 1 caption.", "- R2-1 OPEN: Table 1 still shows no window; only Section 4.1 was accepted so far.")
+    r = run("review_check.py", cwd=research)
+    assert r.fails >= 1 and "未在复审节关闭" in r.out, r.out
+
+
+def test_g7_needs_new_experiment_is_a_disposition_until_closed(research):
+    _g6(research); _no_inline_close(research)
+    edit(research / "paper" / "review_log.md", "处置: 已改: Section 4.1 states", "处置: 需新实验: Section 4.1 states")
+    r = run("review_check.py", cwd=research)
+    assert r.fails == 0, r.out                                                              # recorded, and closed in the Re-review section
+    edit(research / "paper" / "review_log.md", "- R2-1 closed: convention stated in Section 4.1 and in the Table 1 caption.", "")
+    r = run("review_check.py", cwd=research)
+    assert r.fails >= 1 and "未在复审节关闭" in r.out, r.out                                 # without the closing line the major stays open
+
+
+def test_g7_inline_only_closure_warns(research):
+    _g6(research)
+    edit(research / "paper" / "review_log.md", "- R1-1 closed: Table 2 and Section 4.4 updated.", "")
+    r = run("review_check.py", cwd=research)
+    assert r.fails == 0 and "[WARN] review:" in r.out and "R1-1" in r.out, r.out
+
+
 # ------------------------------------------------------------------ G8  submission package
 def test_g8_pass(research):
     r = run("gate_check.py", "submission", cwd=research); assert r.fails == 0, r.out
