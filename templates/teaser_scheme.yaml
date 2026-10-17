@@ -1,0 +1,41 @@
+# Teaser / motivation schematic for make_teaser.py schematic (naive fusion vs ours, RGB-X detection example).
+# Coordinates are millimetres on the printed figure, origin bottom-left; xy = centre of the node, wh = width, height.
+# Replace every image with a real one: the input pair from the dataset and the detector outputs of the two models on the
+# SAME frame. Tiles (kind: tile) are illustrations, not measured feature maps; the caption must say so, or replace them
+# with real feature-map crops (kind: image).
+size_mm: [100, 70]
+font_pt: 6.5
+panels:
+  - {title: "Naive fusion", xy: [1, 35.5], wh: [98, 33.5], style: bad}
+  - {title: "Ours", xy: [1, 1], wh: [98, 33.5], style: good}
+nodes:
+  # --- naive fusion (top)
+  - {id: rgb_a, kind: image, src: figures/src/rgb.png, xy: [10, 58], wh: [13, 9], label: "RGB image", color: rgb}
+  - {id: x_a, kind: image, src: figures/src/x.png, xy: [10, 44], wh: [13, 9], label: "X image", color: x}
+  - {id: cat, kind: trapezoid, xy: [28, 51], wh: [9, 12], text: "Concat\n(6ch)", color: shared}
+  - {id: bb, kind: stack, xy: [43, 51], wh: [14, 11], text: "Shared\nbackbone", color: neutral}
+  - {id: feat_a, kind: tile, pattern: mixed, xy: [59, 52], wh: [9, 9], label: "Entangled", color: shared}
+  - {id: out_a, kind: image, src: figures/src/det_naive.png, xy: [77, 51], wh: [13, 10], label: "Wrong detection", color: bad}
+  - {id: no, kind: mark, mark: cross, xy: [91, 58], wh: [4, 4]}
+  # --- ours (bottom)
+  - {id: rgb_b, kind: image, src: figures/src/rgb.png, xy: [10, 24], wh: [13, 9], label: "RGB image", color: rgb}
+  - {id: x_b, kind: image, src: figures/src/x.png, xy: [10, 10], wh: [13, 9], label: "X image", color: x}
+  - {id: bbr, kind: box, xy: [27, 24], wh: [11, 6.5], text: "RGB\nbackbone", color: rgb}
+  - {id: bbx, kind: box, xy: [27, 10], wh: [11, 6.5], text: "X\nbackbone", color: x}
+  - {id: route, kind: box, outline: true, dashed: true, xy: [46, 17], wh: [15, 20], text: "Reliability-\naware\nrouting", color: good}
+  - {id: feat_b, kind: tile, pattern: grid, xy: [62, 18], wh: [8, 8], label: "Modality-\npreserved", color: neutral}
+  - {id: out_b, kind: image, src: figures/src/det_ours.png, xy: [80, 17], wh: [13, 10], label: "Accurate detection", color: good}
+  - {id: yes, kind: mark, mark: check, xy: [93, 24], wh: [4, 4]}
+edges:
+  - {from: rgb_a, to: cat, color: rgb, dashed: true}
+  - {from: x_a, to: cat, color: x, dashed: true}
+  - {from: cat, to: bb}
+  - {from: bb, to: feat_a}
+  - {from: feat_a, to: out_a}
+  - {from: rgb_b, to: bbr, color: rgb}
+  - {from: x_b, to: bbx, color: x}
+  - {from: bbr, to: route, color: rgb}
+  - {from: bbx, to: route, color: x}
+  - {from: route, to: feat_b}
+  - {from: feat_b, to: out_b}
+legend: {xy: [28, 38.5], step_mm: 20, items: [[shared, "Shared"], [x, "X feature"], [rgb, "RGB feature"]]}

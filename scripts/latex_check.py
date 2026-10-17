@@ -265,8 +265,10 @@ def figure_block(panels, labels, caption, label, width, style, env, texdir, twoc
     base = "\\columnwidth" if (twocol and not env.endswith("*")) else "\\textwidth"
     rel = [_relpath(os.path.abspath(p), texdir).replace("\\", "/") for p in panels]
     L = [f"\\begin{{{env}}}[t]", "  \\centering"]
+    widths = [w.strip() for w in str(width).split(",") if w.strip()]
+    widths = widths * len(rel) if len(widths) == 1 else widths     # one share for all panels, or one per panel (teaser: 0.15,0.33,0.50)
     for i, (p, lab) in enumerate(zip(rel, labels)):
-        sub = f"{label}-{chr(97 + i)}"
+        sub = f"{label}-{chr(97 + i)}"; width = widths[i]
         if style == "subfig":
             L.append(f"  \\subfloat[{lab}\\label{{{sub}}}]{{\\includegraphics[width={width}{base}]{{{p}}}}}" + ("\\hfill" if i < len(rel) - 1 else ""))
         else:
@@ -290,6 +292,8 @@ def figure(a):
     panels = [p.strip() for p in a.panels.split(",") if p.strip()]
     labels = [l.strip() for l in a.labels.split(",")] if a.labels else [f"Panel {chr(65 + i)}" for i in range(len(panels))]
     if len(labels) != len(panels): say("FAIL", f"{len(panels)} 个面板但 {len(labels)} 个标签"); sys.exit(1)
+    nw = len([w for w in a.width.split(",") if w.strip()])
+    if nw not in (1, len(panels)): say("FAIL", f"--width 给了 {nw} 个份额，要么 1 个（全部面板同宽）要么每个面板一个（{len(panels)} 个）"); sys.exit(1)
     for p in panels:
         ap = p if os.path.isabs(p) else os.path.join(root, p)
         if not os.path.isfile(ap): say("FAIL", f"面板 {p} 不存在"); sys.exit(1)
