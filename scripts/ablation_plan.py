@@ -126,6 +126,33 @@ def row_matches(prereg_row, name, aliases):
     if al: return al in flat(prereg_row)
     nt = norm_tok(name); return bool(nt) and nt <= norm_tok(prereg_row)
 
+def group_ablation_rows(abl, metrics):
+    """-> [(name, {metric: value}, n_seeds)]. Rows sharing an ablation label are per-seed runs of that ablation:
+    averaged, n = row count. Otherwise n = int(n_seeds column) when present, else 1 (a single run)."""
+    order, groups = [], {}
+    for r in abl:
+        name = r["ablation"]
+        if name not in groups: order.append(name); groups[name] = []
+        groups[name].append(r)
+    out = []
+    for name in order:
+        rs = groups[name]
+        vals = {}
+        for m in metrics:
+            xs = [float(r[m]) for r in rs if r.get(m, "") not in ("", None)]
+            vals[m] = statistics.mean(xs) if xs else None
+        if len(rs) > 1: n = len(rs)
+        else:
+            try: n = max(1, int(float(rs[0].get("n_seeds") or 1)))
+            except ValueError: n = 1
+        out.append((name, vals, n))
+    return out
+
+def noise_scale(sig, n_abl, n_ref):
+    """single run: sigma*sqrt(2) (difference of two single runs, the historical rule); mean of n_abl seeds vs the
+    reference mean over n_ref seeds: sigma*sqrt(1/n_abl + 1/n_ref)."""
+    return sig * math.sqrt(2) if n_abl <= 1 else sig * math.sqrt(1.0 / n_abl + 1.0 / max(n_ref, 1))
+
 def resolve(state_p, prereg_p, project):
     root = os.path.abspath(project); st = load_yaml(os.path.join(root, state_p)); cfg = st.get("results") or {}
     main_p = os.path.join(root, cfg.get("main_table", "results/main.csv")); abl_p = os.path.join(root, cfg.get("ablation_table", "results/ablation.csv"))
@@ -133,7 +160,7 @@ def resolve(state_p, prereg_p, project):
         print("[FAIL] resolve: main/ablation csv 缺失"); sys.exit(1)
     main = list(csv.DictReader(open(main_p, encoding="utf-8-sig"))); abl = list(csv.DictReader(open(abl_p, encoding="utf-8-sig")))
     gk = cfg.get("group_key", "method"); ref = cfg.get("reference_method", "ours")
-    metrics = [c for c in abl[0].keys() if c not in ("ablation", "run_id", "seed", "hardware", "table", gk) and re.match(r"^-?\d", (abl[0][c] or "x"))]
+    metrics = [c for c in abl[0].keys() if c not in ("ablation", "run_id", "seed", "hardware", "table", "n_seeds", gk) and re.match(r"^-?\d", (abl[0][c] or "x"))]
     # reference seeds from main.csv (same hardware as ablation rows if a hardware column exists)
     hw_abl = {r.get("hardware") for r in abl if r.get("hardware")}
     # multi-dataset main table + single-dataset ablation table (tpami_medimg 2026-10-12): the reference's seed spread must come from the
@@ -154,13 +181,15 @@ def resolve(state_p, prereg_p, project):
     exp = {k: v for k, v in exp.items() if not any(flat(w) and flat(w) in flat(k) for w in waiver)}   # rows this stage does not run (results_check WARNs about them)
     print(f"参考 '{ref}': {len(ref_rows)} 行 / seeds {sorted(seeds)}；σ_ref: " + ", ".join(f"{m}={sig[m]:.4f}" for m in metrics))
     print(f"\n{'ablation':22s} " + " ".join(f"{m[:14]:>16s}" for m in metrics) + "   resolvable/total  sign-check")
-    tot = res = contra = 0
-    for r in abl:
-        name = r["ablation"]; es = next((v for k, v in exp.items() if row_matches(k, name, aliases)), "?")
+    tot = res = contra = 0; n_ref = len(seeds); multi = False
+    for name, rv, n_abl in group_ablation_rows(abl, metrics):
+        multi = multi or n_abl > 1
+        es = next((v for k, v in exp.items() if row_matches(k, name, aliases)), "?")
         cells = []; nres = 0; bad = []
         for m in metrics:
-            if r.get(m, "") == "" or not ref_rows: cells.append(f"{'':>16s}"); continue
-            d = float(r[m]) - mean[m]; z = abs(d) / (sig[m] * math.sqrt(2)) if sig[m] and sig[m] > 0 else float("inf")
+            if rv.get(m) is None or not ref_rows: cells.append(f"{'':>16s}"); continue
+            d = rv[m] - mean[m]; sc = noise_scale(sig[m], n_abl, n_ref) if sig[m] and sig[m] > 0 else 0
+            z = abs(d) / sc if sc > 0 else float("inf")
             tot += 1; ok = z >= 2
             if ok: res += 1; nres += 1
             mark = "" if ok else "~"
@@ -169,11 +198,12 @@ def resolve(state_p, prereg_p, project):
             if ok and es_m in ("+", "-") and (("+" if d > 0 else "-") != es_m): bad.append(m)
         if bad:
             contra += 1
-            print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   CONTRADICTS prereg sign {es} on {bad}")
+            print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   CONTRADICTS prereg sign {es} on {bad}" + (f"  (n={n_abl})" if n_abl > 1 else ""))
         else:
-            print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   {'ok' if es != '?' else 'no prereg sign'}")
+            print(f"{name:22s} " + " ".join(cells) + f"   {nres}/{len(metrics)}   {'ok' if es != '?' else 'no prereg sign'}" + (f"  (n={n_abl})" if n_abl > 1 else ""))
     null_expect = tot * 0.0455   # P(|z| ≥ 2) under H0 for a single-run difference vs seed sd (two-sided, σ√2)
-    print(f"\n可解读格 {res}/{tot}（|Δ| ≥ 2·σ_ref·√2）；零假设下期望约 {null_expect:.1f} 格。" + ("**整体在单 run 分辨率极限，不逐格解读**" if res <= null_expect * 1.5 else "整体高于零假设，可逐格解读"))
+    rule = "|Δ| ≥ 2·σ_ref·√(1/n+1/n_ref)，n = 该消融的 seed 数；单 run 行仍用 2·σ_ref·√2" if multi else "|Δ| ≥ 2·σ_ref·√2"
+    print(f"\n可解读格 {res}/{tot}（{rule}）；零假设下期望约 {null_expect:.1f} 格。" + ("**整体在单 run 分辨率极限，不逐格解读**" if res <= null_expect * 1.5 else "整体高于零假设，可逐格解读"))
     main_methods = sorted({r.get(gk, "") for r in main if r.get(gk) and r.get(gk) != ref})     # a §6 row may be a multi-seed main-table method
     missing = [k for k in exp if not any(row_matches(k, n, aliases) for n in [r["ablation"] for r in abl] + main_methods)]
     if missing: print(f"[FAIL] resolve: prereg §6 有 {len(missing)} 项消融没有 run: {missing}"); fails += 1

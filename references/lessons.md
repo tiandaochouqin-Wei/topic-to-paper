@@ -63,6 +63,8 @@
 | 关口全绿，稿子只有 1 图 6 表 | 类型覆盖只查"有没有"，数量没人查；写手先交薄版 | G5 按目标刊下四分位查图/表数；第一版就配足 |
 | 12 张图里 skill 只画了 3 张，曲线图全靠手写 matplotlib | make_figure 只有 main / ablation / seeds，cs 论文 33–55% 有曲线图 | `curves` 子命令读长表画多系列曲线带种子带 |
 | 逐种子表把 NLL 最大的那行加粗 | make_comparison seeds 一律取最大均值 | `--lower` 贯通 make_figure 与 make_comparison seeds；未写 `--lower` 时按 state 的 metric_direction / primary_direction，再按列名正则（metric_direction.py） |
+| 10 seed 均值的消融效应被判「不可分辨」，配对检验却 p=0.003 | 噪声带固定用单 run 口径 σ√2 | 识别 n_seeds / 逐 seed 行，均值用 σ√(1/n+1/n_ref) |
+| 错的 arXiv 号（量子光学论文）顶替 NeurIPS 2018 论文过了 G1 | refs 关口只核 DOI 标题，不核 arXiv；无 DOI 的会议论文没有合法出路，逼人填号 | arXiv 号按 abs 页标题核验；官方论文集 URL 可作标识符，须可访问、HTML 时核标题 |
 | P5 把其它图路由到本机没有的 skill | 路由表写了未安装的 skill 名 | 路由只指向存在的 skill；make_figure 先试 |
 | 本 skill 出的每张 PDF 都嵌 Type 3 字体 | matplotlib 默认 pdf.fonttype=3，没人改；G5 不查字体表 | rcParams fonttype 42；G5 用 pypdf 查 Type 3 → FAIL |
 | 图存出来才发现缺字方框 / 刻度挤成一团 | 存图后才看 PNG | 存图前内存渲染一次审版面（scipilot 的做法），缺字直接退出 |

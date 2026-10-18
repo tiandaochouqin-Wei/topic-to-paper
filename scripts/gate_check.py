@@ -75,13 +75,43 @@ def parse_bib(bibtext):
                 vm = re.match(r"[^,\n}]+", body[i:]); val = vm.group(0) if vm else ""
             fields.setdefault(name, re.sub(r"\s+", " ", val.replace("{", "").replace("}", "")).strip())
         blob = " ".join(fields.get(k, "") for k in ("note", "url", "howpublished", "journal", "eprint", "arxivid"))
-        am = re.search(r"(?:arXiv:|arxiv\.org/abs/)\s*(\d{4}\.\d{4,5})", blob, re.I)
+        am = re.search(r"(?:arXiv:|arxiv\.org/(?:abs|pdf)/)\s*(\d{4}\.\d{4,5})", blob, re.I) \
+            or re.fullmatch(r"\s*(\d{4}\.\d{4,5})(?:v\d+)?\s*", fields.get("eprint", "") or fields.get("arxivid", ""))
         dm = re.search(r"(10\.\d{4,}/[^\s,}\"]+)", fields.get("doi", "") or fields.get("url", ""))
+        vm = VENUE_HOSTS.search(fields.get("url", ""))
         entries.append({"key": key, "title": fields.get("title", ""), "doi": dm.group(1) if dm else "",
-                        "pmid": fields.get("pmid", ""), "arxiv": am.group(1) if am else ""})
+                        "pmid": fields.get("pmid", ""), "arxiv": am.group(1) if am else "",
+                        "venue_url": fields.get("url", "").strip() if vm else ""})
     return entries
 
 UA_MAIL = os.environ.get("T2P_CONTACT_EMAIL", "gate@example.org")
+# official proceedings hosts: an entry with no DOI / PMID / arXiv may cite one of these URLs as its identifier
+VENUE_HOSTS = re.compile(r"https?://(?:www\.)?(?:proceedings\.neurips\.cc|papers\.nips\.cc|proceedings\.mlr\.press|"
+                         r"openreview\.net/(?:forum|pdf)|aclanthology\.org|ojs\.aaai\.org|(?:www\.)?ijcai\.org/proceedings|"
+                         r"openaccess\.thecvf\.com|jmlr\.org/papers|www\.jmlr\.org/papers|ecva\.net/papers)", re.I)
+
+def _get_text(url, timeout=25):
+    req = urllib.request.Request(url, headers={"User-Agent": f"gate_check/1.1 (mailto:{UA_MAIL})"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        ctype = r.headers.get("Content-Type", ""); body = r.read(400000)
+    return ctype, body
+
+def _html_title(body):
+    t = body.decode("utf-8", "replace")
+    m = re.search(r'<meta\s+name="citation_title"\s+content="([^"]*)"', t, re.I) or re.search(r"<title>([^<]*)</title>", t, re.I | re.S)
+    import html as _h
+    return _h.unescape(m.group(1)).strip() if m else ""
+
+def arxiv_title(aid):
+    """title from the arXiv abs page (the export API rate-limits hard); strips the '[id] ' prefix of <title>."""
+    _, body = _get_text("https://arxiv.org/abs/" + aid)
+    return re.sub(r"^\[[^\]]+\]\s*", "", _html_title(body))
+
+def venue_title(url):
+    """-> (reachable, title or '' when the target is a PDF / has no title)"""
+    ctype, body = _get_text(url)
+    if "pdf" in ctype.lower() or body[:5] == b"%PDF-": return True, ""
+    return True, _html_title(body)
 
 def _get_json(url, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": f"gate_check/1.1 (mailto:{UA_MAIL})"})
@@ -124,9 +154,9 @@ def gate_refs(a):
         say("FAIL", "refs", f"重复 key: {sorted(dup)}")
     ids = {}
     for e in entries:
-        ident = e["doi"] or e["pmid"] or e["arxiv"]
+        ident = e["doi"] or e["pmid"] or e["arxiv"] or e.get("venue_url", "")
         if not ident:
-            say("FAIL", "refs", f"{e['key']} 无 DOI/PMID/arXiv"); continue
+            say("FAIL", "refs", f"{e['key']} 无 DOI/PMID/arXiv，也无官方会议论文集 URL（proceedings.neurips.cc / PMLR / ACL Anthology / CVF / OpenReview 等）"); continue
         if ident in ids and ids[ident] != e["key"]:
             say("FAIL", "refs", f"同一标识符两条记录: {ids[ident]} / {e['key']} -> {ident}")
         ids[ident] = e["key"]
@@ -142,7 +172,34 @@ def gate_refs(a):
         if ratio < 0.85:
             bad += 1
             say("FAIL", "refs", f"{e['key']} 标题不匹配 ({ratio:.2f})\n      bib: {e['title'][:90]}\n      doi: {t[:90]}")
-    say("PASS" if bad == 0 else "FAIL", "refs", f"{len(entries)} 条，{bad} 条 DOI 标题不符")
+    # arXiv ids: a wrong id is as bad as a wrong DOI (round 20c: 1811.04001 stood in for a NeurIPS paper)
+    for e in entries:
+        if e["doi"] or not e["arxiv"]:
+            continue
+        try:
+            t = arxiv_title(e["arxiv"]); time.sleep(1.0)
+        except Exception as ex:
+            say("WARN", "refs", f"{e['key']} arXiv {e['arxiv']} 无法核验（{ex}）——稍后重跑"); continue
+        if not t:
+            say("WARN", "refs", f"{e['key']} arXiv {e['arxiv']} 页面无标题"); continue
+        ratio = difflib.SequenceMatcher(None, norm(t), norm(e["title"])).ratio()
+        if ratio < 0.85:
+            bad += 1
+            say("FAIL", "refs", f"{e['key']} arXiv 标题不匹配 ({ratio:.2f})\n      bib:   {e['title'][:90]}\n      arXiv: {t[:90]}")
+    # proceedings URL as identifier: must resolve; title-match when the page is HTML
+    for e in entries:
+        if e["doi"] or e["pmid"] or e["arxiv"] or not e.get("venue_url"):
+            continue
+        try:
+            ok, t = venue_title(e["venue_url"]); time.sleep(0.3)
+        except Exception as ex:
+            say("WARN", "refs", f"{e['key']} 论文集 URL 无法访问（{ex}）"); continue
+        if t:
+            ratio = difflib.SequenceMatcher(None, norm(t), norm(e["title"])).ratio()
+            if ratio < 0.85 and norm(e["title"]) not in norm(t):
+                bad += 1
+                say("FAIL", "refs", f"{e['key']} 论文集页面标题不匹配 ({ratio:.2f})\n      bib:  {e['title'][:90]}\n      page: {t[:90]}")
+    say("PASS" if bad == 0 else "FAIL", "refs", f"{len(entries)} 条，{bad} 条标识符标题不符（DOI / arXiv / 论文集 URL）")
 
 # ----------------------------------------------------------------- floats
 CAP = re.compile(r"^\**\s*(Fig\.|Figure|Table)\s*(S?\d+)[a-z]?[\.\:\*]", re.M | re.I)

@@ -111,10 +111,12 @@ def finish(fig, a, src_rows, src_hdr, root, caption):
     out = os.path.join(root, a.out); os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     issues = audit_layout(fig)
     for sev, msg in issues: print(f"[{sev}] layout: {msg}")
-    fig.savefig(out, dpi=400, bbox_inches="tight"); fig.savefig(os.path.splitext(out)[0] + ".pdf", bbox_inches="tight")
+    png = os.path.splitext(out)[0] + ".png"   # raster always .png (--out x.pdf used to crash PIL below)
+    fig.savefig(png, dpi=400, bbox_inches="tight"); fig.savefig(os.path.splitext(out)[0] + ".pdf", bbox_inches="tight")
+    if os.path.splitext(out)[1].lower() not in (".png", ".pdf"): fig.savefig(out, dpi=400, bbox_inches="tight")
     from PIL import Image
-    Image.open(out).convert("L").save(os.path.splitext(out)[0] + "_gray.png")   # grayscale preview: the colour-vision / print-in-B&W check
-    w = Image.open(out).size[0]; dpi = w / (a.width_mm / 25.4)
+    Image.open(png).convert("L").save(os.path.splitext(out)[0] + "_gray.png")   # grayscale preview: the colour-vision / print-in-B&W check
+    w = Image.open(png).size[0]; dpi = w / (a.width_mm / 25.4)
     sp = os.path.splitext(out)[0] + ".source.csv"
     with open(sp, "w", newline="", encoding="utf-8") as f: wr = csv.writer(f); wr.writerow(src_hdr); wr.writerows(src_rows)
     # figures.csv
@@ -168,23 +170,41 @@ def fig_ablation(a):
     if not abl: print("[FAIL] no ablation table"); sys.exit(1)
     refarr = by_method(main, gk, metrics).get(ref)
     if refarr is None or refarr.shape[0] < 2: print(f"[FAIL] reference {ref} needs ≥2 seeds in main.csv for the noise band"); sys.exit(1)
-    ref_m = np.nanmean(refarr, 0); band = 2 * np.nanstd(refarr, 0, ddof=1) * np.sqrt(2)
-    names = []; vals = []
+    ref_m = np.nanmean(refarr, 0); sig = np.nanstd(refarr, 0, ddof=1); n_ref = refarr.shape[0]
+    # rows sharing an ablation label are per-seed runs (averaged, n = count); else n = n_seeds column or 1 (single run)
+    order, groups = [], {}
     for r in abl:
-        n = r.get("ablation") or r.get(gk); names.append(n); vals.append([float(r[m]) if r.get(m, "") != "" else np.nan for m in metrics])
-    vals = np.array(vals); fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); x = np.arange(len(metrics)); w = 0.8 / len(names); src = []
-    ax.bar(x, 2 * band, 0.86, bottom=-band, color="#f0f0f0", edgecolor="none", zorder=0, label="±2σ_ref√2 seed noise")
+        n = r.get("ablation") or r.get(gk)
+        if n not in groups: order.append(n); groups[n] = []
+        groups[n].append([float(r[m]) if r.get(m, "") != "" else np.nan for m in metrics])
+    names = order; vals = np.array([np.nanmean(np.array(groups[n]), 0) for n in names]); ns = []
+    for n in names:
+        if len(groups[n]) > 1: ns.append(len(groups[n]))
+        else:
+            row = next(r for r in abl if (r.get("ablation") or r.get(gk)) == n)
+            try: ns.append(max(1, int(float(row.get("n_seeds") or 1))))
+            except ValueError: ns.append(1)
+    bands = [2 * sig * (np.sqrt(2) if k <= 1 else np.sqrt(1.0 / k + 1.0 / n_ref)) for k in ns]
+    single = all(k <= 1 for k in ns)
+    fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); x = np.arange(len(metrics)); w = 0.8 / len(names); src = []
+    if single:
+        ax.bar(x, 2 * bands[0], 0.86, bottom=-bands[0], color="#f0f0f0", edgecolor="none", zorder=0, label="±2σ_ref√2 seed noise")
     for i, n in enumerate(names):
-        d = vals[i] - ref_m; resolv = np.abs(d) >= band
+        band = bands[i]; d = vals[i] - ref_m; resolv = np.abs(d) >= band
         xx = x + (i - (len(names) - 1) / 2) * w
+        if not single:
+            ax.bar(xx, 2 * band, w * 0.98, bottom=-band, color="#f0f0f0", edgecolor="none", zorder=0)
         ax.bar(xx, d, w, color=[ACCENT if r else "#c9c9c9" for r in resolv], edgecolor="none", zorder=3)
         for j in range(len(metrics)):
             ax.text(xx[j], -0.02, str(i + 1), ha="center", va="top", fontsize=5.2, color="#444", transform=ax.get_xaxis_transform(), clip_on=False)   # index row just below the axis
-            src.append([n, metrics[j], d[j], band[j], bool(resolv[j])])
+            src.append([n, metrics[j], d[j], band[j], bool(resolv[j]), ns[i]])
     ax.axhline(0, lw=0.6, color="#333"); ax.set_xticks(x); ax.set_xticklabels([labels.get(m, m) for m in metrics], fontsize=6.8)
     ax.set_ylabel(a.ylabel or f"Δ {labels.get(res.get('primary_metric',''), res.get('primary_metric',''))} vs. {ref}"); ax.tick_params(axis="x", pad=9); ax.text(0.01, 0.98, "\n".join(f"{i+1}: {n}" for i, n in enumerate(names)), transform=ax.transAxes, fontsize=5.6, va="top", color="#333")
-    ax.text(0.99, 0.02, "grey bar: within seed noise\n(not resolvable, single run)", transform=ax.transAxes, fontsize=5.6, ha="right", va="bottom", color="#555")
-    finish(fig, a, src, ["ablation", "metric", "delta", "band", "resolvable"], root, f"Ablation Δ vs. {ref}; grey band = ±2σ√2 seed noise of the reference; grey bars not resolvable.")
+    ax.text(0.99, 0.02, "grey bar: within seed noise\n(not resolvable" + (", single run)" if single else ")"), transform=ax.transAxes, fontsize=5.6, ha="right", va="bottom", color="#555")
+    cap = (f"Ablation Δ vs. {ref}; grey band = ±2σ√2 seed noise of the reference (single runs); grey bars not resolvable." if single else
+           f"Ablation Δ vs. {ref}; bars are means over n seeds per ablation ({', '.join(f'{nm}: n={k}' for nm, k in zip(names, ns))}), reference n={n_ref}; "
+           f"grey band per bar = ±2σ_ref·√(1/n+1/n_ref) (±2σ√2 for single runs); grey bars not resolvable.")
+    finish(fig, a, src, ["ablation", "metric", "delta", "band", "resolvable", "n_seeds"], root, cap)
 
 def fig_seeds(a):
     root, res, main, abl, gk, ref, metrics, labels = load(a)

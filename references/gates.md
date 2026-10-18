@@ -50,6 +50,8 @@
 反常触发器：`results.predictions` 符号反转、或 `results.reproductions` 的基线复现 |Δ| > tol（默认 2×reported_std）时，findings.md 里必须已有含该方法名与指标名的条目，否则 FAIL（有则 WARN，正文必须解释）。为什么：多数人把基线复现偏差和反号当 bug 修掉，实际上一半的时候它是论文；先记录再动配置，才留得下证据。
 附加规则（仍写在 SKILL.md，脚本不查）：训完看 log 条数（已在 G3）；参数量用加载真实 ckpt 的函数；不同 GPU 进 repro.csv；零结果先查分层变量量程；对照实验分解后才可写进论文。
 漏法：评估早于训练结束（_stale_preds 目录里 2212 N 的成因）；eval.json 带 _tainted 仍被 make_tables 读入；S/V/VS 基线单 seed 却与三 seed 的本文方法同表配对比较。
+**消融分辨率口径（验证轮 20 新增）**：`ablation_plan.py resolve` 与 `make_figure.py ablation` 识别消融行代表几个 seed——同名消融多行 = 逐 seed 记录（取均值，n = 行数），否则读 `n_seeds` 列，都没有 = 单 run。单 run 仍判 |Δ| ≥ 2σ_ref√2；n 个 seed 的均值判 |Δ| ≥ 2σ_ref√(1/n + 1/n_ref)。为什么：med-world-model 把 10 seed 均值当单 run 喂进去，配对检验 p=0.003 的效应被画成「不可分辨」。
+
 ## G5 图
 判据：`dpi = pixel_width / (print_width_mm / 25.4) ≥ 300`；295.5–300 容差带、<40 mm 宽或 <15 mm 高的小图降 WARN（275 篇校准：Nature 印刷版 90/130 张落在 295–300，是版面缩放舍入；ICML 46 张 <150 dpi 全是公式与 logo）；figures.csv 每行有 source 列；state.figure_inspect 每张图一条目测记录。
 为什么：matplotlib 的 figure.dpi 是屏幕值，九张图曾全低于 300 而屏幕上看不出来。
