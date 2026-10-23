@@ -80,6 +80,11 @@
 
 **图表数量（验证轮 16 新增）**：正文图数、表数各与 `references/figure-norms-per-paper.csv` 里目标 venue（没有则按 family）已发表论文的下四分位比，低于 → WARN；`target.figure_count_waiver` 写明理由即豁免。为什么：med-world-model 稿第一版 1 图 6 表时 G5 全绿，NeurIPS 四分之三的论文 ≥4 图；类型覆盖查的是"有没有"，不查"够不够"。
 
+**方法总览图（2.12 新增，`make_architecture.py check`；`figures/arch/*.yaml` 存在才跑）**：
+判据：① 用 spec 里记的 model / init / input / depth 重新 trace，代码 sha 没变 → PASS；变了则节点多重集（类 + 输入输出形状 + 重复数 + 参数量）必须一致，否则 FAIL「图是从旧模型画的」；模型已加载不了也 FAIL。② PDF（与 .tex）里每个词必须是节点标签、类名、阶段名、形状、运算符、×n、数字或 `--allow` 登记的词，否则 WARN「trace 里没有的文字」。③ 图里印了参数量（`render --show-params`）则必须等于 trace 的 params_total，否则 FAIL。④ 图里的阶段名（含 `--merge` 的新名）在 manuscript 的 Method 节里都要出现，缺的 WARN。⑤ spec 的输入分辨率与 ref run 的 img_size / input_size（`runs/<ref>/args.json` 或 state.bundle.matrix.ref.args）一致，不一致 WARN。
+为什么：唯一一张概念图（cvpr2027_medical Fig 1 b/c）是不从模型派生的卡通；手画的总览图在代码改动后不会跟着变，与 G3b 的仪器校准、伪代码的 source anchor 是同一个逻辑——图和跑出结果的东西之间要有一条机器可查的线。
+漏法：它只能判图有没有说谎，判不了图有没有把方法讲明白（阶段取得对不对、合并得合不合理、该突出的门控有没有突出）；形状和参数量一致不代表数据流画对了，tensor 身份追踪会把不可追的运算（`.item()`、numpy 往返）断开；Fig 1「现有 vs 本文」这类对比示意仍由 make_motivation.py schematic 画，不在本检查范围；印刷字号仍由上面的字号检查判（总览图太宽缩到 5 pt 以下会 FAIL）。
+
 ## G6 正文六项
 ### refs
 bib 解析支持嵌套花括号与无尾逗号；DOI 从 doi/url 字段抽，arXiv 编号从 note/url/journal 字段抽（很多 bib 把 arXiv 写在 note 里）。CrossRef `works/{doi}` 取 title，与 bib title 做序列比率，<0.85 判 FAIL。PubMed 走 efetch 时限定 `PubmedData` 下的 ArticleId，否则会取到该文参考文献的 DOI。

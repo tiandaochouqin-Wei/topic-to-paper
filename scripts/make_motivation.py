@@ -18,7 +18,11 @@ X <-> Y is forced", "ours is a different paradigm"). Choose the subcommand by th
       (long table instead of columns: --cond setting --value AP, then --from/--to name values of the --cond column)
     tradeoff   accuracy vs cost scatter with the Pareto front; says whether ours is on it.
       python make_motivation.py tradeoff --csv results/efficiency.csv --x GFLOPs --y AP --label method [--size params]
-                                [--ours ours] [--logx] [--lower] [--higher-x]
+                                [--ours ours] [--logx] [--lower] [--higher-x] [--no-front] [--no-arrow] [--title "..."]
+      Fig-5-style frontier over many benchmarks: --color dataset (one fill colour per value, front per value), --marker-ours star,
+      --ours "A,B" (comma list), --broken-x "65,110" (x axis broken over that interval), --bubble-legend "8,100,786" (needs --size),
+      labels placed greedily around each point (8 offsets, no label on label, dropped + printed when nothing fits; source CSV column
+      placed_label); with --color each method is named once, ours at every point (--label-each: all points)
   breadth of a result (a results teaser, rarely a motivation: about 1 % of CS Fig. 1s in the local sample)
     radar      one polygon per series over >= 3 benchmarks, every axis on its own printed range
       python make_motivation.py radar --csv results/bench.csv --axis dataset --series method --value AP --ours ours [--groups ...]
@@ -300,69 +304,155 @@ def paired(a):
 
 
 # ------------------------------------------------------------------ tradeoff
-def _place_labels(fig, ax, items):
-    """annotate points without label-on-label overlap: try four offsets per point, keep the first that collides with nothing"""
-    fig.canvas.draw(); rend = fig.canvas.get_renderer(); placed = []
-    offs = [((4, 3), "left", "bottom"), ((4, -3), "left", "top"), ((-4, 3), "right", "bottom"), ((-4, -3), "right", "top"), ((0, 6), "center", "bottom"), ((0, -6), "center", "top")]
-    for x, y, txt, c, bold in items:
-        for k, ((dx, dy), ha, va) in enumerate(offs):
-            t = ax.annotate(txt, (x, y), xytext=(dx, dy), textcoords="offset points", ha=ha, va=va, fontsize=5.8, color=c, fontweight="bold" if bold else "normal", zorder=7)
-            bb = t.get_window_extent(rend)
-            if not any(bb.overlaps(p) for p in placed) or k == len(offs) - 1:
-                placed.append(bb); break
-            t.remove()
+STAR = {"star": ("*", 2.2), "circle": ("o", 1.8), "diamond": ("D", 1.5)}
+
+
+def _legend_auto(fig, ax, handles, labels, pts_disp, **kw):
+    """legend in the corner of `ax` that covers the fewest points (ties: the first corner listed)"""
+    rend = fig.canvas.get_renderer(); best = None
+    for loc in ("lower right", "upper right", "lower left", "upper left", "center right", "center left"):
+        leg = ax.legend(handles, labels, loc=loc, **kw); fig.canvas.draw(); bb = leg.get_window_extent(rend)
+        n = sum(1 for (px, py) in pts_disp if bb.x0 <= px <= bb.x1 and bb.y0 <= py <= bb.y1); leg.remove()
+        if best is None or n < best[0]: best = (n, loc)
+        if n == 0: break
+    return ax.legend(handles, labels, loc=best[1], **kw)
 
 
 def tradeoff(a):
+    from matplotlib.lines import Line2D
     root = os.path.abspath(a.project)
-    rows = _rows(root, a.csv, [a.x, a.y, a.label] + ([a.size] if a.size else []))
+    rows = _rows(root, a.csv, [a.x, a.y, a.label] + ([a.size] if a.size else []) + ([a.color] if a.color else []))
     acc = collections.OrderedDict()
     for r in rows:
         try: xv, yv = float(r[a.x]), float(r[a.y]); sv = float(r[a.size]) if a.size else None
         except ValueError: continue
-        acc.setdefault(r[a.label], []).append((xv, yv, sv))
-    if len(acc) < 2: fail(f"{a.csv} 少于 2 个方法")
+        acc.setdefault((r[a.label], r[a.color] if a.color else ""), []).append((xv, yv, sv))
+    if len({k[0] for k in acc}) < 2: fail(f"{a.csv} 少于 2 个方法")
     pts = {k: (float(np.mean([p[0] for p in v])), float(np.mean([p[1] for p in v])), (float(np.mean([p[2] for p in v])) if a.size else None), len(v)) for k, v in acc.items()}
-    ours = a.ours or ""
-    if ours and ours not in pts: fail(f"--ours {ours} 不在 {a.label} 列里：{list(pts)}")
+    ours_set = [s for s in (a.ours or "").split(",") if s]
+    for s in ours_set:
+        if s not in {k[0] for k in pts}: fail(f"--ours {s} 不在 {a.label} 列里：{sorted({k[0] for k in pts})}")
+    is_ours = lambda k: k[0] in ours_set
+    nm = lambda k: k[0] + (f" [{k[1]}]" if a.color else "")
     hib, lowx = not a.lower, not a.higher_x
     def dominates(p, q):
         bx = p[0] <= q[0] if lowx else p[0] >= q[0]; by = p[1] >= q[1] if hib else p[1] <= q[1]
         sx = p[0] < q[0] if lowx else p[0] > q[0]; sy = p[1] > q[1] if hib else p[1] < q[1]
         return bx and by and (sx or sy)
-    front = [k for k in pts if not any(dominates(pts[o], pts[k]) for o in pts if o != k)]
+    peers = lambda k: [o for o in pts if o != k and (not a.color or o[1] == k[1])]      # with --color a front only makes sense inside one benchmark
+    front = [k for k in pts if not any(dominates(pts[o], pts[k]) for o in peers(k))]
     labels = _parse_kv(a.labels)
-    fig, ax = _new_axes(a)
+    cats = list(dict.fromkeys(k[1] for k in pts)) if a.color else []
+    if len(cats) > len(mf.CAT): print(f"[WARN] tradeoff: {len(cats)} {a.color} values, fill colours repeat after {len(mf.CAT)}")
+    cmap = {c: mf.CAT[i % len(mf.CAT)] for i, c in enumerate(cats)}
+    gap = None
+    if a.broken_x:
+        try: gap = tuple(sorted(float(t) for t in a.broken_x.split(",")))
+        except ValueError: gap = None
+        if gap is None or len(gap) != 2 or gap[0] == gap[1]: fail("--broken-x wants the hidden x interval, e.g. 65,110")
+        if a.logx: fail("--broken-x and --logx cannot be combined")
+        inside = [nm(k) for k, p in pts.items() if gap[0] < p[0] < gap[1]]
+        if inside: fail(f"points inside the hidden interval {gap[0]:g}–{gap[1]:g}: {inside}")
+        if not any(p[0] <= gap[0] for p in pts.values()) or not any(p[0] >= gap[1] for p in pts.values()): fail("--broken-x: each side of the break needs at least one point")
+    xs_all = [p[0] for p in pts.values()]
+    if gap:
+        xl = (min(xs_all) - 0.06 * ((gap[0] - min(xs_all)) or 1.0), gap[0]); xr = (gap[1], max(xs_all) + 0.06 * ((max(xs_all) - gap[1]) or 1.0))
+        wr = [max(xl[1] - xl[0], 1e-9), max(xr[1] - xr[0], 1e-9)]; tot = sum(wr); wr = [max(w / tot, 0.18) for w in wr]
+        fig, axs = plt.subplots(1, 2, sharey=True, figsize=(a.width_mm / 25.4, a.height_in), gridspec_kw=dict(width_ratios=wr, wspace=0.03))
+        fig.subplots_adjust(left=0.1, right=0.97, bottom=0.2, top=0.91 if a.title else 0.93)
+        axs[0].set_xlim(*xl); axs[1].set_xlim(*xr); axs[0].spines["right"].set_visible(False); axs[1].spines["left"].set_visible(False); axs[1].tick_params(left=False, labelleft=False)
+        for ax_, w in zip(axs, wr):
+            for xe in ((1,) if ax_ is axs[0] else (0,)):
+                dx = 0.012 * sum(wr) / w
+                for ye in (0, 1): ax_.plot((xe - dx, xe + dx), (ye - 0.02, ye + 0.02), transform=ax_.transAxes, color="#222", lw=0.6, clip_on=False, zorder=9)
+    else:
+        fig, ax0 = _new_axes(a); axs = [ax0]
+        if a.title: fig.subplots_adjust(top=0.91)
+    side = lambda k: 0 if (not gap or pts[k][0] <= gap[0]) else 1
     smax = max((p[2] for p in pts.values() if p[2] is not None), default=None)
-    def area(p): return 14 + 110 * (p[2] / smax) if (smax and p[2] is not None) else 16
-    fx = sorted(front, key=lambda k: pts[k][0])
-    if len(fx) > 1: ax.plot([pts[k][0] for k in fx], [pts[k][1] for k in fx], ls="--", lw=0.8, color="#9a9a9a", zorder=1, label="Pareto front")
+    def area(sv): return 14 + 110 * (sv / smax) if (smax and sv is not None) else 16
+    mark, star_k = STAR[a.marker_ours]
     for k, p in pts.items():
-        if k == ours: continue
-        ax.scatter(p[0], p[1], s=area(p), color=OTHERS[0], alpha=0.75, edgecolors="white", linewidths=0.4, zorder=3)
-    if ours: ax.scatter(pts[ours][0], pts[ours][1], s=area(pts[ours]) * 2.2, marker="*", color=mf.ACCENT, edgecolors="white", linewidths=0.4, zorder=5)
+        ax_ = axs[side(k)]; fc = cmap[k[1]] if a.color else (mf.ACCENT if is_ours(k) else OTHERS[0])
+        if is_ours(k): ax_.scatter(p[0], p[1], s=area(p[2]) * star_k, marker=mark, color=fc, edgecolors="#333333" if a.color else "white", linewidths=0.5 if a.color else 0.4, zorder=5)
+        else: ax_.scatter(p[0], p[1], s=area(p[2]), color=fc, alpha=0.75, edgecolors="white", linewidths=0.4, zorder=3)
+    if not a.no_front:
+        groups = [None] if not a.color else cats
+        for g in groups:
+            fx_ = sorted([k for k in front if g is None or k[1] == g], key=lambda k: pts[k][0])
+            if len(fx_) > 1:
+                for ax_ in axs: ax_.plot([pts[k][0] for k in fx_], [pts[k][1] for k in fx_], ls="--", lw=0.8, color="#9a9a9a" if g is None else cmap[g], alpha=1 if g is None else 0.6, zorder=1)
     if a.logx:
         from matplotlib.ticker import FuncFormatter
-        ax.set_xscale("log"); ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
-    _place_labels(fig, ax, [(p[0], p[1], labels.get(k, k), mf.ACCENT if k == ours else "#333333", k == ours) for k, p in pts.items()])
-    corner = ((0.05 if lowx else 0.95), (0.95 if hib else 0.05))
-    tail = (corner[0] + (0.13 if lowx else -0.13), corner[1] + (-0.13 if hib else 0.13))
-    ax.annotate("", xy=corner, xytext=tail, xycoords="axes fraction", arrowprops=dict(arrowstyle="-|>", lw=0.8, color="#2e9b57"))
-    ax.text(tail[0], tail[1], " better", transform=ax.transAxes, fontsize=6.0, color="#2e9b57", ha="left" if lowx else "right", va="top" if hib else "bottom", fontstyle="italic")
-    ax.set_xlabel(a.xlabel or labels.get(a.x, a.x) + (", log scale" if a.logx else "")); ax.set_ylabel(a.ylabel or labels.get(a.y, a.y))
-    ax.grid(lw=0.4, color="#ececec", zorder=0)
-    if a.size: ax.text(0.98, 0.03, f"marker area ∝ {labels.get(a.size, a.size)}", transform=ax.transAxes, fontsize=5.6, ha="right", va="bottom", color="#666666")
-    if len(fx) > 1: ax.legend(fontsize=6.0, loc="lower right" if hib else "upper right", handlelength=1.6)
-    fit_width(fig, [ax], a.width_mm / 25.4, what="tradeoff")
-    print(f"Pareto front ({'lower' if lowx else 'higher'} {a.x}, {'higher' if hib else 'lower'} {a.y}): {fx}")
-    if ours:
-        if ours in front: print(f"ours ({ours}) is on the Pareto front")
-        else:
-            dom = [o for o in pts if o != ours and dominates(pts[o], pts[ours])]
-            print(f"[WARN] tradeoff: ours ({ours}) is dominated by {dom}; the caption must not claim the best trade-off")
-    src = [[k, p[0], p[1], p[2] if p[2] is not None else "", p[3], k in front] for k, p in pts.items()]
-    finish(fig, a, src, ["label", a.x, a.y, a.size or "size", "n", "on_front"], root,
-           f"{labels.get(a.y, a.y)} vs. {labels.get(a.x, a.x)}; dashed = Pareto front ({', '.join(fx)})" + (f"; ours {'on' if ours in front else 'NOT on'} the front" if ours else "") + ".")
+        axs[0].set_xscale("log"); axs[0].xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    for ax_ in axs: ax_.grid(lw=0.4, color="#ececec", zorder=0)
+    # labels: with --color every method is named once (at its best point), ours at every point; --label-each names every point
+    cand = []
+    for k, p in pts.items():
+        if a.color and not a.label_each and not is_ours(k):
+            same = [o for o in pts if o[0] == k[0]]; bestk = max(same, key=lambda o: pts[o][1]) if hib else min(same, key=lambda o: pts[o][1])
+            if k != bestk: continue
+        cand.append(k)
+    cand.sort(key=lambda k: not is_ours(k))
+    placed = {}; taken = []
+    seff = lambda k: area(pts[k][2]) * (star_k if is_ours(k) else 1.0)
+    def offs_for(k):       # label offsets clear of the point's own marker: three rings (radius + 2, + 9, + 18 pt) in 8 directions
+        r = math.sqrt(seff(k)) / 2 + 1.0; out_ = []
+        for ring in (2.0, 9.0, 18.0):
+            for ux, uy, ha, va in ((1, .6, "left", "bottom"), (1, -.6, "left", "top"), (-1, .6, "right", "bottom"), (-1, -.6, "right", "top"), (0, 1.1, "center", "bottom"), (0, -1.1, "center", "top"), (1, 0, "left", "center"), (-1, 0, "right", "center")):
+                out_.append(((ux * (r + ring), uy * (r + ring * .5)), ha, va))
+        return out_
+    for si, ax_ in enumerate(axs):
+        onax = [k for k in pts if side(k) == si]; ks = [k for k in cand if side(k) == si]
+        res = mf.place_labels(fig, ax_, [(pts[k][0], pts[k][1], labels.get(k[0], k[0]), mf.ACCENT if is_ours(k) else "#333333", is_ours(k), offs_for(k), onax.index(k)) for k in ks],
+                              fontsize=5.8, obstacles=taken, markers=[(pts[k][0], pts[k][1], seff(k)) for k in onax])
+        for k, bb in zip(ks, res):
+            placed[k] = "yes" if bb is not None else "no"
+            if bb is not None: taken.append(bb)
+    dropped = [nm(k) for k in cand if placed.get(k) == "no"]
+    if dropped: print(f"[WARN] tradeoff: {len(dropped)} label(s) dropped, no free spot: {dropped} (points are in the source CSV)")
+    ar = axs[0] if lowx else axs[-1]
+    corner = ((0.05 if lowx else 0.95), (0.95 if hib else 0.05)); tail = (corner[0] + (0.13 if lowx else -0.13) / (1 if len(axs) == 1 else 2), corner[1] + (-0.13 if hib else 0.13))
+    if not a.no_arrow:
+        ar.annotate("", xy=corner, xytext=tail, xycoords="axes fraction", arrowprops=dict(arrowstyle="-|>", lw=0.8, color="#2e9b57"))
+        ar.text(tail[0], tail[1], " better", transform=ar.transAxes, fontsize=6.0, color="#2e9b57", ha="left" if lowx else "right", va="top" if hib else "bottom", fontstyle="italic")
+    xlab = a.xlabel or labels.get(a.x, a.x) + (", log scale" if a.logx else "")
+    if gap: fig.supxlabel(xlab, fontsize=7.5, y=0.045)
+    else: axs[0].set_xlabel(xlab)
+    axs[0].set_ylabel(a.ylabel or labels.get(a.y, a.y))
+    if a.title: fig.suptitle(a.title, fontsize=7.5, fontweight="bold", y=0.995)
+    if a.size and not a.bubble_legend: axs[-1].text(0.98, 0.03, f"marker area ∝ {labels.get(a.size, a.size)}", transform=axs[-1].transAxes, fontsize=5.6, ha="right", va="bottom", color="#666666")
+    # one legend: markers | bubble sizes in the first column, fill colours in the second
+    hd = lambda t: (Line2D([], [], ls="", marker=""), t, True)
+    c1, c2 = [], []
+    if a.color and ours_set: c1 += [hd("Marker"), (Line2D([], [], ls="", marker=mark, ms=7, mfc="#9a9a9a", mec="#333333", mew=0.5), "Ours", False), (Line2D([], [], ls="", marker="o", ms=5, mfc="#9a9a9a", mec="white"), "Prior methods", False)]
+    if a.bubble_legend and a.size:
+        try: refs = [float(t) for t in a.bubble_legend.split(",")]
+        except ValueError: fail("--bubble-legend wants numbers, e.g. 8,100,786")
+        c1 += [hd(f"Bubble area = {labels.get(a.size, a.size)}")] + [(Line2D([], [], ls="", marker="o", ms=math.sqrt(area(v)), mfc="#c9ced4", mec="#8a8f98", mew=0.4), f"{v:g}", False) for v in sorted(refs, reverse=True)]
+    if a.color: c2 += [hd(f"{labels.get(a.color, a.color)} (fill colour)")] + [(Line2D([], [], ls="", marker="o", ms=5, mfc=cmap[c], mec="white"), c, False) for c in cats]
+    has_front = (not a.no_front) and sum(1 for _ in front) > 1
+    if has_front: (c1 if c1 or not c2 else c2).append((Line2D([], [], ls="--", lw=0.8, color="#9a9a9a"), "Pareto front" if not a.color else "Pareto front per " + a.color, False))
+    ents = c1 + c2 if not (c1 and c2) else c1 + [(Line2D([], [], ls="", marker=""), "", False)] * max(0, len(c2) - len(c1)) + c2 + [(Line2D([], [], ls="", marker=""), "", False)] * max(0, len(c1) - len(c2))
+    if ents:
+        legax = axs[0] if len(axs) == 1 or wr[0] >= wr[1] else axs[1]; fig.canvas.draw()
+        disp = [legax.transData.transform((p[0], p[1])) for p in pts.values()]
+        leg = _legend_auto(fig, legax, [e[0] for e in ents], [e[1] for e in ents], disp, fontsize=5.8, ncol=2 if c1 and c2 else 1, handlelength=1.6, labelspacing=0.35, columnspacing=1.0, borderpad=0.4, frameon=True, framealpha=0.9, edgecolor="#cccccc", fancybox=False)
+        for t, e in zip(leg.get_texts(), ents):
+            if e[2]: t.set_fontweight("bold")
+        leg.get_frame().set_linewidth(0.4)
+    fit_width(fig, list(axs), a.width_mm / 25.4, what="tradeoff")
+    fx = sorted([k for k in front], key=lambda k: pts[k][0]); fxn = [nm(k) for k in fx]
+    print(f"Pareto front ({'lower' if lowx else 'higher'} {a.x}, {'higher' if hib else 'lower'} {a.y}){' per ' + a.color if a.color else ''}: {fxn}")
+    for k in pts:
+        if not is_ours(k): continue
+        if k in front: print(f"ours ({nm(k)}) is on the Pareto front")
+        else: print(f"[WARN] tradeoff: ours ({nm(k)}) is dominated by {[nm(o) for o in peers(k) if dominates(pts[o], pts[k])]}; the caption must not claim the best trade-off")
+    src = [[k[0], p[0], p[1], p[2] if p[2] is not None else "", p[3], k in front, k[1], placed.get(k, "skipped")] for k, p in pts.items()]
+    n_on = sum(1 for k in pts if is_ours(k) and k in front); n_o = sum(1 for k in pts if is_ours(k))
+    finish(fig, a, src, ["label", a.x, a.y, a.size or "size", "n", "on_front", a.color or "color", "placed_label"], root,
+           f"{labels.get(a.y, a.y)} vs. {labels.get(a.x, a.x)}" + (f"; fill colour = {labels.get(a.color, a.color)}" if a.color else "") + ("" if a.no_front else f"; dashed = Pareto front{' per ' + a.color if a.color else ' (' + ', '.join(fxn) + ')'}")
+           + (f"; ours on the front in {n_on}/{n_o} points" if n_o and not a.no_front else "") + (f"; x axis broken between {gap[0]:g} and {gap[1]:g}" if gap else "") + ".")
 
 
 # ------------------------------------------------------------------ radar
@@ -613,8 +703,15 @@ def main():
     p.add_argument("--lower", action="store_true"); p.add_argument("--style", choices=["auto", "slope", "bars"], default="auto")
     t = sub.add_parser("tradeoff", help="accuracy vs cost with the Pareto front")
     t.add_argument("--csv", required=True); t.add_argument("--x", required=True, help="cost column (params, GFLOPs, latency, labels used …)"); t.add_argument("--y", required=True)
-    t.add_argument("--label", default="method"); t.add_argument("--size", default=""); t.add_argument("--ours", default="")
+    t.add_argument("--label", default="method", help="column naming each point; its value is the text label"); t.add_argument("--size", default=""); t.add_argument("--ours", default="", help="label value(s) of ours, comma list")
     t.add_argument("--logx", action="store_true"); t.add_argument("--lower", action="store_true", help="lower y is better"); t.add_argument("--higher-x", action="store_true", help="higher x is better")
+    t.add_argument("--color", default="", help="categorical column (dataset): one fill colour per value, legend of the fills; the Pareto front is then per value")
+    t.add_argument("--marker-ours", choices=list(STAR), default="star", help="marker of the --ours points (others stay circles)")
+    t.add_argument("--label-each", action="store_true", help="with --color: name every point, not once per method (ours is always named at every point)")
+    t.add_argument("--broken-x", default="", help="'65,110': hide this x interval, two axes with break marks (not with --logx)")
+    t.add_argument("--bubble-legend", default="", help="'8,100,786': reference bubble sizes in the legend (needs --size)")
+    t.add_argument("--no-front", action="store_true", help="no Pareto front line"); t.add_argument("--title", default="")
+    t.add_argument("--no-arrow", action="store_true", help="no green 'better' arrow")
     r = sub.add_parser("radar", help="one polygon per series over >= 3 benchmarks")
     r.add_argument("--csv", default="", help="long table, one row per (axis, series[, seed]) value; empty = state.results main table")
     r.add_argument("--axis", default="dataset"); r.add_argument("--series", default="method"); r.add_argument("--value", default="AP")

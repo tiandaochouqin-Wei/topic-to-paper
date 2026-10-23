@@ -25,7 +25,7 @@ Gate → script mapping (inputs decide whether a gate runs):
   G3  state.audits.runs_dir exists                         audit_check.py
   G3b state.audits.code_dirs holds .py files (research)    instrument_check.py: every pretrained model / harness / train loop has a known-answer check + a broken-input control
   G4  results/main.csv                                     results_check.py + ablation_plan.py resolve
-  G5  figures.csv                                          gate_check.py dpi
+  G5  figures.csv                                          gate_check.py dpi (+ make_architecture.py check when figures/arch/*.yaml exist: the overview figure is still the model that ran)
   G6  paper/manuscript.md                                  gate_check.py floats acronyms scope numbers limits (+refs with --net)
   G6d paper/latex/main.tex (LaTeX projects only)           latex_check.py check: class matches venue, all figures PDF, panels via subfigure, algorithm blocks (make_algorithm.py check)
   G6e paper/claims.csv with rows                           claims_check.py: headline sentences ↔ claims rows, each row computed from results, strong scope ↔ scope_words
@@ -242,7 +242,11 @@ def check(root, net, write=True):
     # G5
     if data_rows(root, "figures.csv") >= 1 and not templated(root, "figures.csv", "figures.csv"):
         rc, f, w, out = run([S("gate_check.py"), "dpi", "--manuscript", manuscript if exists(root, manuscript) else "figures.csv"], root)
-        rec("G5", verdict(f, out), f"dpi {f} FAIL / {w} WARN")
+        detail = f"dpi {f} FAIL / {w} WARN"; outs = [out]; f_all = f
+        if glob.glob(os.path.join(root, "figures", "arch", "*.yaml")):   # traced method-overview figures: re-trace the model and compare (make_architecture.py check)
+            rc2, f2, w2, out2 = run([S("make_architecture.py"), "check"], root)
+            detail += f"；architecture {f2} FAIL / {w2} WARN"; outs.append(out2); f_all += f2
+        rec("G5", verdict(f_all, *outs), detail)
     else: rec("G5", "PENDING", "figures.csv 不存在、无数据行或仍是模板")
     # G6
     if exists(root, manuscript):
