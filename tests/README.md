@@ -16,6 +16,7 @@ Needs `pytest` plus the packages in `requirements.txt`. No network: `G1`/`refs` 
 | `test_t2p.py` | `run()`/`verdict()` report a crashed gate as `CRASH`, never `PASS`; full board on both fixtures is green; a crashing gate shows as `[CRASH] G4` and counts in the exit code |
 | `test_research_gates.py` | G1b, G2, G3, G4, G5, G6 (floats/acronyms/numbers/limits), G6b, G6c, G7, G8: one `*_pass` test on the untouched fixture, then one mutation per failure mode the gate exists for |
 | `test_instrument_gate.py` | G3b instrument calibration (uncovered loader, waiver, missing/stale/out-of-band output, vacuous broken control, contract mismatch, dump, train_loop reference) plus `stochastic_keys`, narrowed audit set, empty `reproductions`, self-certified triage |
+| `test_algorithm.py` | pseudocode blocks: `make_algorithm.py` skeleton (algpseudocode / algorithmic / algorithm2e dialects, depth cap) and the seven checks (packages, caption/label/ref, source anchor, symbols, values vs the reference run, shape, result numbers), the `tex_to_md` mirror, G6 floats, readability/numbers blindness, G6c norms, the G6b item, `calibrate` on three tiny PDFs |
 | `test_survey_gates.py` | G-S2 protocol, G-S3 coding, G-S5 claims, and the `coding/audit_summary.py --verify` round trip |
 
 ## Fixtures

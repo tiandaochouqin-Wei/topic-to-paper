@@ -146,6 +146,9 @@ def build(root):
         add("intro", "venue-profile cs", "引言末尾贡献列表 3–5 条（'contributions … as follows'）", r"contributions?\s+(of this (paper|work)\s+)?(are|can be|is|include)", "regex")
         add("results", "venue-profile cs", "实验节有消融小节（Ablation）", r"^#{2,4}\s*\d*\.?\d*\s*.*ablation|ablation stud", "regex")
         add("conclusion", "venue-profile cs", "有 Conclusion 节且含一个数字", r"\d", "regex", "WARN")
+    algs = [r for r in (st.get("algorithms") or []) if isinstance(r, dict) and r.get("id")]
+    if algs:   # pseudocode blocks (make_algorithm.py): the Method text must point at them; the caption line `**Algorithm 1.**` does not count (lookbehind)
+        add("method", "state.algorithms", "方法节正文要引用 Algorithm 1" + (f"–{len(algs)}" if len(algs) > 1 else "") + f"（{', '.join(str(r['id']) for r in algs)}）：写 'Algorithm 1 summarises …'", r"(?<!\*)\b(?:Algorithm|Alg\.)\s*\d", "regex")
     # ---- gap_map
     gp = os.path.join(root, "literature", "gap_map.md"); gap = io.open(gp, encoding="utf-8").read() if os.path.exists(gp) else ""
     if gap:

@@ -203,8 +203,12 @@ def gate_refs(a):
     say("PASS" if bad == 0 else "FAIL", "refs", f"{len(entries)} 条，{bad} 条标识符标题不符（DOI / arXiv / 论文集 URL）")
 
 # ----------------------------------------------------------------- floats
-CAP = re.compile(r"^\**\s*(Fig\.|Figure|Table)\s*(S?\d+)[a-z]?[\.\:\*]", re.M | re.I)
-CITE = re.compile(r"\b(Figs?\.|Figures?|Tabs?\.|Tables?)\s*((?:S?\d+[a-z]?)(?:\s*(?:,|and|&|–|-|to)\s*S?\d+[a-z]?)*)", re.I)
+CAP = re.compile(r"^\**\s*(Fig\.|Figure|Table|Algorithm)\s*(S?\d+)[a-z]?[\.\:\*]", re.M | re.I)
+CITE = re.compile(r"\b(Figs?\.|Figures?|Tabs?\.|Tables?|Algs?\.|Algorithms?)\s*((?:S?\d+[a-z]?)(?:\s*(?:,|and|&|–|-|to)\s*S?\d+[a-z]?)*)", re.I)
+
+def _kind(word):
+    w = word.lower()
+    return "table" if w.startswith("t") else "alg" if w.startswith("alg") else "fig"
 
 def _lab(pre, num):
     return f"{pre.upper()}{int(num)}"
@@ -233,35 +237,35 @@ def gate_floats(a):
     for sp in (a.supplement or []):
         if os.path.exists(sp):
             supp += "\n" + body_only(strip_code_math(read(sp)))
-    exist = {"fig": set(), "table": set()}
+    exist = {"fig": set(), "table": set(), "alg": set()}
     cap_spans = []          # (start, end) of the caption LABEL only; the rest of the caption line may legitimately cite other floats
     for src in (text, supp):
         for m in CAP.finditer(src):
             rest = src[m.end():src.find("\n", m.end()) if src.find("\n", m.end()) > 0 else len(src)].strip()
             if len(rest) < 12 and not src[m.end():m.end() + 3].startswith("**"):
                 continue   # "Fig. 3." alone on a line is a wrapped citation from a PDF text layer, not a caption
-            kind = "table" if m.group(1).lower().startswith("t") else "fig"
+            kind = _kind(m.group(1))
             exist[kind].add(_lab(m.group(2)[0] if m.group(2)[0] in "Ss" else "", re.sub(r"\D", "", m.group(2))))
             if src is text:
                 cap_spans.append((m.start(), m.end()))
     def in_caption_label(pos):
         return any(s <= pos < e for s, e in cap_spans)
-    cited = {"fig": set(), "table": set()}
-    supp_cited = {"fig": set(), "table": set()}      # "Tab. 7 of the supplementary": lives in another document
+    cited = {"fig": set(), "table": set(), "alg": set()}
+    supp_cited = {"fig": set(), "table": set(), "alg": set()}      # "Tab. 7 of the supplementary": lives in another document
     for m in CITE.finditer(text):
         if in_caption_label(m.start()):
             continue  # 题注自身的标签不算引用；题注正文里引用别的图表算
-        kind = "table" if m.group(1).lower().startswith("t") else "fig"
+        kind = _kind(m.group(1))
         word = m.group(1).lower()
         ctx = (text[max(0, m.start() - 40):m.start()] + " " + text[m.end():m.end() + 45]).lower()
         target = supp_cited if re.search(r"supplement|appendix|supp\.", ctx) else cited
-        if word in ("fig.", "figure", "table", "tab."):      # 单数形式只取第一个编号："Table 3, 27 %" 不是列表
+        if word in ("fig.", "figure", "table", "tab.", "algorithm", "alg."):      # 单数形式只取第一个编号："Table 3, 27 %" 不是列表
             first = re.match(r"(S?)(\d+)", m.group(2).strip(), re.I)
             if first: target[kind].add(_lab(first.group(1), first.group(2)))
         else:
             target[kind].update(expand(m.group(2)))
     ok = True
-    for kind in ("fig", "table"):
+    for kind in ("fig", "table", "alg"):
         cited[kind] |= supp_cited[kind] & exist[kind]        # cited "in the appendix" and the caption is here: fine
         orphan = exist[kind] - cited[kind]
         dangling = cited[kind] - exist[kind]
@@ -269,12 +273,13 @@ def gate_floats(a):
         dangling -= dang_supp
         if orphan:
             ok = False; say("FAIL", "floats", f"{kind} 无人引用: {sorted(orphan, key=_sortkey)}")
-        if dangling:
-            ok = False; say("FAIL", "floats", f"{kind} 引用了不存在的编号: {sorted(dangling, key=_sortkey)}")
+        if dangling:     # "Algorithm 2 of [12]" in related work names someone else's algorithm: only a figure / table reference can dangle for certain
+            if kind == "alg": say("WARN", "floats", f"alg 引用了本稿没有的 Algorithm 编号: {sorted(dangling, key=_sortkey)}（引别人论文里的算法时可忽略）")
+            else: ok = False; say("FAIL", "floats", f"{kind} 引用了不存在的编号: {sorted(dangling, key=_sortkey)}")
         if dang_supp:
             say("WARN", "floats", f"{kind} 引用了补充材料编号 {sorted(dang_supp, key=_sortkey)}，正文/--supplement 里没有题注（补充材料另有文件时可忽略）")
     if ok:
-        say("PASS", "floats", f"figs {sorted(exist['fig'], key=_sortkey)} tables {sorted(exist['table'], key=_sortkey)} 全部被引用且存在")
+        say("PASS", "floats", f"figs {sorted(exist['fig'], key=_sortkey)} tables {sorted(exist['table'], key=_sortkey)} 全部被引用且存在" + (f"，algorithms {sorted(exist['alg'], key=_sortkey)}" if exist["alg"] else ""))
 
 # ----------------------------------------------------------------- acronyms
 ACR = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]{1,9})(?![A-Za-z0-9])")

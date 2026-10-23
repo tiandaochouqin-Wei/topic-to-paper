@@ -7,7 +7,7 @@
 Why: drafts that pass every other gate still read like a lab notebook — 58–80 numbers per 1k words, contribution bullets with 4–12 numbers, "preregistered/registered" 20×
 in the main text, Related Work as a citation list. No editor or reviewer reads past that. This gate measures it and compares with the published corpus.
 
-Text scope: Introduction .. last main section. Excluded: references, figure/table captions (`**Fig. N.**`, `**Table N.**`), markdown tables, math, code, `>` notes, appendix / supplement /
+Text scope: Introduction .. last main section. Excluded: references, figure/table/algorithm captions (`**Fig. N.**`, `**Table N.**`, `**Algorithm N.**`; the pseudocode itself is a fenced code block), markdown tables, math, code, `>` notes, appendix / supplement /
 Protocol / Preregistration sections, and lines that are not prose (< 6 words or mostly numbers: table and figure-axis debris of PDF conversions).
 A number = digits with optional decimal / % / ± part; "0.79–3.09", "52–86%" and "0.20 ± 0.03" count once; citation brackets, Fig./Table/Section numbers, years, "ResNet-50"-style names do not.
 Metrics (higher = worse; verdict from references/readability-norms.csv: > p90 WARN, > p95 WARN, >= 3 metrics > p95 at once FAIL; > 2 numbers in a contribution bullet FAIL):
@@ -56,7 +56,7 @@ ACRO = re.compile(r"\b[A-Z]{2,}[A-Z0-9]*(?:-[A-Z0-9]+)*s?\b")
 ROMAN = {"II", "III", "IV", "VI", "VII", "VIII", "IX", "XI", "XII"}
 ABBR = re.compile(r"\b(?:et al|e\.g|i\.e|Fig|Figs|Eq|Eqs|Sec|Tab|vs|cf|No|Ref|Refs|approx|resp|etc|Dr|Prof)\.")
 LISTRE = re.compile(r"^\s*(?:[-*•▪–·]|\d+[.)]|\(\d\)|\(?[ivx]+\))\s+")
-CAPTION = re.compile(r"^\s*\*\*(?:Fig(?:ure|\.)?|Table|Tab\.|Extended Data Fig\.?)\s*\S+?\*\*", re.I)
+CAPTION = re.compile(r"^\s*\*\*(?:Fig(?:ure|\.)?|Table|Tab\.|Algorithm|Extended Data Fig\.?)\s*\S+?\*\*", re.I)
 APPENDIX = re.compile(r"\b(appendi(?:x|ces)|supplement\w*)\b|附录|^\W*(?:\d+\.?\s*)?(?:protocol|pre-?registration)\b", re.I)
 
 def nwords(s): return len(WORD.findall(s))

@@ -4,6 +4,19 @@ leak flags, gated hyper-parameters and silent fallbacks, so its shape matters, n
 import argparse, json, os, random
 
 
+def train_one_epoch(model, loader, beta, alpha, epochs):
+    """The procedure that Algorithm 1 of the paper describes (state.algorithms: alg:train is anchored to this function)."""
+    history = []
+    for epoch in range(epochs):
+        loss = model.regression_loss(loader)
+        if beta > 0:
+            loss = loss + beta * model.domain_loss(loader)
+        if alpha > 0:
+            loss = loss + alpha * model.consistency_loss(loader)
+        history.append(model.step(loss))
+    return history
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)

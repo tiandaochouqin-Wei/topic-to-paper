@@ -7,6 +7,8 @@ Writes out_dir/paper/manuscript.md with:
   - \\section/\\subsection -> ## / ###; \\paragraph{X} \\subparagraph{X} -> run-in **X**; \\par -> paragraph break; \\parbox{w}{t} -> t
   - every figure/table environment -> "**Fig. N.** caption" / "**Table N.** caption", numbered in document order
     (starred and sub-float-free; \\label{...} recorded so \\ref/\\autoref/\\cref/\\Cref resolve to the SAME numbers)
+  - every algorithm environment -> "**Algorithm N.** caption" + a fenced ```latex block with the algorithmic body, numbered in document order (\\ref{alg:x} -> "Algorithm N");
+    the block is parked behind a placeholder while the prose is converted, so nothing from it leaks into the text the gates read
   - tabular rows -> markdown rows (cells split on &, \\\\ ends a row; \\multicolumn collapsed to its text)
   - \\cite{a,b} -> [n] numbered by first appearance; bib keys mapped and written to out_dir/paper/refs.bib (copied/trimmed from --bib)
   - \\includegraphics width -> figures.csv print_width_mm (fraction × --textwidth-mm; \\columnwidth taken as textwidth/2 for two-column classes)
@@ -183,12 +185,23 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
             fig_rows.append((fn, round(wmm, 1), n))
         return out
     body = re.sub(r"\\begin\{(figure\*?|table\*?)\}(.*?)\\end\{\1\}", float_sub, body, flags=re.S)
+    alg_n = 0; alg_blocks = []
+    def alg_sub(m):
+        nonlocal alg_n
+        alg_n += 1; inner = m.group(2)
+        cap = " ".join(unbrace(balanced(inner, cm.end() - 1)[0]).strip() for cm in re.finditer(r"\\caption\s*(?:\[[^\]]*\])?\s*\{", inner))
+        for lm in re.finditer(r"\\label\{([^}]+)\}", inner): labels[lm.group(1)] = f"Algorithm {alg_n}"
+        core = re.search(r"\\begin\{algorithmic\}(?:\[[^\]]*\])?(.*?)\\end\{algorithmic\}", inner, re.S)
+        code = (core.group(1) if core else re.sub(r"\\caption\s*(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}|\\label\{[^}]*\}", "", inner)).strip("\n").rstrip()
+        alg_blocks.append("```latex\n" + re.sub(r"\n[ \t]*(?=\n)", "\n", code) + "\n```")
+        return f"\n\n**Algorithm {alg_n}.** {cap}\n\n@@ALGBLOCK{len(alg_blocks) - 1}@@\n\n"
+    body = re.sub(r"\\begin\{(algorithm\*?)\}(?:\[[^\]]*\])?(.*?)\\end\{\1\}", alg_sub, body, flags=re.S)
     # --- refs to floats
     def ref_sub(m):
         key = m.group(2)
         return labels.get(key, m.group(0))
     body = re.sub(r"\\(ref|autoref|cref|Cref|eqref)\{([^}]+)\}", ref_sub, body)
-    body = re.sub(r"(?:Fig\.|Figure|Table|Tab\.)~?\s*(Fig\. \d+|Table \d+)", r"\1", body)   # "Fig.~Fig. 3" -> "Fig. 3"
+    body = re.sub(r"(?:Fig\.|Figure|Table|Tab\.|Algorithm|Alg\.)~?\s*(Fig\. \d+|Table \d+|Algorithm \d+)", r"\1", body)   # "Fig.~Fig. 3" -> "Fig. 3"
     # --- sections
     body = headings(body)   # \section.. -> ##.. ; \paragraph{X} -> run-in **X**
     body = re.sub(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", lambda m: "\n\n## Abstract\n\n" + m.group(1).strip() + "\n\n", body, flags=re.S)
@@ -225,6 +238,7 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
             md_refs.append(f"[{i}] (bib key not found: {k})"); bib_out.append(f"@misc{{r{i},\n  title = {{{k}}},\n}}")
     os.makedirs(os.path.join(out_dir, "paper"), exist_ok=True)
     body = re.sub(r"\$\s*([+\-\u2212]?\d+(?:\.\d+)?)\s*\$", r"\1", body)   # $-37$ is a number, not a formula: keep it visible to the numbers gate
+    for i, blk in enumerate(alg_blocks): body = body.replace(f"@@ALGBLOCK{i}@@", blk)       # the fenced code goes back verbatim, after every prose rewrite
     md = f"# {title}\n\n{body.strip()}\n\n## References\n\n" + "\n".join(md_refs) + "\n"
     io.open(os.path.join(out_dir, "paper", "manuscript.md"), "w", encoding="utf-8").write(md)
     out_bib = os.path.join(out_dir, "paper", "refs.bib")
@@ -251,7 +265,7 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
         w = csv.DictWriter(f, fieldnames=hdr); w.writeheader()
         for r in new_rows + keep: w.writerow({k: r.get(k, "") for k in hdr})
     missing = sum(1 for r in md_refs if "not found" in r)
-    print(f"{os.path.basename(tex_path)}: {fig_n} figures, {tab_n} tables, {len(order)} cited keys ({missing} missing from bib), {len(labels)} labels -> {out_dir}")
+    print(f"{os.path.basename(tex_path)}: {fig_n} figures, {tab_n} tables, {len(order)} cited keys ({missing} missing from bib), {len(labels)} labels" + (f", {alg_n} algorithms" if alg_n else "") + f" -> {out_dir}")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

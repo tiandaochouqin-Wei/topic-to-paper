@@ -43,7 +43,26 @@ Removing this term is the no_cons ablation.
 ### 3.4 Training objective
 The full objective is the regression loss plus the two regularizers,
 $L = L_{reg} + \beta L_{dom} + \alpha L_{cons}$ (3)
-with $\beta$ and $\alpha$ fixed before training and recorded in every run's argument file.
+with $\beta$ and $\alpha$ fixed before training and recorded in every run's argument file. Algorithm 1 summarises the training procedure; the two regularizers enter only when their weights are positive.
+
+**Algorithm 1.** Training with the domain-adversarial and the consistency term.
+
+```latex
+\Require encoder with heads $f_\theta$, training loader $\mathcal{D}$, $\beta = 0.1$, $\alpha = 0.5$, $K = 3$
+\Ensure trained parameters $\theta$ and the loss history $h$
+\State $h \gets \emptyset$
+\For{$k = 1, \ldots, K$}
+  \State $L \gets L_{reg}(f_\theta, \mathcal{D})$
+  \If{$\beta > 0$}
+    \State $L \gets L + \beta\, L_{dom}$
+  \EndIf
+  \If{$\alpha > 0$}
+    \State $L \gets L + \alpha\, L_{cons}$
+  \EndIf
+  \State $h \gets h \cup \{\textsc{Step}(L)\}$
+\EndFor
+\State \Return $h$
+```
 
 ## 4. Experiments
 ### 4.1 Datasets and evaluation protocol

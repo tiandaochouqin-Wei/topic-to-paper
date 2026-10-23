@@ -112,6 +112,12 @@ instruments:                # G3b 仪器校准，scripts/instrument_check.py 机
   #   reference: {output: results/instruments/ref_trainer.json, key: ap, expected: 32.3, tol: 1.0, source: "Ultralytics official trainer, same split"}
 instruments_waiver: []      # 不是外部预训练组件的加载点：- {match: "resume|runs/", reason: "own checkpoint"}（正则，对文件路径或行文本；命中记 WARN 并写出理由）
 
+algorithms:                 # G6d 伪代码块，scripts/make_algorithm.py；每块锚到项目代码里的一个函数（ast 解析）。空 = 稿子里不写 Algorithm
+  # - id: train                       # \label{alg:train}
+  #   source: code/train.py:train_one_epoch   # file:function，块描述的就是它；函数或文件不存在 = FAIL（Class.method 也行）
+  #   tex: paper/latex/alg_train.tex  # `make_algorithm.py skeleton --id train` 写出，main.tex 里 \input
+  #   params: {"\\eta": lr, "\\lambda": beta, K: epochs}   # 块里的符号 -> args.json 的键；\Require 里写 `\lambda = 0.1` 时数值必须等于 ref run（bundle.matrix.ref.args，否则 runs/<ref>*/args.json）
+
 bundle:                     # P3/P4 远程实验包，scripts/bundle.py make|check|tables（用户上传跑、传回结果的工作流）
   code_dir: code
   entry: "python train.py --exp {run} {args}"      # {run} = run_id，{args} = matrix 里的参数串

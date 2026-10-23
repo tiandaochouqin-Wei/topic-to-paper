@@ -1,0 +1,29 @@
+% Algorithm block skeleton (scripts/make_algorithm.py skeleton --id <id> writes one from the real function; this file is the generic shape).
+% Packages in main.tex (pick ONE family, they conflict):
+%   \usepackage{algorithm}  \usepackage{algpseudocode}     % default: \State \Require \For ... \EndFor (the `algorithmic` environment comes from algpseudocode)
+%   \usepackage{algorithm}  \usepackage{algorithmic}       % old package, upper-case commands: \STATE \REQUIRE \FOR{..} \ENDFOR
+%   \usepackage[ruled]{algorithm2e}                         % \KwIn{..} \KwOut{..} \For{..}{..} \;   (no \State, no \End..)
+% Accepted by CVPR / ICCV / ECCV / NeurIPS / IEEEtran / elsarticle (references/latex-templates.csv); none of them loads the packages for you.
+% Rules (G6d, make_algorithm.py check):
+%   - \label{alg:<id>} must match a row of research-state.yaml `algorithms:` (id, source: file:function, params) and be \ref'd from the Method text: Algorithm~\ref{alg:<id>}
+%   - symbols are defined in the text; every code-like name is an identifier of the source function or a key of `params`
+%   - `\Require ... $\lambda = 0.1$`: the number must equal the reference run's value (bundle.matrix.ref.args / runs/<ref>*/args.json)
+%   - no result numbers in a \State (a number with >= 3 significant digits is a WARN); <= 30 numbered lines; at least as many \For/\While as the function has loops
+%   - rewrite every `% code:` comment into the mathematical statement, then delete the comment
+\begin{algorithm}[t]
+\caption{<one-line name of the procedure>}
+\label{alg:<id>}
+\begin{algorithmic}[1]
+\Require inputs $\ldots$, hyper-parameters $\lambda = 0.1$, $K = 3$
+\Ensure what the procedure returns $\ldots$
+\State $h \gets \emptyset$
+\For{$k = 1, \ldots, K$}
+  \State $L \gets L_{\mathrm{reg}}(f_\theta, \mathcal{D})$
+  \If{$\lambda > 0$}
+    \State $L \gets L + \lambda\, L_{\mathrm{aux}}$
+  \EndIf
+  \State $h \gets h \cup \{\textsc{Step}(L)\}$
+\EndFor
+\State \Return $h$
+\end{algorithmic}
+\end{algorithm}

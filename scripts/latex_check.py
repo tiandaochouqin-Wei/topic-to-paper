@@ -18,6 +18,7 @@ check:  documentclass / style file matches the venue's template (WARN; FAIL when
         dangling \\ref (FAIL); float without \\label (WARN); graphic not in figures.csv or with another print width (WARN);
         bibliography file present (FAIL); paper/manuscript.md older than the .tex sources = gates ran on stale text (FAIL);
         leftover \\todo / \\fixme / \\hl in any \\input-ed source, or todonotes loaded without [disable] (FAIL);
+        algorithm environments (or state.algorithms rows): make_algorithm.py check runs inside and its FAIL/WARN lines are folded in (packages, caption/label/\\ref, source anchor, values vs the reference run, shape);
         raw keys in the reference list: main.blg "didn't find a database entry", main.log "Citation .. undefined", a main.bbl \\bibitem whose body is just the key (FAIL; logs older than the sources are WARN, not trusted).
 Exit = number of FAIL lines."""
 import argparse, csv, io, os, re, shutil, subprocess, sys, tempfile
@@ -39,6 +40,11 @@ def say(st, msg):
     global FAILS
     if st == "FAIL": FAILS += 1
     print(f"[{st}] latex: {msg}")
+
+
+def bump(n):
+    global FAILS
+    FAILS += n
 
 
 def read(p):
@@ -259,6 +265,9 @@ def check(a):
     elif re.search(r"\\begin\{thebibliography\}", text): say("PASS", "内嵌 thebibliography")
     else: say("WARN", "没有 \\bibliography / \\addbibresource / thebibliography")
     # --- leftover markers + bibliography build artefacts (raw keys in the reference list)
+    if re.search(r"\\begin\{algorithm\*?\}", text) or st.get("algorithms"):      # pseudocode blocks: packages, caption / label / \ref, anchor to the code, values vs the reference run
+        import make_algorithm as ma
+        bump(ma.run_checks(root, st, text, tex)[0])
     leftover_markers(text, pkgs_raw=re.findall(r"\\usepackage\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}", text))
     bib_artifacts(tex, files)
     # --- figures.csv cross-check (registration + print width)

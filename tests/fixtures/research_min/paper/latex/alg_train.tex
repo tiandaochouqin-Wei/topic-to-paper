@@ -1,0 +1,20 @@
+\begin{algorithm}[t]
+\caption{Training with the domain-adversarial and the consistency term.}
+\label{alg:train}
+\begin{algorithmic}[1]
+\Require encoder with heads $f_\theta$, training loader $\mathcal{D}$, $\beta = 0.1$, $\alpha = 0.5$, $K = 3$
+\Ensure trained parameters $\theta$ and the loss history $h$
+\State $h \gets \emptyset$
+\For{$k = 1, \ldots, K$}
+  \State $L \gets L_{reg}(f_\theta, \mathcal{D})$
+  \If{$\beta > 0$}
+    \State $L \gets L + \beta\, L_{dom}$
+  \EndIf
+  \If{$\alpha > 0$}
+    \State $L \gets L + \alpha\, L_{cons}$
+  \EndIf
+  \State $h \gets h \cup \{\textsc{Step}(L)\}$
+\EndFor
+\State \Return $h$
+\end{algorithmic}
+\end{algorithm}

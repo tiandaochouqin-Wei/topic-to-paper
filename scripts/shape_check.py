@@ -11,7 +11,8 @@ Checks are the five-to-eight mechanical signatures that separate the families in
   cs_conf  : order Intro > (Related) > Method > Experiments > Conclusion; contribution list 3–5 items in Intro; Experiments has an Ablation subsection; ≥3 numbered
              equations in Method; abstract 120–220 words; intro ≤ 25 % of body; Conclusion present
   cs_journal: as cs_conf plus Related Work section present (WARN if absent), abstract ≤ 250 words, Discussion/Limitations subsection present (WARN), ≥5 equations (WARN)
-Common: body-word count vs. family median ±60 % (WARN); reference count vs. state.target.ref_max.
+Common: body-word count vs. family median ±60 % (WARN); reference count vs. state.target.ref_max; `**Algorithm N.**` blocks vs. references/algorithm-norms.csv (WARN when the family's method
+  papers mostly have pseudocode and the manuscript has a Method section but no Algorithm, or has more blocks than p90 of the papers that have any; an INFO line with the share otherwise).
 Exit = #FAIL.
 """
 import argparse, io, os, re, sys
@@ -71,8 +72,21 @@ def canon(title):
         if re.search(pat, t): return name
     return None
 
+def algorithm_norm(fam, n_alg, has_method, path=""):
+    """Pseudocode vs the family's published papers (references/algorithm-norms.csv, ALL row; make_algorithm.py calibrate). No norms file or no row for the family: silent."""
+    p = path or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "references", "algorithm-norms.csv")
+    if not os.path.exists(p): return
+    import csv
+    rows = list(csv.DictReader(io.StringIO("\n".join(l for l in io.open(p, encoding="utf-8-sig").read().splitlines() if not l.startswith("#")))))
+    r = next((r for r in rows if r["family"] == fam and r["venue"] == "ALL"), None)
+    if not r: return
+    share, n, p90 = float(r["share_with_algorithm"]), int(r["n_method_papers"]), float(r["p90_count"])
+    if has_method and n_alg == 0 and share >= 0.5: say("WARN", f"该家族 {share:.0%} 的方法论文有伪代码（n={n}），本文没有 —— 方法是带循环 / 分支的过程就加一块 Algorithm（`make_algorithm.py skeleton`）")
+    elif n_alg > max(p90, 1): say("WARN", f"{n_alg} 个 Algorithm 块 > 该家族有伪代码的论文的 p90 ({p90:g}，max {r['max_count']}；n={n}) —— 合并或挪到附录")
+    else: say("INFO", f"Algorithm 块 {n_alg} 个；{fam} 方法论文里 {share:.0%} 有伪代码（n={n}；有伪代码的论文中位 {r['p50_count']} 块，p90 {p90:g}）")
+
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--project", default="."); ap.add_argument("--manuscript", default="paper/manuscript.md"); ap.add_argument("--state", default="research-state.yaml"); ap.add_argument("--family", default="")
+    ap = argparse.ArgumentParser(); ap.add_argument("--project", default="."); ap.add_argument("--manuscript", default="paper/manuscript.md"); ap.add_argument("--state", default="research-state.yaml"); ap.add_argument("--family", default=""); ap.add_argument("--algorithm-norms", default="", help="default: references/algorithm-norms.csv")
     a = ap.parse_args(); root = os.path.abspath(a.project)
     import yaml
     sp = os.path.join(root, a.state); st = yaml.safe_load(io.open(sp, encoding="utf-8")) if os.path.exists(sp) else {}
@@ -80,6 +94,7 @@ def main():
     mp = os.path.join(root, a.manuscript)
     if not os.path.exists(mp): say("FAIL", f"{a.manuscript} 不存在"); sys.exit(1)
     md = io.open(mp, encoding="utf-8").read(); md = "\n".join(l for l in md.splitlines() if not l.lstrip().startswith(">"))
+    n_alg = len({m.group(1) for m in re.finditer(r"^\**\s*Algorithm\s*(\d+)\s*[.:*]", md, re.M | re.I)}); md = re.sub(r"```.*?```", "", md, flags=re.S)   # pseudocode blocks are counted, not read as prose
     body, hs = headings(md)
     top = [(canon(t), t, s, e) for lv, t, s, e in hs if lv <= 2]
     seq = [c for c, *_ in top if c and c not in ("abstract", "highlights", "backmatter")]
@@ -148,6 +163,7 @@ def main():
             if "related" not in seq: say("WARN", "期刊稿缺 Related Work 节（53% 有，审稿人常要求）")
             if not (sec("limitations") or "discussion" in seq or re.search(r"limitation", sec("results") + sec("conclusion"), re.I)): say("WARN", "无 Discussion/Limitations 子节")
         if fam == "cs_conf" and not re.search(r"limitation", prose, re.I): say("WARN", "无 Limitations 段（NeurIPS 72% 有，checklist 要求）")
+    algorithm_norm(fam, n_alg, "method" in seq, a.algorithm_norms)
     med = MEDIAN_BODY[fam]
     if not (0.4 * med <= bw <= 1.8 * med): say("WARN", f"正文 {bw} 词，{fam} 中位 {med}（±60% 以外）")
     ref_max = ((st or {}).get("target") or {}).get("ref_max")

@@ -169,3 +169,9 @@ instruments:                # G3b: one pretrained component; known answer throug
     dump: figures/instruments/backbone_first_batch.png
     inspected: yes
 instruments_waiver: []
+
+algorithms:                 # G6d: pseudocode blocks, each anchored to one function of the project's code (scripts/make_algorithm.py)
+  - id: train
+    source: code/train.py:train_one_epoch
+    tex: paper/latex/alg_train.tex
+    params: {"\\beta": beta, "\\alpha": alpha, K: epochs}

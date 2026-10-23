@@ -27,7 +27,7 @@ Gate → script mapping (inputs decide whether a gate runs):
   G4  results/main.csv                                     results_check.py + ablation_plan.py resolve
   G5  figures.csv                                          gate_check.py dpi
   G6  paper/manuscript.md                                  gate_check.py floats acronyms scope numbers limits (+refs with --net)
-  G6d paper/latex/main.tex (LaTeX projects only)           latex_check.py check: class matches venue, all figures PDF, panels via subfigure
+  G6d paper/latex/main.tex (LaTeX projects only)           latex_check.py check: class matches venue, all figures PDF, panels via subfigure, algorithm blocks (make_algorithm.py check)
   G6e paper/claims.csv with rows                           claims_check.py: headline sentences ↔ claims rows, each row computed from results, strong scope ↔ scope_words
   G6f paper/manuscript.md (research)                      readability_check.py: numbers / semicolons / sentence length vs published norms, contribution bullets, protocol vocabulary, catalogue paragraphs
   G7  paper/review_log.md                                  review_check.py

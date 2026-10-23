@@ -46,6 +46,7 @@
 | 盲稿关口把被引作者当泄露 | 参考文献表里有同姓作者 | 盲稿检查先截掉参考文献表 |
 | "under any channel loss" 只测了四种 | 全称量化词不在作用域词表 | SCOPE_STRONG 含 any/all/every + 名词 |
 | 参考文献超限 | 没提前算预算 | G0 抄硬规则，加一删一 |
+| 伪代码写的是想象中的方法，不是跑出结果的那个函数 | 凭记忆写；超参与循环结构在代码里早改过 | G6d：伪代码锚到 state.algorithms 的函数（ast），Require 里的数值对账 ref run 的 args，循环数对照函数 |
 | LaTeX 出空白页 | author 间空行 | 模板固定 |
 | 公式符号包冲突 | amssymb × newtxmath | 模板固定 |
 

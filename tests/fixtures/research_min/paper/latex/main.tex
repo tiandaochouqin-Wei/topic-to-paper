@@ -4,6 +4,8 @@
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 \graphicspath{{../../figures/}}
 
 \begin{document}
@@ -23,7 +25,9 @@ force estimation \sep domain shift \sep surgical robotics
 Surgical force estimation must transfer across robot platforms~\cite{lecun2015deep}. Fig.~\ref{fig:main} summarises the main comparison, Fig.~\ref{fig:abl} the ablations, and Table~\ref{tab:main} the numbers. The strongest baseline is the geometric regressor of~\cite{he2016resnet}.
 
 \section{Method}
-The objective is $L = L_{reg} + \beta L_{dom} + \alpha L_{cons}$.
+The objective is $L = L_{reg} + \beta L_{dom} + \alpha L_{cons}$. Algorithm~\ref{alg:train} summarises the training procedure.
+
+\input{alg_train}
 
 \begin{figure}[t]
   \centering
