@@ -24,7 +24,9 @@ Checks: (1) every main/ablation row's run dir + eval_file exist, every mapped me
 CSV's precision; eval newer than freshness_ref; no `_tainted`; (2) primary metric column present and named in prereg;
 convention string from prereg §4 appears in the table header/note; (3) seeds ≥ min_seeds per method, else waiver; the same seed
 set across methods; (4) ablation rows ⊇ prereg §6 items, baselines ⊇ prereg §5 items (fuzzy token match); (5) sign of each
-pre-stated prediction. Exit 1 on any FAIL."""
+pre-stated prediction; (6) `reproductions` empty while the main table has a baseline -> WARN; (7) findings.md: a block (`## F#`) that closes an
+anomaly (`cause: real|impl|data|convention|leak`, `<step>: excluded|排除`) needs an `evidence:` line naming >=1 existing file (command output, not prose),
+and `cause: real` needs a `control:` line. Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections, statistics
 from decimal import Decimal, InvalidOperation
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
@@ -72,6 +74,28 @@ def table_first_col(txt):
         cells = [c.strip() for c in l.strip().strip("|").split("|")]
         if cells and cells[0] and not set(cells[0]) <= set("-: "): out.append(cells[0])
     return out
+
+VERDICT = re.compile(r"(?mi)^[ \t]*(?:-[ \t]*)?(?:cause[ \t]*:[ \t]*(?:real|impl|data|convention|leak)\b|(?:convention|data|leak|impl)[ \t]*:[ \t]*(?:excluded|排除))")
+
+def finding_blocks(txt):
+    """[(id, block text)] for `## F#` / `### F#` headings; fenced ``` examples (the template's format block) are not findings."""
+    txt = re.sub(r"(?s)```.*?```", "", txt)
+    ms = list(re.finditer(r"(?m)^#{2,3}[ \t]*(F\d+)\b.*$", txt))
+    out = []
+    for i, m in enumerate(ms):
+        nxt = re.search(r"(?m)^#{1,3}[ \t]", txt[m.end():])
+        end = m.end() + nxt.start() if nxt else len(txt)
+        out.append((m.group(1), txt[m.end():end]))
+    return out
+
+def evidence_paths(block, root):
+    """existing project paths named on `evidence:` lines (space/comma separated; `path:line` and `path#anchor` accepted)"""
+    ok = []
+    for line in re.findall(r"(?mi)^[ \t]*(?:-[ \t]*)?evidence[ \t]*:(.*)$", block):
+        for tok in re.split(r"[\s,;，；]+", line):
+            tok = re.sub(r"(:\d+)?(#.*)?$", "", tok.strip("`'\"()[]<>"))
+            if tok and os.path.exists(os.path.join(root, tok)): ok.append(tok)
+    return ok
 
 def read_csv(p):
     if not os.path.exists(p): return None, []
@@ -227,6 +251,21 @@ def main():
                 if logged(name, met): say("WARN", "reproductions", f"{name}.{met}: 复现 {m:.4f} vs 报告 {rep}（|Δ| {abs(m-rep):.4f} > tol {tol}），findings.md 已记录")
                 else: say("FAIL", "reproductions", f"{name}.{met}: 复现 {m:.4f} vs 报告 {rep}（|Δ| {abs(m-rep):.4f} > tol {tol}），findings.md 无记录 —— 基线复现偏差先写 findings.md（可能是口径/数据/泄漏，也可能就是论文）再继续")
             else: say("PASS", "reproductions", f"{name}.{met}: 复现 {m:.4f} vs 报告 {rep}，|Δ| ≤ {tol}")
+    if not reps and main_rows:
+        others = sorted({r.get(gk, "") for r in main_rows} - {cfg.get("reference_method", "ours"), ""})
+        if others: say("WARN", "reproductions", f"reproductions 为空：至少把一个基线复现到其论文数字（主表有 {len(others)} 个基线 {others[:3]}）；仪器校准见 G3b —— 复现不到论文数字时，数字差是你的实现、不是方法")
+    # ---- findings.md: a closing verdict needs evidence, not free text (med2: 'impl: excluded' with nothing behind it)
+    blocks = finding_blocks(io.open(find_p, encoding="utf-8").read()) if os.path.exists(find_p) else []
+    closed = [(fid, b) for fid, b in blocks if VERDICT.search(b)]
+    if closed:
+        print("\n== findings ==")
+        n_bad = 0
+        for fid, b in closed:
+            if not evidence_paths(b, root):
+                n_bad += 1; say("FAIL", "findings", f"{fid}: 分诊结论没有证据文件（命令输出）——自由文本不算排查；写 `evidence: <runs/…/x.txt results/…>` 指向存在的文件")
+            if re.search(r"(?mi)^[ \t]*(?:-[ \t]*)?cause[ \t]*:[ \t]*real\b", b) and not re.search(r"(?mi)^[ \t]*(?:-[ \t]*)?control[ \t]*:[ \t]*\S", b):
+                say("WARN", "findings", f"{fid}: cause: real 没有 control: 行（阳性或阴性对照：同一管线下已知答案的输入应得到已知结果）")
+        if not n_bad: say("PASS", "findings", f"{len(closed)} 条已结案的 finding 都带存在的证据文件")
     # ---- failure analysis: averages hide failures; the slice report for the reference method must exist
     fs = os.path.join(root, cfg.get("failure_slices", "results/failure_slices.md"))
     if os.path.exists(fs): say("PASS", "failure", f"{os.path.relpath(fs, root)} 存在（failure_slice.py 输出）")

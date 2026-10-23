@@ -50,6 +50,7 @@ def fresh_project(tmp_path, scheduler="bash"):
     s = s.replace("  import_check: [numpy]", "  import_check: [json]")
     s = s.replace("  min_vram_gb: 8", "  min_vram_gb: 0").replace("  min_disk_gb: 10", "  min_disk_gb: 1")
     s = s.replace("    seeded: [ours, baseA, baseB, no_dom, no_cons]", "    seeded: [ours, baseA, baseB]")   # ablations single-run, as prereg §6 / Table 2 say
+    s = s.split("\ninstruments:")[0] + "\n"                             # the e2e code loads no pretrained component: G3b passes with "无预训练组件"
     write(sp, s)
     assert "prereg_sha256" in read(sp)
     lock(proj, "prereg.md", "prereg_sha256")

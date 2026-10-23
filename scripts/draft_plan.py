@@ -11,7 +11,7 @@ Sources -> items (each item: section, what must be said, probe used to verify):
   claims.csv   每条 statement 的数字 -> Introduction contributions AND the section its table_or_figure lives in
   results/     main.csv: ref vs strongest baseline on primary metric -> Results must state the relative change (±1 in last digit);
                strongest = min or max by results.metric_direction / primary_direction (metric_direction.py; name regex if unset);
-               ablation resolve: unresolvable cells -> Results must say "noise/resolution/not resolvable/within";
+               ablation resolve: unresolvable cells -> Results must say "noise/resolution/not resolvable/within" — in the prose OR in a figure/table caption / table footnote;
                failure_slices.md: worst slice + AUROC -> Results/Discussion must mention them
   transfer_scan.md  selected row's 失效点 -> Method/Introduction (tokens)
 
@@ -212,7 +212,7 @@ def build(root):
         r = subprocess.run([sys.executable, os.path.join(HERE, "ablation_plan.py"), "resolve", "--project", root], capture_output=True, text=True, encoding="utf-8")
         m = re.search(r"可解读格 (\d+)/(\d+)", r.stdout)
         if m and int(m.group(1)) < int(m.group(2)):
-            add("results", "ablation resolve", f"消融节必须写明 {int(m.group(2))-int(m.group(1))}/{m.group(2)} 格在 seed 噪声内不可解读（用 not resolvable / resolution limit / within seed noise / below the noise 之类措辞）", r"(not|un|non-?)\s*resolv|resolution\s+limit|within\s+(the\s+)?(seed|run|replicate)[- ]to[- ](seed|run|replicate)|within\s+(the\s+)?(seed|noise|s\.d\.)|below\s+(the\s+)?(seed\s+)?noise|不可(解读|分辨)|噪声内", "regex")
+            add("results", "ablation resolve", f"消融节必须写明 {int(m.group(2))-int(m.group(1))}/{m.group(2)} 格在 seed 噪声内不可解读（用 not resolvable / resolution limit / within seed noise / below the noise 之类措辞；写在结果正文、或图表题注 / 表脚注里都算，make_figure.py 的灰色柱题注即是）", r"(not|un|non-?)\s*resolv|resolution\s+limit|within\s+(the\s+)?(seed|run|replicate)[- ]to[- ](seed|run|replicate)|within\s+(the\s+)?(seed|noise|s\.d\.)|below\s+(the\s+)?(seed\s+)?noise|不可(解读|分辨)|噪声内", "regex_cap")
     # ---- failure slices
     fs = os.path.join(root, res.get("failure_slices", "results/failure_slices.md"))
     if os.path.exists(fs):
@@ -242,6 +242,15 @@ def plan(a):
     print("\n".join(L)); print(f"-> {out} (+ .json)")
 
 # ------------------------------------------------------------------ check
+def caption_text(md):
+    """figure/table captions (`**Fig. N.** …`, `Table N: …`) and table footnotes (non-table lines right under a markdown table, or `Note:`/`*`/`†` lines) anywhere in the manuscript."""
+    out, lines = [], md.splitlines()
+    for i, l in enumerate(lines):
+        s = l.strip()
+        if re.match(r"\*\*(?:Fig(?:ure|\.)?|Table|Tab\.)\s*[A-Z]?\d+[.:]?\s*\*\*|(?:Fig(?:ure|\.)?|Table|Tab\.)\s*[A-Z]?\d+\s*[.:]\s", s, re.I) or re.match(r"(?:\*(?!\*)|†|‡|Notes?\b)", s): out.append(s)
+        elif s and not s.startswith("|") and i and lines[i - 1].lstrip().startswith("|") and not s.startswith("#"): out.append(s)   # footnote directly under a table
+    return "\n".join(out)
+
 def check(a):
     root = os.path.abspath(a.project); jp = os.path.join(root, os.path.splitext(a.plan)[0] + ".json")
     items = json.load(open(jp, encoding="utf-8")) if os.path.exists(jp) else build(root)
@@ -267,6 +276,7 @@ def check(a):
         elif k == "number_prefix": ok = p in hay
         elif k == "number_pm1": ok = pct_change_stated(int(p), hay, it.get("dir"))
         elif k == "regex": ok = bool(re.search(p, hay, re.I))
+        elif k == "regex_cap": ok = bool(re.search(p, hay + "\n" + caption_text(md), re.I))   # the statement may live in a caption / table footnote instead of the prose
         else: ok = overlap(p, hay) >= a.min_overlap
         done[it["id"]] = ok
         if ok: hits += 1; print(f"[PASS] {it['id']} {it['section']}: {it['must'][:70]}")

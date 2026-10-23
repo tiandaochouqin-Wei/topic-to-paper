@@ -152,3 +152,20 @@ submission:
 
 acronym_ok: [EAAI]
 blind_terms: [Zhang, Karolinska]
+
+instruments:                # G3b: one pretrained component; known answer through the same input path + a broken-input control
+  - name: backbone
+    kind: pretrained
+    match: "backbone"
+    contract: {axcodes: RAS, spacing: [1.5, 1.5, 1.5], channels: 1, source: "https://example.org/official/transforms.py#L40"}
+    check:
+      cmd: "python code/calib_backbone.py --out results/instruments/backbone.json"
+      output: results/instruments/backbone.json
+      key: dice.liver
+      expected: 0.95
+      tol: 0.05
+      source: "official repo README, liver Dice 0.95"
+    broken: {output: results/instruments/backbone_broken.json, key: dice.liver, how: "axes reversed (LPS)"}
+    dump: figures/instruments/backbone_first_batch.png
+    inspected: yes
+instruments_waiver: []

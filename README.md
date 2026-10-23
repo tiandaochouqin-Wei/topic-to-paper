@@ -44,6 +44,7 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 | G1b innovation source | claim not traceable to a recurring gap, a stated assumption in a prior paper, or a transferred method's failure point; direction has no "no-go" exit |
 | G2 preregistration | metric/denominator/window changed after seeing results; no failure branch; no pre-stated signs |
 | G3 build audit | target-domain labels leak into training; an `args.beta=0.1` that never took effect; a missing input directory silently disabling a modality |
+| G3b instrument calibration | a pretrained model fed the wrong axis order / intensity window / channel layout and nothing fails; an orientation test that scores the same on right and broken input; a hand-written training loop several AP below the reference trainer |
 | G4 results | numbers not traceable to eval files; stale evals; mixed hardware in one table; ablation cells inside seed noise read as effects; anomalies patched instead of recorded |
 | G5 figures | dpi measured on screen not at print width; fonts unreadable after the figure is scaled into a half column; expected figure types (overview, qualitative, comparison, ablation) missing without a stated reason; dual-axis plots |
 | G6 manuscript | DOI strings that resolve to other papers; orphan figures; acronyms never expanded; "outperforms all" without a scope; table numbers that drift from result files; venue hard limits |
@@ -63,7 +64,7 @@ Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_ch
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 32 gate/generator scripts, all argparse, all `--help`
+scripts/                 34 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, tables.yaml, prisma2020_checklist.csv, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, figure-norms.md (which figure types each venue / family / topic uses), latex-templates.csv, acronym-norms.csv, validation-*.md

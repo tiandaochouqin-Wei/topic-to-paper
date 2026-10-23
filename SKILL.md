@@ -1,7 +1,7 @@
 ---
 name: topic-to-paper
 description: "Gated topic-to-submission pipeline. One sentence from the user (a topic, a draft path, or 'resume <project>') and Claude runs every script to a submission package: research branch P0–P8 and survey branch S0–S6, each stage closed by a machine-checked gate (preregistration lock, leakage/effective-config audit, number traceability, ablation resolution, figure dpi, manuscript shape, review loop, submission consistency). Single session, no subagents, state in research-state.yaml. Triggers: 用 topic-to-paper, 从选题到论文, 投稿包, 端到端论文, 自动化科研, 帮我做一篇综述, 写一篇综述, write a survey on X, 这是我的稿子帮我过一遍关口, check my draft against the gates, resume/继续 <项目>. Not for a single writing, citation or figure task (nature-writing, nature-citation, nature-figure do those)."
-version: 2.11.0
+version: 2.12.0
 author: Wei Zhang (KI) + Claude
 license: MIT
 ---
@@ -21,7 +21,7 @@ license: MIT
 | "resume X" / "继续 X 项目" | `t2p.py status`（显示上次 check 写回的状态板）→ 从第一道未过关口继续；状态可疑就重跑 `t2p.py check` |
 | "现在到哪了" | `t2p.py status`，三行回答 |
 
-**回来问用户的时机只有四种**：① 需要凭据或账号（Earthdata、SUPR、NSMC、期刊系统）；② 两种读法会导致实质不同的工作（如"综述范围是影像还是全模态"）；③ 要改已锁定的预注册；④ 关口 FAIL 且修法需要用户的领域判断（如"这条引用到底是哪篇"）。其它一切自己决定、自己做、做完汇报。
+**回来问用户的时机只有四种**：① 需要凭据或账号（Earthdata、SUPR、NSMC、期刊系统）；② 两种读法会导致实质不同的工作；③ 要改已锁定的预注册；④ 关口 FAIL 且修法需要用户的领域判断。其它一切自己决定、自己做、做完汇报。
 
 **汇报格式**：先结论（过了几道关口、停在哪、为什么），再表格列每道关口的结果，最后一段"需要你做的事"。不展示命令，不展示脚本输出。
 
@@ -38,15 +38,15 @@ license: MIT
 {project}/
 ├── research-state.yaml      # 唯一状态源；branch: research | survey
 ├── prereg.md | protocol.md  # 研究 / 综述 的预注册
-├── literature/              # corpus.csv  gap_map.md  mined/  pdf/  lit_index.sqlite
+├── literature/              # corpus.csv  gap_map.md  pdf/
 ├── runs/ results/           # 研究分支
-├── coding/ tables/          # 综述分支：screening_sheet.csv  coded.csv  codebook.md  coverage.csv
+├── coding/ tables/          # 综述分支：screening_sheet.csv  coded.csv
 ├── figures/ figures.csv
-├── paper/                   # manuscript.md  claims.csv  numbers.csv  refs.bib  review_log.md
-└── submission/              # guide.txt  cover_letter.md  title_page.md  highlights.md  blind.md
+├── paper/                   # manuscript.md  claims.csv  numbers.csv  refs.bib
+└── submission/              # guide.txt  cover_letter.md  blind.md …
 ```
 
-Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature> --entry <topic_only|topic_plus_data|have_results|have_draft|have_reviews>`（已存在则跳过；entry 决定哪些关口显示 N/A），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。`check` 会把每道关口的 status/evidence/checked 写回 state.gates，`status` 读它；**state.gates 一律不手工改**，预注册/协议的 sha256 用 `t2p.py lock` 写（手工正则会因写回时的引号风格而静默失配）。
+Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature> --entry <topic_only|topic_plus_data|have_results|have_draft|have_reviews>`（已存在则跳过），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。`check` 会把每道关口的 status/evidence/checked 写回 state.gates，`status` 读它；**state.gates 一律不手工改**，预注册/协议的 sha256 用 `t2p.py lock` 写。
 
 ---
 
@@ -56,13 +56,13 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 
 | 站 | 做什么 | 产物 | 命令（Claude 跑） | 出口关口 |
 |---|---|---|---|---|
-| **P0 选刊** [细则](references/phases/P0.md) | 下载 Guide for Authors；硬规则与 `target.family`（cs_conf / cs_journal / nature）抄进 state.target；有 LaTeX 模板的刊：class 文件进 paper/latex/，骨架生成 | submission/guide.txt；state.target；paper/latex/main.tex | curl（nature.com 带浏览器 UA）；`latex_check.py skeleton --venue "<刊>"`、`widths --tex` | G0 = 文件在、venue 填了 |
+| **P0 选刊** [细则](references/phases/P0.md) | 下载 Guide for Authors；硬规则与 `target.family`（cs_conf / cs_journal / nature）抄进 state.target；有 LaTeX 模板的刊：class 进 paper/latex/ | submission/guide.txt；state.target；paper/latex/main.tex | curl（nature.com 带浏览器 UA）；`latex_check.py skeleton --venue "<刊>"`、`widths --tex` | G0 = 文件在、venue 填了 |
 | **P1 文献与饱和** [细则](references/phases/P1.md) | 先找问题不找模型：本地索引 → 联网 API；每篇核心论文记"哪里不够"；领域外方法扫描；有基线代码就切失败片 | literature/problem_table.csv、gap_map.md（`## 判定` go/no-go）、transfer_scan.md；refs.bib | `lit_scout.py` `baseline_miner.py` `problem_table.py` `transfer_scan.py recent\|count\|check` `failure_slice.py` | G1 = `gate_check.py refs`；G1b = `transfer_scan.py check`。**no-go 是合法出口** |
 | **P2 预注册** [细则](references/phases/P2.md) | §0 现象 → 原因 → 最小对照 先于方法；§1 写"在 <条件> 下 <失败>，因为 <原因>"并标 `来源: gap#A` 或 `transfer#Tn`；八节齐、口径写死 | prereg.md（sha256 锁进 state.gates.G2） | `ablation_plan.py plan code/train.py` → `prereg_check.py` | G2 = `prereg_check.py` 全绿 |
-| **P3 搭建** [细则](references/phases/P3.md) | 填 state.audits（泄漏开关、关键超参证据列、必需输入、烟测）；实验在服务器跑时填 state.bundle 出实验包 | runs/ 结构；bundle/ | `audit_check.py --smoke`；`bundle.py check\|make\|tables` | G3 = `audit_check.py` 全绿（runs 空时 `bundle.py check` 顶上） |
+| **P3 搭建** [细则](references/phases/P3.md) | 填 state.audits（泄漏开关、关键超参证据列、必需输入、烟测）；**仪器校准**见细则（G3b）；实验在服务器跑时填 state.bundle 出实验包 | runs/ 结构；bundle/ | `audit_check.py --smoke`；`bundle.py check\|make\|tables` | G3 = `audit_check.py` 全绿（runs 空时 `bundle.py check` 顶上）；G3b = `instrument_check.py`（已知答案 + 破坏对照） |
 | **P4 实验** [细则](references/phases/P4.md) | 每 run 写 run_card；反常先记 findings.md 再动配置（分诊 [anomaly-triage](references/anomaly-triage.md)）；对本文方法切失败片 | results/main.csv、ablation.csv、runs/*/eval.json、findings.md、results/failure_slices.md | `failure_slice.py`；`results_check.py`；`ablation_plan.py resolve` | G4 = 两脚本全绿 |
-| **P5 图** [细则](references/phases/P5.md) | 主结果图 / 消融图 / seed 图 / 定性网格由脚本生成；**全部 PDF，组合图每个面板一个 PDF**（LaTeX 里 subfigure 拼）；每张裁图目测后 inspected=yes；**按印刷宽度画**（印刷字号 ≥ 5 pt） | figures/*.pdf（+ .png 预览）+ .source.csv；figures.csv | `make_figure.py main\|ablation\|seeds\|curves`；`make_comparison.py grid` | G5 = `gate_check.py dpi` |
-| **P6 写作** [细则](references/phases/P6.md) | 按 family 取骨架 → 填 claims.csv → 生成必写清单 → 写 → 表格由脚本生成并登记数字；LaTeX 稿写 paper/latex/main.tex，`tex_to_md.py` 派生 manuscript.md 再过关口 | paper/manuscript.md、claims.csv、numbers.csv、draft_plan.md | `draft_plan.py plan\|check`；`make_comparison.py sota\|multi\|ablation\|seeds --numbers`；`gate_check.py all`；`shape_check.py` | G6 = `gate_check.py all`；G6b = `draft_plan.py check`；G6c = `shape_check.py`；G6d = `latex_check.py check`（LaTeX 稿）；G6e = `claims_check.py`（主张 ↔ 结果文件） |
+| **P5 图** [细则](references/phases/P5.md) | 主结果/消融/seed 图与定性网格由脚本生成；**全部 PDF，组合图每面板一个 PDF**；每张裁图目测后 inspected=yes；**按印刷宽度画**（印刷字号 ≥ 5 pt） | figures/*.pdf（+ .png 预览）+ .source.csv；figures.csv | `make_figure.py main\|ablation\|seeds\|curves`；`make_comparison.py grid` | G5 = `gate_check.py dpi` |
+| **P6 写作** [细则](references/phases/P6.md) | 按 family 取骨架 → 填 claims.csv → 生成必写清单 → 写 → 表格由脚本生成并登记数字；LaTeX 稿写 paper/latex/main.tex，`tex_to_md.py` 派生 manuscript.md 再过关口 | paper/manuscript.md、claims.csv、numbers.csv、draft_plan.md | `draft_plan.py plan\|check`；`make_comparison.py sota\|multi\|ablation\|seeds --numbers`；`gate_check.py all`；`shape_check.py`；`readability_check.py` | G6 = `gate_check.py all`；G6b = `draft_plan.py check`；G6c = `shape_check.py`；G6d = `latex_check.py check`（LaTeX 稿）；G6e = `claims_check.py`（主张 ↔ 结果文件）；G6f = `readability_check.py`（数字密度、贡献条目、流程簿记词，对照已发表论文） |
 | **P7 审稿** [细则](references/phases/P7.md) | 五席审稿在本会话内做；每条先回结果文件复核再写 review_log.md；修完 `## Re-review` 逐条关闭 major，G6 重跑 | paper/review_log.md；state.review.round + 1 | `review_check.py` | G7 = `review_check.py` 全绿 |
 | **P8 投稿包** [细则](references/phases/P8.md) | 标题页、cover letter、highlights、盲稿、数据声明 | submission/* | `gate_check.py submission` | G8 |
 
@@ -91,7 +91,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 ## 脚本（全部由 Claude 跑）
 
 入口 `t2p.py`（init / check / status / doctor）；`check` 对综述分支额外跑 `survey_check.py`。
-研究分支：`lit_scout.py` `baseline_miner.py` `prereg_check.py` `ablation_plan.py` `audit_check.py` `bundle.py` `results_check.py` `gate_check.py` `claims_check.py`。
+研究分支：`lit_scout.py` `baseline_miner.py` `prereg_check.py` `ablation_plan.py` `audit_check.py` `instrument_check.py` `bundle.py` `results_check.py` `gate_check.py` `claims_check.py`。
 综述分支：`survey_check.py`（scope…writing）、`survey_tables.py`、`survey_figure.py` + `gate_check.py`。
 输入转换：`tex_to_md.py`（LaTeX）、`pdf_to_md.py`（已发表 PDF）、`jats_to_md.py`（Europe PMC XML）。
 校准：`calibrate.py` `venue_norms.py`（在已发表语料上重算关口阈值与刊物规范）。

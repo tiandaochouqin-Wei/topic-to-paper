@@ -15,6 +15,7 @@ Needs `pytest` plus the packages in `requirements.txt`. No network: `G1`/`refs` 
 | `test_health.py` | `t2p.py doctor` is clean; every script answers `--help` under `PYTHONIOENCODING=gbk`; every script carries the UTF-8 stdout header |
 | `test_t2p.py` | `run()`/`verdict()` report a crashed gate as `CRASH`, never `PASS`; full board on both fixtures is green; a crashing gate shows as `[CRASH] G4` and counts in the exit code |
 | `test_research_gates.py` | G1b, G2, G3, G4, G5, G6 (floats/acronyms/numbers/limits), G6b, G6c, G7, G8: one `*_pass` test on the untouched fixture, then one mutation per failure mode the gate exists for |
+| `test_instrument_gate.py` | G3b instrument calibration (uncovered loader, waiver, missing/stale/out-of-band output, vacuous broken control, contract mismatch, dump, train_loop reference) plus `stochastic_keys`, narrowed audit set, empty `reproductions`, self-certified triage |
 | `test_survey_gates.py` | G-S2 protocol, G-S3 coding, G-S5 claims, and the `coding/audit_summary.py --verify` round trip |
 
 ## Fixtures

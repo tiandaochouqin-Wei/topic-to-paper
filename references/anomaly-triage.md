@@ -13,6 +13,17 @@
 
 写不进第 5 步的（单 seed、没复现）填 `open`，action 写要补的 run；open 状态的 finding 不得进正文主张。
 
+**格式**（`results_check.py` 机械检查，块样式见 templates/findings.md）：结案的块——写了 `cause: convention|data|leak|impl|real`，或某步 `excluded`/`排除`——必须带 `evidence:` 行，指向项目里至少一个**存在的**文件（该步排查时跑的命令的输出、日志、脚本结果）；缺则 FAIL「分诊结论没有证据文件」。`cause: real` 另需 `control:` 行（阳性或阴性对照：同一管线下已知答案的输入得到已知结果、故意破坏的输入得到预期的坏结果；仪器校准见 G3b），缺则 WARN。例：
+
+```
+## F2 2026-10-22 ours rmse_E1
+checked:
+  impl: excluded      # beta 列非零、log 3/3 条
+evidence: results/triage/f2_log_check.txt runs/ours_s0/log.json
+cause: real
+control: results/instruments/backbone.json (已知答案 0.94 vs 0.95)
+```
+
 三个来自真实项目的例子：
 - 力估计：全量口径 vs 接触窗口口径让三类结论反转 → 步 1 命中（口径）。
 - 力估计：基线 args 写 beta=0.1 但从未生效 → 步 4 命中（impl）。

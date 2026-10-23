@@ -16,7 +16,9 @@ check:  documentclass / style file matches the venue's template (WARN; FAIL when
         a figure with >= 2 graphics uses subfigure / subfloat (FAIL) and the package is loaded (FAIL);
         a caption with panel letters (a)(b) over a single graphic = pre-composited panels (FAIL);
         dangling \\ref (FAIL); float without \\label (WARN); graphic not in figures.csv or with another print width (WARN);
-        bibliography file present (FAIL); paper/manuscript.md older than the .tex sources = gates ran on stale text (FAIL).
+        bibliography file present (FAIL); paper/manuscript.md older than the .tex sources = gates ran on stale text (FAIL);
+        leftover \\todo / \\fixme / \\hl in any \\input-ed source, or todonotes loaded without [disable] (FAIL);
+        raw keys in the reference list: main.blg "didn't find a database entry", main.log "Citation .. undefined", a main.bbl \\bibitem whose body is just the key (FAIL; logs older than the sources are WARN, not trusted).
 Exit = number of FAIL lines."""
 import argparse, csv, io, os, re, shutil, subprocess, sys, tempfile
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
@@ -141,6 +143,36 @@ def width_mm(opt, base_full, base_col, scale=1.0):
 
 
 # ------------------------------------------------------------------ check
+MARKER_CMD = re.compile(r"\\(todo|TODO|fixme|FIXME|missingfigure|hl)(?![A-Za-z@])")
+
+def leftover_markers(text, pkgs_raw):
+    """\\todo / \\fixme / \\hl left in an \\input-ed source (comments are already stripped), or todonotes loaded without `disable`."""
+    hits = [(m.group(0), re.sub(r"\s+", " ", text[m.start():m.start() + 60])) for m in MARKER_CMD.finditer(text)]
+    if hits: say("FAIL", f"{len(hits)} 处未清的批注命令（\\todo/\\fixme/\\hl 会把批注印进 PDF 或留在源里）：{[h[1] for h in hits[:4]]} —— 删掉或注释掉")
+    bad = [o for o, names in pkgs_raw if "todonotes" in [n.strip() for n in names.split(",")] and "disable" not in o]
+    if bad: say("FAIL", "加载了 todonotes 但没有 [disable] —— 提交前 \\usepackage[disable]{todonotes} 或直接去掉，否则批注会印进 PDF")
+    elif not hits: say("PASS", "没有残留的 \\todo/\\fixme/\\hl，todonotes 未启用")
+
+def bib_artifacts(tex, files):
+    """Reference list built from keys instead of entries: bibtex `didn't find a database entry` (.blg), `Citation .. undefined` (.log), or a .bbl \\bibitem whose body is just the key.
+    Only looks at artefacts that exist next to the main .tex; a build log older than the sources is reported as stale, not trusted."""
+    stem = os.path.splitext(tex)[0]; newest = max(os.path.getmtime(f) for f in files); n_checked = n_bad = 0
+    for ext, rx in ((".blg", r"I didn't find a database entry for \"([^\"]+)\""), (".log", r"Citation `([^']+)' (?:on page \d+ )?undefined")):
+        p = stem + ext
+        if not os.path.exists(p): continue
+        n_checked += 1
+        if os.path.getmtime(p) + 1 < newest: say("WARN", f"{os.path.basename(p)} 比 .tex 源旧，没有据此检查引用键：重编译一遍（pdflatex → bibtex → pdflatex ×2）"); continue
+        keys = sorted(set(re.findall(rx, read(p))))
+        if keys: n_bad += 1; say("FAIL", f"{os.path.basename(p)}: {len(keys)} 个引用键在 .bib 里找不到 / 编译后仍是未定义，参考文献表里会印出原始键: {keys[:8]}")
+    p = stem + ".bbl"
+    if os.path.exists(p):
+        n_checked += 1; raw = []
+        for m in re.finditer(r"\\bibitem\s*(?:\[[^\]]*(?:\[[^\]]*\][^\]]*)*\])?\s*\{([^}]+)\}(.*?)(?=\\bibitem|\\end\{thebibliography\})", read(p), re.S):
+            key, body = m.group(1).strip(), re.sub(r"\\newblock|\\(?:em|emph|textit)\b|[{}\s]", "", m.group(2))
+            if not body or body.lower() == key.lower().replace("_", "") or body.lower() == key.lower(): raw.append(key)
+        if raw: n_bad += 1; say("FAIL", f"{os.path.basename(p)}: {len(raw)} 条 \\bibitem 正文只有键本身: {raw[:8]}")
+    if n_checked and not n_bad: say("PASS", "编译产物（.blg/.log/.bbl）里没有未解析的引用键")
+
 def check(a):
     root = os.path.abspath(a.project)
     st = {}
@@ -226,6 +258,9 @@ def check(a):
         else: say("PASS", f"bib 文件在: {bibs}")
     elif re.search(r"\\begin\{thebibliography\}", text): say("PASS", "内嵌 thebibliography")
     else: say("WARN", "没有 \\bibliography / \\addbibresource / thebibliography")
+    # --- leftover markers + bibliography build artefacts (raw keys in the reference list)
+    leftover_markers(text, pkgs_raw=re.findall(r"\\usepackage\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}", text))
+    bib_artifacts(tex, files)
     # --- figures.csv cross-check (registration + print width)
     fp = os.path.join(root, a.figures)
     reg = {}

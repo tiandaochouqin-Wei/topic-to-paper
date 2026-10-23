@@ -4,7 +4,7 @@
   python tex_to_md.py main.tex out_dir [--bib refs.bib] [--textwidth-mm 178]
 
 Writes out_dir/paper/manuscript.md with:
-  - \\section/\\subsection -> ## / ###
+  - \\section/\\subsection -> ## / ###; \\paragraph{X} \\subparagraph{X} -> run-in **X**; \\par -> paragraph break; \\parbox{w}{t} -> t
   - every figure/table environment -> "**Fig. N.** caption" / "**Table N.** caption", numbered in document order
     (starred and sub-float-free; \\label{...} recorded so \\ref/\\autoref/\\cref/\\Cref resolve to the SAME numbers)
   - tabular rows -> markdown rows (cells split on &, \\\\ ends a row; \\multicolumn collapsed to its text)
@@ -35,6 +35,41 @@ def balanced(s, i):
             depth -= 1
             if depth == 0: return s[i + 1:j], j + 1
     return s[i + 1:], len(s)
+
+HEAD_RE = re.compile(r"\\(subsubsection|subsection|section|subparagraph|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{")
+
+def headings(body):
+    """\\section/\\subsection/\\subsubsection{T} -> ## / ### / ####; \\paragraph{T} / \\subparagraph{T} -> **T** run-in head. Brace-matched, so titles may nest macros;
+    built by concatenation, never as a re.sub replacement string (user text in a replacement string has its backslashes interpreted)."""
+    out, i = [], 0
+    while True:
+        m = HEAD_RE.search(body, i)
+        if not m: out.append(body[i:]); return "".join(out)
+        out.append(body[i:m.start()]); title, i = balanced(body, m.end() - 1); t = re.sub(r"\\label\{[^}]*\}", "", unbrace(title)).strip()
+        run_in = m.group(1).endswith("paragraph")
+        out.append({"section": "\n\n## ", "subsection": "\n\n### ", "subsubsection": "\n\n#### "}.get(m.group(1), "\n\n**") + t + ("**" if run_in else "\n\n"))
+
+def parbox(body):
+    """\\parbox[pos]{width}{text} -> text (the box is layout, the text is prose); brace-matched."""
+    out, i = [], 0
+    pat = re.compile(r"\\parbox\s*(?:\[[^\]]*\]\s*)*\{")
+    while True:
+        m = pat.search(body, i)
+        if not m: out.append(body[i:]); return "".join(out)
+        out.append(body[i:m.start()]); _, j = balanced(body, m.end() - 1)
+        while j < len(body) and body[j] in " \t\n": j += 1
+        if j < len(body) and body[j] == "{": txt, i = balanced(body, j); out.append(txt)
+        else: i = j
+
+def bib_field(entry, name):
+    """value of `name = {...}` / "..." / bare token in a bib entry (brace-matched; single-line Crossref/Zotero entries included), else ''."""
+    m = re.search(r"[\s,]" + name + r"\s*=\s*", entry, re.I)
+    if not m: return ""
+    i = m.end()
+    if i < len(entry) and entry[i] == "{": return balanced(entry, i)[0]
+    if i < len(entry) and entry[i] == '"':
+        j = entry.find('"', i + 1); return entry[i + 1:j if j > 0 else len(entry)]
+    t = re.match(r"[^,}\s]+", entry[i:]); return t.group(0) if t else ""
 
 def grab_cmd(s, cmd):
     m = re.search(r"\\" + cmd + r"\s*(?:\[[^\]]*\])?\s*\{", s)
@@ -98,7 +133,7 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
         print(f"textwidth {tw_mm} mm" + (" (references/latex-templates.csv)" if cw else " (default; pass --textwidth-mm or add the class to latex-templates.csv)"))
     two_col = (cw[1] if cw else False) or bool(re.search(r"\\documentclass\[[^\]]*(?:journal|twocolumn|conference)[^\]]*\]", src)) or "IEEEtran" in src
     body = src.split("\\begin{document}", 1)[-1].split("\\end{document}", 1)[0]
-    body = re.sub(r"\\maketitle|\\tableofcontents|\\newpage|\\clearpage|\\IEEEpeerreviewmaketitle|\\IEEEdisplaynontitleabstractindextext", "", body)
+    body = re.sub(r"\\(?:maketitle|tableofcontents|newpage|clearpage|IEEEpeerreviewmaketitle|IEEEdisplaynontitleabstractindextext)(?![A-Za-z@])", "", body)
     body = re.sub(r"\\(?:begin|end)\{frontmatter\}", "", body)
     body = re.sub(r"\\(?:author|affiliation|address|cortext|ead|fntext|tnotetext|title|IEEEauthorblockN|IEEEauthorblockA|thanks)\s*(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}", "", body)
     body = re.sub(r"\\begin\{keyword\}(.*?)\\end\{keyword\}", lambda m: "\n\nKeywords: " + re.sub(r"\s*\\sep\b\s*", "; ", m.group(1)).strip() + "\n\n", body, flags=re.S)
@@ -155,15 +190,14 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
     body = re.sub(r"\\(ref|autoref|cref|Cref|eqref)\{([^}]+)\}", ref_sub, body)
     body = re.sub(r"(?:Fig\.|Figure|Table|Tab\.)~?\s*(Fig\. \d+|Table \d+)", r"\1", body)   # "Fig.~Fig. 3" -> "Fig. 3"
     # --- sections
-    body = re.sub(r"\\section\*?\{([^}]*)\}", lambda m: "\n\n## " + unbrace(m.group(1)) + "\n\n", body)
-    body = re.sub(r"\\subsection\*?\{([^}]*)\}", lambda m: "\n\n### " + unbrace(m.group(1)) + "\n\n", body)
-    body = re.sub(r"\\subsubsection\*?\{([^}]*)\}", lambda m: "\n\n#### " + unbrace(m.group(1)) + "\n\n", body)
+    body = headings(body)   # \section.. -> ##.. ; \paragraph{X} -> run-in **X**
     body = re.sub(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", lambda m: "\n\n## Abstract\n\n" + m.group(1).strip() + "\n\n", body, flags=re.S)
     kw = re.search(r"\\begin\{IEEEkeywords\}(.*?)\\end\{IEEEkeywords\}|\\keywords\{([^}]*)\}", body, re.S)
     if kw: body = body.replace(kw.group(0), "\n\nKeywords: " + (kw.group(1) or kw.group(2)).strip() + "\n\n")
     body = re.sub(r"\\bibliography\{[^}]*\}|\\bibliographystyle\{[^}]*\}|\\begin\{thebibliography\}.*?\\end\{thebibliography\}", "", body, flags=re.S)
     body = re.sub(r"\\begin\{(itemize|enumerate)\}(.*?)\\end\{\1\}", lambda m: re.sub(r"\\item\s*", "\n- ", m.group(2)), body, flags=re.S)
-    body = re.sub(r"\\(?:vspace|hspace|setlength|footnotesize|small|centering|noindent|par|renewcommand|newcommand)\*?(?:\{[^}]*\})*(?:\[[^\]]*\])?", "", body)
+    body = parbox(body); body = re.sub(r"\\par(?![A-Za-z@])", "\n\n", body)   # \par = paragraph break; the lookahead keeps \paragraph / \parskip / \partial from being eaten as "\par" + text ("agraph{Setup.}")
+    body = re.sub(r"\\(?:vspace|hspace|setlength|footnotesize|small|centering|noindent|renewcommand|newcommand)(?![A-Za-z@])\*?(?:\{[^}]*\})*(?:\[[^\]]*\])?", "", body)
     body = re.sub(r"\\(?:IEEEPARstart)\{([^}]*)\}\{([^}]*)\}", r"\1\2", body)
     body = unbrace(body)
     body = re.sub(r"~", " ", body); body = re.sub(r"\\&", "&", body); body = re.sub(r"\\%", "%", body); body = re.sub(r"\\_", "_", body)
@@ -185,8 +219,8 @@ def convert(tex_path, out_dir, bib_path, tw_mm):
         if e:
             e2 = re.sub(r"^@(\w+)\s*\{\s*[^,\s]+\s*,", r"@\1{r%d," % i, e, count=1)
             bib_out.append(e2)
-            t = re.search(r"title\s*=\s*[{\"](.*?)[}\"]\s*,?\s*\n", e, re.S | re.I)
-            md_refs.append(f"[{i}] {re.sub(r'\s+', ' ', t.group(1)).strip('{} ') if t else k} (bibkey {k})")
+            t = re.sub(r"\s+", " ", bib_field(e, "title")).replace("{", "").replace("}", "").strip()   # the old regex needed a newline after title=: single-line Crossref/Zotero entries fell back to the bare key
+            md_refs.append(f"[{i}] {t or k} (bibkey {k})")
         else:
             md_refs.append(f"[{i}] (bib key not found: {k})"); bib_out.append(f"@misc{{r{i},\n  title = {{{k}}},\n}}")
     os.makedirs(os.path.join(out_dir, "paper"), exist_ok=True)

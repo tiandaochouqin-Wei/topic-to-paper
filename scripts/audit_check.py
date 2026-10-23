@@ -23,6 +23,7 @@ Configuration lives in research-state.yaml under `audits:` (see templates/resear
     smoke_cmd: ""                       # e.g. "python code/train.py --data_A {data} --epochs 1 --exp _smoke"; {data} = temp copy with one input removed
     smoke_data: ""                      # small data root to copy for the smoke check
     hardware_key: hardware              # args/log key recording GPU model; missing -> WARN, mixed in one table -> FAIL
+    stochastic_keys: [aug_seed]         # log keys that must take >=2 distinct values across a run's epochs (augmentation seed/hash); constant = FAIL
 
 Every FAIL carries the run name or file:line. Exit 1 on any FAIL. Checks were calibrated on the project where all three
 incidents happened (use_B_train leak, beta gated by is_ours, frames/ vs frames_256.npy): the gate must rediscover all three."""
@@ -62,7 +63,7 @@ def truthy(v):
     return v not in (0, 0.0, False, None, [], {})
 
 # ------------------------------------------------------------------ runs
-def collect_runs(cfg, root):
+def collect_runs(cfg, root, conv=None):
     rd = os.path.join(root, cfg.get("runs_dir", "runs"))
     runs = {}
     for d in sorted(glob.glob(os.path.join(rd, "*"))):
@@ -80,6 +81,11 @@ def collect_runs(cfg, root):
     if sel:
         missing = [s for s in sel if s not in runs]
         if missing: say("FAIL", "runs", f"main_table_runs 里有 run 不存在: {missing}")
+        outside = [k for k in runs if k not in sel]
+        if outside:
+            cited = [c for c in (conv or []) if "main_table_runs" in str(c)]
+            if cited: say("PASS", "runs", f"main_table_runs 排除了 {len(outside)} 个 run，experiments.convention_changes 已登记: {str(cited[0])[:100]}")
+            else: say("WARN", "runs", f"main_table_runs 把 {len(outside)} 个 run 排在审计之外 {outside[:5]} —— 缩小审计集不等于修好了问题；若主表数字来自它们就是漏审，要缩小请在 experiments.convention_changes 登记（提到 main_table_runs）")
         runs = {k: v for k, v in runs.items() if k in sel}
     say("INFO", "runs", f"{len(runs)} 个 run 进入审计" + ("（main_table_runs 限定）" if sel else "（未指定 main_table_runs，审计全部）"))
     return runs
@@ -185,6 +191,25 @@ def check_effective_config(cfg, runs, root):
                 if g in ("and", "or", "not"): continue
                 say("INFO", "effective-config", f"{rel(f, root)}:{src.count(chr(10), 0, m.start())+1} {p} 被 '{g}' 门控：{g} 为假时 args.{p} 写什么都不生效")
     say("INFO", "effective-config", f"核对了 {len(runs)} 个 run × {list(crit)}")
+
+def check_stochastic(cfg, runs, root):
+    """随机增强/采样每 epoch 必须变：persistent workers 没拿到 epoch 时增强全程相同（cvpr2027_fusion: 29.5 vs 32.3 AP）。"""
+    keys = cfg.get("stochastic_keys") or []
+    if not keys:
+        for f in py_files(cfg, root):
+            src = io.open(f, encoding="utf-8", errors="replace").read()
+            m = re.search(r"persistent_workers\s*=\s*True|worker_init_fn", src)
+            if m:
+                say("WARN", "stochastic", f"{rel(f, root)}:{src.count(chr(10), 0, m.start())+1} 有多进程数据增强但没登记 audits.stochastic_keys —— 在日志里每 epoch 写 aug_seed/aug_hash 并登记，证明增强真的在变"); return
+        return
+    for name, r in runs.items():
+        log = r["log"]
+        if not log or len(log) < 2: continue
+        for k in keys:
+            vals = [json.dumps(e.get(k), sort_keys=True, default=str) for e in log if isinstance(e, dict) and k in e]
+            if not vals: say("FAIL", "stochastic", f"{name}: 日志无证据列 {k} —— 随机增强是否每 epoch 变化无从核对")
+            elif len(set(vals)) < 2: say("FAIL", "stochastic", f"{name}: {k} 全程同一值 —— 随机增强/采样每 epoch 相同（persistent workers 未拿到 epoch？）")
+    say("INFO", "stochastic", f"核对了 {len(runs)} 个 run × {list(keys)}")
 
 # ------------------------------------------------------------------ silent fallback (static)
 def py_files(cfg, root):
@@ -349,9 +374,10 @@ def main():
     cfg = st.get("audits") or {}
     if not cfg:
         say("FAIL", "audit", "research-state.yaml 没有 audits: 段"); sys.exit(1)
-    runs = collect_runs(cfg, root)
+    runs = collect_runs(cfg, root, (st.get("experiments") or {}).get("convention_changes") or [])
     print("\n== leakage =="); check_leak_flags(cfg, runs); check_split(cfg, root); check_stats_leak(cfg, root)
     print("\n== effective-config =="); check_effective_config(cfg, runs, root)
+    print("\n== stochastic =="); check_stochastic(cfg, runs, root)
     print("\n== silent-fallback =="); check_silent_fallback(cfg, root)
     if a.smoke: check_smoke(cfg, root)
     print("\n== completeness =="); check_completeness(cfg, runs)

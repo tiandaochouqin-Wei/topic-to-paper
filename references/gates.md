@@ -37,10 +37,22 @@
 ### 静默降级
 判据：AST 扫描 `exists()/isfile()/isdir()` 的 If / IfExp / 列表推导，两个分支都不含 raise/assert/exit → 报警；判断里的字符串字面量命中 `inputs` → FAIL；同文件内"存在性判断查的字面量"与"open/np.load 读的字面量"不是同一输入 → FAIL。ckpt/log/cache/输出类路径降 INFO。`--smoke`：复制 smoke_data、删掉一个 inputs、跑 smoke_cmd，退出码 0 → FAIL。
 漏法：datasets.py:125 判 `frames/` 存在，:88 读 `frames_256.npy`，集群 12 个 run 全程无视觉。
+### 随机性（`audits.stochastic_keys`）
+判据：`stochastic_keys: [aug_seed, aug_hash]` 列出日志里每 epoch 写入的增强种子/哈希键，每个键在一个 run 的 epoch 之间必须出现 ≥2 个不同值，全程同一值 → FAIL「全程同一值 —— 随机增强/采样每 epoch 相同」，日志里没有这个键 → FAIL（同有效配置的「无证据列」）；没登记 stochastic_keys 而代码里有 `persistent_workers=True` 或 `worker_init_fn` → WARN。
+漏法：cvpr2027_fusion 的 persistent dataloader worker 永远没拿到 `ds.epoch`，增强每 epoch 相同，比 Ultralytics 参考实现低 2.8 AP，靠人工对账才发现。
+### 审计集收窄
+判据：`main_table_runs` 非空且排除了 runs_dir 下 ≥1 个 run → WARN 并列出被排除的数量；`experiments.convention_changes` 里有条目提到 `main_table_runs` 则改为 PASS 并引用它。
+漏法：cvpr2027_med2 把 146 个 FAIL 通过收窄审计集变成了 PASS，而头条数字来自审计集之外的 run。
 ### 完成度
 判据：log 条数 ≥ args[epochs_key]，否则 FAIL；`hardware_key` 未记录 WARN、主表混用 FAIL。
 漏法：train.py 不删 ckpt，abl_no_missing 只跑了 6/20 epoch 但 last.pt 在。
 回归：22 个 run 全部审计 26 FAIL（6 泄漏 + 16 基线参数未生效 + 2 静默降级 + 1 未训完 + 1 split 未导出），限定到 11 个清洁 run 后只剩 6 条基线 beta/alpha 报警，这是正确的：基线 args 里写了 0.1/0.5 但从未生效，论文方法节不得照 args 抄。
+
+## G3b 仪器校准（`scripts/instrument_check.py`，全部机械；仅研究分支）
+配置在 state 的 `instruments:`（schema 与示例见 templates/research-state.yaml）与 `instruments_waiver:`。
+判据：① 静态扫描 `audits.code_dirs` 与项目内其它 .py（runs/results/data/literature/paper/figures/bundle 除外；cvpr2028_gcv 的实验代码在 ma_p3/、killtest_*/，只扫 code/ 会静默通过）的加载点（优化器/scaler/scheduler/EMA 的 load_state_dict 不算）（`from_pretrained(`、`load_state_dict(`、`torch.hub.load(`、`timm.create_model(`、`open_clip.create_model`、`create_model_and_transforms(`、`AutoModel*.`、`YOLO(`、带 ckpt/checkpoint/.pt/.pth/weights 的 `torch.load(`、`safetensors`、`hf_hub_download(`、`snapshot_download(`；跳过 tests/、venv、site-packages、`_` 开头的文件、注释行）：每个命中必须被某条 instrument 的 `match`（正则，对文件路径或行文本）或某条 waiver 覆盖，否则 FAIL「未校准的仪器 file:line」；waiver 命中降 WARN 并打印理由（自己的 checkpoint：`{match: "resume|runs/", reason: "own checkpoint"}`）。② 每条 instrument：`check.output` 存在（否则「未跑校准」）；输出不得早于它覆盖的代码（「代码改过、校准未重跑」）；`key` 的读数落在 `expected±tol` 或 `[min,max]` 内，否则 FAIL「仪器读数 v vs 已知 e±t」，缺已知答案也 FAIL；`broken`（同一校验、故意破坏输入）必须存在，且读数在容许带**外**，落在带内 = FAIL「校验区分不了正确与破坏的输入」；输出 json 的 `applied_contract` 与登记的 `contract` 逐键相等（列表逐元素，字符串忽略大小写和空白），缺 applied_contract 或 contract 缺 source 降 WARN；各 run 的 args.json 若记了 `contracts: {name: {...}}` 也同样核对，没有任何 run 记 → WARN 一次；contract 含 axcodes/channels 时 `dump` 必须存在且 `inspected: yes`。③ `kind: train_loop` 没有已知数字，改要 `reference:{output,key,expected,tol,source}`（参考实现在同一划分上的结果），值规则同上，`broken` 可缺（WARN）。
+为什么：仪器出错时，所有下游关口（泄漏、溯源、消融分辨率、审稿）检查的都是「这个数是不是由这份代码算出来的」，不是「这份代码算的是不是它声称的东西」。
+漏法：cvpr2027_medical 给 SuPreM/VoCo/VISTA3D/SAM-Med3D 喂的是 SPL（LPS 系）数组，官方布局是 RAS；跑了 7 天、过了 10 轮审稿和全部关口，最后是 SuPreM 自带的分割头在 RAS 下胰腺 Dice 0.76、在 SPL 下 0.00 才暴露。更早那个「方向测试」得到 0.562（错）vs 0.581（对），根本不可能失败——所以 `broken` 必须落在带外。cvpr2027_fusion 的自写训练循环比 Ultralytics 参考实现低 2.8 AP（29.5 vs 32.3），靠人工对账发现。
 
 ## G4 结果可回溯（`scripts/results_check.py` + `scripts/ablation_plan.py resolve`，全部机械）
 消融分辨率：Δ/(σ_ref·√2) < 2 的格不可解读；可解读格数 ≤ 1.5 × 零假设期望（0.0455 × 格数）→ 整体在分辨率极限；可解读且反号 → FAIL。参照来自 main.csv 同硬件 ≥2 seeds，单 seed 参照直接 FAIL。
@@ -48,6 +60,8 @@
 判据：main.csv/ablation.csv 每行 run_id 的 `eval_file` 存在、`metric_map` 每列与文件按 CSV 打印精度相等（精度取自单元格的 Decimal 指数，科学计数 `9.07e-05` 也按有效位比；完全相等或差 ≤ 末位半个单位即过）、eval 的 mtime ≥ `freshness_ref`、无 `_tainted`；`primary_metric` 是表列且在 prereg §2 出现；`primary_direction` / `metric_direction` 的值只能是 lower|higher（否则 FAIL），未设且列名正则猜不出方向时 WARN（下游按 higher-is-better）；prereg §3/§4 的口径记号（如 `|F|≥0.1 N`、`contact-window`）出现在表头或同名 .md 注释；每个 `group_key` 的 seed 数 ≥ `min_seeds` 或 `seed_waiver` 非空，seed 集合跨方法一致；ablation 项 ⊇ prereg §6、方法 ⊇ prereg §5（词元模糊匹配，容忍 "no_dom" vs "no_dom (domain adversarial)"）；`predictions` 的 (b−a) 符号与事前一致。
 失败分析：results/failure_slices.md（`failure_slice.py` 对本文方法的输出）缺则 WARN。最差切片是总体几倍、最差 10% 样本占多少平方误差、sig 对 top-10% 误差的 AUROC，三者进正文。真实数据：EAAI 力估计 E5 平台迁移，本文方法（无域项）94% 的平方误差落在 |F| 最高五分位、AUROC 0.867（失败可预测），VS 基线 AUROC 0.547（对失败无感）——这本身就是一段可写的失败分析。
 反常触发器：`results.predictions` 符号反转、或 `results.reproductions` 的基线复现 |Δ| > tol（默认 2×reported_std）时，findings.md 里必须已有含该方法名与指标名的条目，否则 FAIL（有则 WARN，正文必须解释）。为什么：多数人把基线复现偏差和反号当 bug 修掉，实际上一半的时候它是论文；先记录再动配置，才留得下证据。
+基线复现为空：`reproductions` 为空而主表有 reference_method 之外的方法 → WARN「至少把一个基线复现到其论文数字」（所有真实项目里它都是 `[]`；复现不到论文数字时，数字差是你的实现、不是方法；仪器校准见 G3b）。
+分诊自证：findings.md 里标题为 `## F#`/`### F#` 的块，只要写了结案结论（`cause: real|impl|data|convention|leak`，或某步 `excluded`/`排除`）就必须有 `evidence:` 行指向项目里至少一个存在的文件，否则 FAIL「分诊结论没有证据文件（命令输出）」；`cause: real` 另需 `control:` 行，缺则 WARN。围栏代码里的示例不算。为什么：自由文本「impl: 排除」是自己给自己结案，没有任何东西可以复核。
 附加规则（仍写在 SKILL.md，脚本不查）：训完看 log 条数（已在 G3）；参数量用加载真实 ckpt 的函数；不同 GPU 进 repro.csv；零结果先查分层变量量程；对照实验分解后才可写进论文。
 漏法：评估早于训练结束（_stale_preds 目录里 2212 N 的成因）；eval.json 带 _tainted 仍被 make_tables 读入；S/V/VS 基线单 seed 却与三 seed 的本文方法同表配对比较。
 **消融分辨率口径（验证轮 20 新增）**：`ablation_plan.py resolve` 与 `make_figure.py ablation` 识别消融行代表几个 seed——同名消融多行 = 逐 seed 记录（取均值，n = 行数），否则读 `n_seeds` 列，都没有 = 单 run。单 run 仍判 |Δ| ≥ 2σ_ref√2；n 个 seed 的均值判 |Δ| ≥ 2σ_ref√(1/n + 1/n_ref)。为什么：med-world-model 把 10 seed 均值当单 run 喂进去，配对检验 p=0.003 的效应被画成「不可分辨」。
@@ -114,6 +128,11 @@ family 来自 state.target.family，否则按 venue 名推断（Nature/Science/n
 判据：documentclass / style 与 references/latex-templates.csv 里目标刊的模板一致（WARN；state.target.latex_class 填了且不符 FAIL）；每个 \includegraphics 解析到存在的文件（FAIL）且扩展名 ∈ state.target.figure_ext（默认 pdf，FAIL）；含 ≥2 张图的 figure 必须用 subfigure / \subfloat（FAIL）且 subcaption 或 subfig 已加载（FAIL）；题注带面板字母 (a)(b) 而只引用一个文件 = 预合成组合图（FAIL）；\ref 全部有 label（FAIL）；float 无 \label（WARN）；图未登记 figures.csv 或印刷宽度与 LaTeX 宽度差 >5%（WARN）；\bibliography 的 .bib 存在（FAIL）；paper/manuscript.md 比任一 .tex 源旧（FAIL，关口会检查过时正文）。
 为什么：出版社要的是矢量图与可编辑源文件；预合成的组合图一改一个面板就要整图重出，且子题注字号与正文脱节；figure 里塞两张图不用 subfigure 则无法被 \ref 到面板。版心宽度从模板实测（`latex_check.py widths --tex`），figures.csv 的印刷宽度才是真的，G5 的 dpi 才算得对。
 漏法：以前 LaTeX 稿只能靠 tex_to_md 转 md 后过文字关口，图的格式、组合方式、class 是否对刊无人查；manuscript.md 过时了也照常 PASS。
+
+## G6f 可读性（`scripts/readability_check.py`，机械；2026-10-23）
+判据：正文（Introduction 起，不含参考文献、图表题注、表格、公式、代码、Appendix/Supplement/Protocol/Preregistration 节）的指标对照 references/readability-norms.csv（已发表 CVPR/ICCV/ECCV/NeurIPS/MICCAI/WACV/AAAI、TMI/MedIA/TIP/TPAMI/IJCV、Nature 系各 40 篇，seed 20261023）：摘要数字/缩写/词数、贡献条目数字与字数、引言与全文的数字每千词、分号每千词、平均句长、>40 词句占比。单项 > p90 或 > p95 只 WARN（已发表论文 40 篇里 7–12 篇恰好有一项超 p95）；**≥3 项同时超 p95 FAIL**（已发表样本 2/40）；贡献条目 > 2 个数字 FAIL（P6 规则）。固定规则：流程簿记词（preregist*、registered ablation/prediction…、refuted、falsified、addendum、amendment、convention change、protocol 意义上的 locked、post hoc（非统计意义）、findings.md、G6c 式关口名）> 3 处 FAIL、1–3 处 WARN；引言/相关工作的目录式段落（≥4 引用且 ≥3 分号，或 ≥5 句 "Name [n] …"）每个 WARN、≥3 个 FAIL。正文 < 1500 词时比率指标只 WARN；家族无校准行用 PROVISIONAL 阈值并 WARN。
+为什么：三个真实草稿（med2、medical、fusion）每千词 31–52 个数字（已发表 p95 24）、贡献条目 6–14 个数字、流程簿记词 8–17 处，同时超 p95 的指标 7–11 项，而其它关口全过。
+漏法：只量表面统计，不判断写得好不好、论点是否成立（那是 P7 审稿的事）；PDF 转换会丢项目符，贡献条目指标在已发表样本里 n 只有 23–25；协议记账换个说法（"frozen before running"）抓不到。
 
 ## G7 审稿闭环（`scripts/review_check.py`，机械）
 判据：review_log.md 每条 [major]/[minor] 有处置（同行或后两行的 复核通过|已改|rebut|partial|自证，或在 Phase 2 编辑综合表里按 R1-3 编号出现）；每条 major 在 `## Re-review` 小节里按编号或前 12 字 + closed/已改 关闭（inline "→已自证" 也算；2.9.0 起带否定的句子 `NOT closed` / `未关闭` / `OPEN:` 不算关闭，只靠行内箭头关闭而复审节没提到该编号 → WARN；处置词表加「需新实验 / 待补实验」）；state.review.round ≥1 且 open_major 空；gate_report.md 新于 manuscript.md；处置里的 §x.y / Table n 在正文存在（缺 WARN）。

@@ -66,5 +66,5 @@ def test_readme_script_count_matches():
 
 def test_gates_md_has_a_heading_per_gate():
     g = read(SKILL / "references" / "gates.md")
-    for gate in ("G0", "G1", "G1b", "G2", "G3", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G7", "G8"):
+    for gate in ("G0", "G1", "G1b", "G2", "G3", "G3b", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G6f", "G7", "G8"):
         assert re.search(rf"(?m)^## {re.escape(gate)}\b", g), f"gates.md has no '## {gate}' heading"

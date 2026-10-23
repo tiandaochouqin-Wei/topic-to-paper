@@ -69,6 +69,8 @@ def copy_fixture(kind, tmp_path):
         lock(dst, "prereg.md", "prereg_sha256")
         for ev in dst.glob("runs/*/eval.json"):
             touch(ev, +2)          # evaluation after the training log, whatever order the files were checked out in
+        for ev in dst.glob("results/instruments/*.json"):
+            touch(ev, +2)          # G3b: calibration output newer than the code it covers
         # copytree keeps the checkout mtimes, so pin the order G6d/G7 rely on: .tex sources (-60 s) < manuscript.md (now) < gate_report.md (written by the test)
         for t in dst.glob("paper/latex/**/*.tex"):
             touch(t, -60)

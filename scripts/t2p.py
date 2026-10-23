@@ -23,17 +23,19 @@ Gate → script mapping (inputs decide whether a gate runs):
   G1  literature/corpus.csv or refs.bib                    gate_check.py refs --no-net (unless --net)
   G2  prereg.md                                            prereg_check.py
   G3  state.audits.runs_dir exists                         audit_check.py
+  G3b state.audits.code_dirs holds .py files (research)    instrument_check.py: every pretrained model / harness / train loop has a known-answer check + a broken-input control
   G4  results/main.csv                                     results_check.py + ablation_plan.py resolve
   G5  figures.csv                                          gate_check.py dpi
   G6  paper/manuscript.md                                  gate_check.py floats acronyms scope numbers limits (+refs with --net)
   G6d paper/latex/main.tex (LaTeX projects only)           latex_check.py check: class matches venue, all figures PDF, panels via subfigure
   G6e paper/claims.csv with rows                           claims_check.py: headline sentences ↔ claims rows, each row computed from results, strong scope ↔ scope_words
+  G6f paper/manuscript.md (research)                      readability_check.py: numbers / semicolons / sentence length vs published norms, contribution bullets, protocol vocabulary, catalogue paragraphs
   G7  paper/review_log.md                                  review_check.py
   G8  submission/ with cover_letter.md|title_page.md|…     gate_check.py submission
 A gate whose script crashes (traceback, or non-zero exit without a [FAIL] line) is reported as CRASH and counted as a
 FAIL: a gate that did not run must never read as PASS.
 Exit code = number of gates that FAILed or CRASHed."""
-import argparse, io, os, re, shutil, subprocess, sys
+import argparse, glob, io, os, re, shutil, subprocess, sys
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -75,9 +77,9 @@ def exists(root, *parts):
 
 ENTRIES = ("topic_only", "topic_plus_data", "have_results", "have_draft", "have_reviews")
 # gates whose inputs an entry point legitimately lacks: N/A (not PENDING) while the inputs are absent; run normally once they exist
-SKIP_BY_ENTRY = {"have_results": {"G1b"}, "have_draft": {"G1b", "G2", "G3", "G4", "G5"}, "have_reviews": {"G1b", "G2", "G3", "G4", "G5"}}
+SKIP_BY_ENTRY = {"have_results": {"G1b"}, "have_draft": {"G1b", "G2", "G3", "G3b", "G4", "G5"}, "have_reviews": {"G1b", "G2", "G3", "G3b", "G4", "G5"}}
 ENTRY_PHASE = {"topic_only": "P0", "topic_plus_data": "P0", "have_results": "P4", "have_draft": "P6", "have_reviews": "P7"}
-GATE_ORDER = ["G0", "G1", "G1b", "G2", "G3", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
+GATE_ORDER = ["G0", "G1", "G1b", "G2", "G3", "G3b", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G6f", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
 SURVEY_GATES = ["G0", "G1", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
 
 def gate_key(g):
@@ -190,7 +192,7 @@ def check(root, net, write=True):
     na = SKIP_BY_ENTRY.get(entry, set())
     board = []   # (gate, status, detail)
     def rec(g, status, detail):
-        if survey and g in ("G2", "G3", "G4", "G6e"): return      # research-only gates are meaningless for a survey (G-S5 is the survey claim gate)
+        if survey and g in ("G2", "G3", "G3b", "G4", "G6e", "G6f"): return      # research-only gates are meaningless for a survey (G-S5 is the survey claim gate)
         if status == "PENDING" and g in na: status, detail = "N/A", f"entry={entry}：无此阶段产物，不要求（文件出现即照常检查）；" + detail
         if status == "CRASH": detail += "；" + "；".join(_CRASH_NOTES); _CRASH_NOTES.clear()
         board.append((g, status, detail)); print(f"[{status}] {g}: {detail}")
@@ -225,6 +227,11 @@ def check(root, net, write=True):
         rc, f, w, out = run([S("bundle.py"), "check"], root); m = re.search(r"\[INFO\] matrix: (\d+ runs[^\n]*)", out)
         rec("G3", verdict(f, out), f"bundle check {f} FAIL（远程实验包，runs/ 尚空）" + (f"；{m.group(1)}" if m else "") + "；结果回来后 audit_check 再跑")
     else: rec("G3", "PENDING", "state.audits 的 leak_flags/critical_params/inputs 未填，或 runs/ 为空（远程跑则填 state.bundle.matrix）")
+    # G3b: instrument calibration — known-answer check + broken-input control for every pretrained model / external harness / train loop
+    sys.path.insert(0, HERE); from instrument_check import py_files   # same file set the gate scans: code_dirs plus any other experiment .py in the project
+    if py_files(aud.get("code_dirs") or [], root):
+        rc, f, w, out = run([S("instrument_check.py")], root); rec("G3b", verdict(f, out), f"instrument {f} FAIL / {w} WARN")
+    else: rec("G3b", "PENDING", "项目里还没有实验代码（.py）：登记 state.instruments（预训练组件/外部框架/自写训练循环的已知答案 + 破坏对照）")
     # G4
     if exists(root, res.get("main_table", "results/main.csv")):
         rc, f, w, out = run([S("results_check.py")], root); f2 = w2 = 0; out2 = ""
@@ -258,6 +265,9 @@ def check(root, net, write=True):
             rc, f, w, out = run([S("claims_check.py")], root); m = re.search(r"(\d+)/(\d+)", out)
             rec("G6e", verdict(f, out), f"claims {f} FAIL / {w} WARN")
         else: rec("G6e", "PENDING", "paper/claims.csv 无主张行或仍是模板：每条主张一行（evidence_key + expected 让它可机械核验）")
+        # G6f: readability — numbers per 1k words, contribution bullets, protocol vocabulary, catalogue paragraphs vs references/readability-norms.csv
+        rc, f, w, out = run([S("readability_check.py")], root); m = re.search(r"family = (\w+)", out)
+        rec("G6f", verdict(f, out), f"readability {f} FAIL / {w} WARN" + (f"，family={m.group(1)}" if m else ""))
     else: rec("G6", "PENDING", f"无 {manuscript}")
     # G6d: LaTeX submission form, only for projects that write in the venue template
     if exists(root, tgt.get("latex_dir") or "paper/latex", "main.tex"):

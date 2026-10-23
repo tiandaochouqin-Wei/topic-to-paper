@@ -48,6 +48,7 @@ gates:                      # 由 `t2p.py check` 写回：status pass|fail|crash
   G1b: {status: pending, evidence: ""}
   G2: {status: pending, evidence: "", prereg_sha256: ""}
   G3: {status: pending, evidence: ""}
+  G3b: {status: pending, evidence: ""}
   G4: {status: pending, evidence: ""}
   G5: {status: pending, evidence: ""}
   G6: {status: pending, evidence: gate_report.md}
@@ -80,6 +81,36 @@ audits:                     # P3 三项审计 + 完成度，全部由 scripts/au
   smoke_cmd: ""             # 如 "python code/train.py --data_A {data} --epochs 1 --exp _smoke"；{data} = 删掉一个输入的临时副本
   smoke_data: ""            # 小数据根目录
   hardware_key: hardware    # args/log 里记录 GPU 型号的键；缺 WARN，主表混用 FAIL
+  stochastic_keys: []       # 日志里每 epoch 记录的随机增强/采样证据键，如 [aug_seed, aug_hash]；全程同一值 = FAIL（persistent workers 没拿到 epoch）。代码里有 persistent_workers/worker_init_fn 而此项为空 = WARN
+
+instruments:                # G3b 仪器校准，scripts/instrument_check.py 机械执行。预训练模型 / 外部框架 / 自写训练循环，进实验前各登记一条；空 = 代码里不得有加载点
+  # - name: suprem                    # 自由 id；run 的 args.json 可写 contracts: {suprem: {...}}，会与下面的 contract 核对
+  #   kind: pretrained                # pretrained | harness | train_loop
+  #   match: "SuPreM|suprem"          # 正则：文件路径或加载行文本命中即由本条覆盖；代码改过而校准没重跑 = FAIL
+  #   contract:                       # 官方代码的输入约定。source 必须是官方仓库的那一行，不是记忆
+  #     axcodes: RAS
+  #     spacing: [1.5, 1.5, 1.5]
+  #     intensity: "HU clip [-175, 250] -> [0, 1]"
+  #     channels: 1
+  #     source: "https://github.com/.../transforms.py#L40"
+  #   check:                          # 已知答案：经过与实验完全相同的输入路径
+  #     cmd: "python code/calib_suprem.py --out results/instruments/suprem.json"
+  #     output: results/instruments/suprem.json   # 可含 applied_contract: {...}（脚本实际喂给模型的约定），会与 contract 逐键核对
+  #     key: dice.liver               # json 内的点路径
+  #     expected: 0.95                # 官方/论文数字；tol: 0.05。或改用 min: / max:
+  #     tol: 0.05
+  #     source: "SuPreM paper Table 3"
+  #   broken:                         # 同一校验、故意破坏输入（轴反向等），读数必须落在容许带外；落在带内 = 校验无效
+  #     output: results/instruments/suprem_broken.json
+  #     key: dice.liver
+  #     how: "axes reversed (LPS)"
+  #   dump: figures/instruments/suprem_first_batch.png   # 模型看到的第一个张量，标轴向；contract 含 axcodes/channels 时必填
+  #   inspected: yes                  # 看过图之后才写
+  # - name: own_loop                  # kind: train_loop 没有已知数字，改写 reference: 与参考实现（官方 trainer）在同一划分上对账
+  #   kind: train_loop
+  #   match: "train_loop"
+  #   reference: {output: results/instruments/ref_trainer.json, key: ap, expected: 32.3, tol: 1.0, source: "Ultralytics official trainer, same split"}
+instruments_waiver: []      # 不是外部预训练组件的加载点：- {match: "resume|runs/", reason: "own checkpoint"}（正则，对文件路径或行文本；命中记 WARN 并写出理由）
 
 bundle:                     # P3/P4 远程实验包，scripts/bundle.py make|check|tables（用户上传跑、传回结果的工作流）
   code_dir: code

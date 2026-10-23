@@ -22,6 +22,11 @@
 | kNN 读数显示嵌入无信息 | 固定读数低估了嵌入 | 学一个共享映射作为上界再下结论 |
 | 零样本在未见基因上静默失效 | 用 nn.Embedding(n_genes, d) 查表 | 任何参数第一维等于实体数就错；必须是共享函数 |
 | 两折 transductive gap 符号相反 | 与域漂移同序 | 写下第三折的事前预测再跑 |
+| 四个预训练 3D 编码器喂的是 SPL 数组，官方布局是 RAS；7 天、10 轮审稿、全部关口都没发现 | 没有任何关口检查「输入约定与官方一致」；发现靠 SuPreM 自带分割头的胰腺 Dice 0.00 vs RAS 下 0.76 | G3b：每个预训练组件登记官方 contract（source = 官方仓库那一行）+ 经同一输入路径的已知答案 + 首批输入图标轴向目测 |
+| 「方向测试」得分 0.562（错）vs 0.581（对），据此认定方向没问题 | 校验的破坏版与正确版得分接近，测试不可能失败 | G3b：`broken` 对照必须落到容许带外，落在带内 = 校验无效 |
+| 自写训练循环比参考实现低 2.8 AP（29.5 vs 32.3） | persistent dataloader worker 没拿到 `ds.epoch`，增强每 epoch 相同；人工对账才发现 | G3b train_loop 用参考实现对账；G3 `stochastic_keys`：增强种子/哈希逐 epoch 必须变 |
+| 146 个 FAIL 变成 PASS | 把 `main_table_runs` 收窄到不含问题 run 的集合，头条数字来自集合之外 | G3 收窄审计集 WARN；要收窄须在 convention_changes 登记 |
+| 所有真实项目的 `reproductions: []`；finding 里写「impl: 排除」就结案 | 复现基线与分诊结论没有机械证据要求 | G4：reproductions 为空 WARN；结案 finding 必须带存在的 evidence: 文件，cause: real 另需 control: |
 
 ## 写作
 

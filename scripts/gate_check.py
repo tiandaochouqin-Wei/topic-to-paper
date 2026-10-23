@@ -4,7 +4,8 @@ gate_check.py — topic-to-paper 的机械关口。
 
 用法:
   python gate_check.py all --project .
-  python gate_check.py refs|floats|acronyms|scope|numbers|dpi|submission|limits --project .
+  python gate_check.py refs|floats|acronyms|scope|numbers|dpi|submission|limits|markers --project .
+  (limits also runs markers: TODO/FIXME/XXX/[待补充]/[TBD]/??/\\todo and reference lines that are only a bib key; submission runs it on title_page/cover_letter/highlights/blind)
 
 约定（可用参数覆盖）:
   --manuscript paper/manuscript.md
@@ -702,8 +703,29 @@ def _dpi_coverage(a):
     else:
         say("PASS", "dpi", f"{fam} 的常见图类型 {must} 均有题注命中或已写明豁免（题注共 {len(caps)} 条）")
 
+# ----------------------------------------------------------------- leftover markers
+MARKERS = [(r"\\(?:todo|TODO|fixme|FIXME|hl)(?![A-Za-z])", "LaTeX 批注命令"), (r"\b(?:TODO|FIXME|XXX)\b", "TODO/FIXME/XXX"), (r"\[(?:待补充|TBD|tbd)\]", "[待补充]/[TBD]"),
+           (r"\?\?", "?? （PDF/LaTeX 未解析的引用）"), (r"\(bib key not found", "tex_to_md: bib 键找不到")]
+RAWKEY_REF = re.compile(r"^\[\d+\]\s+(\S+)\s+\(bibkey\s+(\S+)\)\s*$", re.M)
+
+def scan_markers(path, label):
+    """FAIL on unfinished-text markers and on reference lines that are only the bib key ("[1] llvip21 (bibkey llvip21)"); returns the hit count."""
+    txt = re.sub(r"`[^`\n]*`", " ", strip_code_math(read(path))); hits = []
+    for pat, name in MARKERS:
+        for m in re.finditer(pat, txt): hits.append((m.start(), name, m.group(0)))
+    for m in RAWKEY_REF.finditer(txt):
+        if m.group(1) == m.group(2): hits.append((m.start(), "参考文献条目只有键", m.group(0).strip()))
+    hits.sort()
+    for pos, name, tok in hits[:8]: say("FAIL", "markers", f"{label} L{txt.count(chr(10), 0, pos) + 1}: {name} {tok!r}")
+    if len(hits) > 8: say("FAIL", "markers", f"{label}: 另有 {len(hits) - 8} 处")
+    return len(hits)
+
+def gate_markers(a):
+    if scan_markers(a.manuscript, os.path.basename(a.manuscript)) == 0: say("PASS", "markers", "正文无 TODO/FIXME/[待补充]/?? 与裸 bibkey 参考文献条目")
+
 # ----------------------------------------------------------------- limits
 def gate_limits(a):
+    gate_markers(a)      # hard rules of the manuscript: unfinished text and raw bibkeys are as disqualifying as a word limit
     try:
         import yaml
         st = yaml.safe_load(read(a.state))
@@ -746,6 +768,9 @@ def gate_submission(a):
             if s not in body_nums and not matches(float(s), bucket({float(x) for x in body_nums}), s, allow_pct=True):
                 ok = False; say("FAIL", "submission", f"{name} 中的数字 {s} 未在正文出现")
     blind = os.path.join(a.submission, "blind.md")
+    for name in ("title_page.md", "cover_letter.md", "highlights.md", "blind.md"):
+        p = os.path.join(a.submission, name)
+        if os.path.exists(p) and scan_markers(p, "submission/" + name): ok = False
     if os.path.exists(blind):
         txt = body_only(read(blind))     # cited authors in the reference list are not an anonymity leak
         names = []
@@ -763,7 +788,7 @@ def gate_submission(a):
 
 # ----------------------------------------------------------------- main
 GATES = {"refs": gate_refs, "floats": gate_floats, "acronyms": gate_acronyms, "scope": gate_scope,
-         "numbers": gate_numbers, "dpi": gate_dpi, "limits": gate_limits, "submission": gate_submission}
+         "numbers": gate_numbers, "dpi": gate_dpi, "limits": gate_limits, "submission": gate_submission, "markers": gate_markers}
 
 def main():
     ap = argparse.ArgumentParser()
