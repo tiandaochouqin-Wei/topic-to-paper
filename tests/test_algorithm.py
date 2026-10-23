@@ -125,16 +125,54 @@ DEEP = '''def f(a, b):
 '''
 
 
-def test_skeleton_nesting_is_capped_at_depth_two(research):
+def test_skeleton_nesting_is_capped_at_depth_three(research):
+    # SAM's first_step nests `for group / for p / e_w = ...`: at depth 2 the update line was hidden, so the cap is 3 and deeper bodies keep every statement as a comment
     write(research / "code" / "deep.py", DEEP)
     _state_rows(research, "  - id: deep\n    source: code/deep.py:f\n    tex: paper/latex/alg_deep.tex\n")
     r = _skel(research, "deep")
     assert r.returncode == 0, r.out
     t = read(research / "paper" / "latex" / "alg_deep.tex")
-    assert t.count("\\For{") == 2 and t.count("\\While{") == 1                  # i-loop and j-loop; the j-loop body (depth 3) is collapsed, not expanded
-    assert "% code: for j in range(2): … (4 lines)" in t and "x += y" not in t
-    assert "\\ElsIf{" in t and "\\Else" in t and "% code: with torch.no_grad()" in t and "doc" not in t
-    assert re.search(r"\\For\{\$\\ldots\$\} % code: for j in range\(2\).*\n\s+\\State \$\\ldots\$ % code: y = i \+ j … \(3 lines\)", t), t
+    assert t.count("\For{") == 2 and t.count("\While{") == 1 and t.count("\If{") == 2      # i-loop, j-loop (depth 2, expanded), `if y > 1` at depth 3 expanded as a header
+    assert "% code: y = i + j" in t and "\If{$\ldots$} % code: if y > 1:" in t and "% code: x += y" in t       # depth-3 body: collapsed to one \State + comment, not lost
+    assert "\ElsIf{" in t and "\Else" in t and "% code: with torch.no_grad()" in t and "doc" not in t
+
+
+DEEPER = """def g(a):
+    for i in range(2):
+        for j in range(2):
+            for k in range(2):
+                p = i * j
+                q = p + k
+                if q > 1: a = q
+    return a
+"""
+
+
+def test_skeleton_collapsed_body_lists_every_statement(research):
+    write(research / "code" / "deeper.py", DEEPER)
+    _state_rows(research, "  - id: deeper\n    source: code/deeper.py:g\n    tex: paper/latex/alg_deeper.tex\n")
+    assert _skel(research, "deeper").returncode == 0
+    t = read(research / "paper" / "latex" / "alg_deeper.tex")
+    assert t.count("\For{") == 3                                                      # depth 1–3 expanded
+    assert "% code: 3 statements:" in t and "%   p = i * j" in t and "%   q = p + k" in t and "%   if q > 1: a = q" in t     # depth-4 body: one placeholder, all lines kept
+
+
+ONE_LINE = """def h(w, zero_grad=False):
+    if zero_grad: w.zero_()
+    for p in w:
+        if p is None: continue
+    return w
+"""
+
+
+def test_skeleton_one_line_if_is_not_duplicated(research):
+    # `if zero_grad: self.zero_grad()` used to emit the whole line as the \If header AND again as its \State
+    write(research / "code" / "one.py", ONE_LINE)
+    _state_rows(research, "  - id: one\n    source: code/one.py:h\n    tex: paper/latex/alg_one.tex\n")
+    assert _skel(research, "one").returncode == 0
+    t = read(research / "paper" / "latex" / "alg_one.tex")
+    assert "\If{$\ldots$} % code: if zero_grad:\n  \State $\ldots$ % code: w.zero_()" in t, t
+    assert t.count("w.zero_()") == 1 and "% code: if p is None:\n" in t and "% code: continue" in t
 
 
 def test_skeleton_refuses_overwrite_unknown_id_and_missing_function(research):

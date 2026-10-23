@@ -13,7 +13,7 @@ research-state.yaml (templates/research-state.yaml):
       params: {"\\\\eta": lr, "\\\\lambda": beta, K: epochs}   # symbol in the block -> args.json key
 
 skeleton: one line per top-level statement of the function (for/while -> \\For, if -> \\If, return -> \\State \\Return, anything else -> \\State with the source line as a `% code:` comment
-  that Claude rewrites into the mathematical statement); nesting is kept to depth 2, deeper bodies collapse to one line. Dialect from the preamble of main.tex: algorithm2e -> \\KwIn/\\For{}{};
+  that Claude rewrites into the mathematical statement); nesting is kept to depth 3, deeper bodies collapse to one placeholder with every statement kept as a comment. Dialect from the preamble of main.tex: algorithm2e -> \\KwIn/\\For{}{};
   `algorithmic` (old package, \\STATE) -> upper-case commands; otherwise `algorithm` + `algpseudocode` (the `algorithmic` environment with \\State/\\Require/\\For). Prints the missing \\usepackage / \\input lines.
 
 check (exit = #FAIL), over every algorithm environment of the \\input-expanded .tex:
@@ -104,8 +104,13 @@ def pick_dialect(preamble):
     return "camel", pk
 
 def src_line(lines, s, extra=""):
-    t = lines[s.lineno - 1].strip(); n = (getattr(s, "end_lineno", s.lineno) or s.lineno) - s.lineno + 1
+    t = lines[s.lineno - 1]; body = getattr(s, "body", None)
+    if body and body[0].lineno == s.lineno: t = t[s.col_offset:body[0].col_offset]   # one-line `if x: f()`: the header only, the body is its own statement
+    else: t = t[s.col_offset:]                                                       # a statement sharing its line with the header: from its own column
+    t = t.strip(); n = (getattr(s, "end_lineno", s.lineno) or s.lineno) - s.lineno + 1
     return re.sub(r"\s+", " ", t)[:100] + (f" … ({n} lines)" if n > 1 else "") + extra
+
+MAX_DEPTH = 3   # PyTorch optimizers nest `for group / for p / update`: the update is the line the reader needs
 
 def body_stmts(stmts):
     return [s for s in stmts if not (isinstance(s, ast.Pass) or (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant) and isinstance(s.value.value, str)))]
@@ -120,9 +125,11 @@ def render(stmts, lines, d, depth, ind, out):
         elif isinstance(s, (ast.For, ast.AsyncFor, ast.While, ast.If)):
             loop = not isinstance(s, ast.If); kind = ("While" if isinstance(s, ast.While) else "For") if loop else "If"
             def sub(body, ind2):
-                if depth >= 2:
-                    n = max(getattr(b, "end_lineno", b.lineno) for b in body) - body[0].lineno + 1; first = re.sub(r"\s+", " ", lines[body[0].lineno - 1].strip())[:100]
-                    out.append("  " * ind2 + (f"{d['state']} {PH}" if not a2e else f"{PH}\\;") + cm(first if n == 1 else f"{first} … ({n} lines)"))
+                if depth >= MAX_DEPTH:   # deeper nesting: one placeholder, but every statement stays visible as a comment (SAM's ε̂ = ρ g/‖g‖ sits three loops deep)
+                    body = body_stmts(body) or body
+                    out.append("  " * ind2 + (f"{d['state']} {PH}" if not a2e else f"{PH}\\;") + cm(src_line(lines, body[0]) if len(body) == 1 else f"{len(body)} statements:"))
+                    if len(body) > 1:
+                        for b in body: out.append("  " * ind2 + "%   " + re.sub(r"\s+", " ", lines[b.lineno - 1].strip())[:100] + (f" … ({b.end_lineno - b.lineno + 1} lines)" if getattr(b, "end_lineno", b.lineno) > b.lineno else ""))   # whole line: a one-line `if x: y` keeps its body here
                 else: render(body, lines, d, depth + 1, ind2, out)
             if a2e:
                 out.append(f"{pad}\\{kind}{{{PH}}}{{" + cm(src_line(lines, s, "")))
