@@ -15,7 +15,8 @@ for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, w
 
 csv.field_size_limit(10**9)
 
-def build(root, db):
+def build(root, db, progress=0):
+    """progress > 0: print a line every <progress> rows (the metadata sits on a network drive in practice and the build takes minutes)"""
     if os.path.exists(db): os.remove(db)
     con = sqlite3.connect(db); cur = con.cursor()
     cur.execute("CREATE VIRTUAL TABLE papers USING fts5(venue, year UNINDEXED, title, abstract, doi UNINDEXED, local_path UNINDEXED, cited_by UNINDEXED, tokenize='porter unicode61')")
@@ -25,6 +26,7 @@ def build(root, db):
         if not title: return
         cur.execute("INSERT INTO papers VALUES (?,?,?,?,?,?,?)", (venue, str(year or ""), title.strip().replace("-", " "), (abstract or "").strip().replace("-", " "), doi or "", path or "", str(cited or "")))
         n += 1
+        if progress and n % progress == 0: print(f"  ... {n} rows indexed", flush=True)
     seen = set()
     f = os.path.join(root, "metadata", "index.csv")
     if os.path.exists(f):
@@ -66,10 +68,16 @@ def strict_match(q, title, abstract):
     t = (title + " " + abstract).lower().replace("-", " ")
     return all(p.replace("-", " ") in t for p in phrases) and all(w in t for w in words)
 
+def search(db, q, limit=20000):
+    """BM25 hits for a free-text query: [(venue, year, title, abstract, doi, local_path, cited_by, bm25)], best first (bm25 is negative: lower = better)"""
+    con = sqlite3.connect(db)
+    try: return con.execute("SELECT venue, year, title, abstract, doi, local_path, cited_by, bm25(papers) AS s FROM papers WHERE papers MATCH ? ORDER BY s LIMIT ?", (fts_query(q), limit)).fetchall()
+    finally: con.close()
+
 def scout(db, q, years, venues, top):
     con = sqlite3.connect(db); cur = con.cursor()
     fq = fts_query(q)
-    rows = cur.execute("SELECT venue, year, title, abstract, doi, local_path, cited_by, bm25(papers) AS s FROM papers WHERE papers MATCH ? ORDER BY s LIMIT 20000", (fq,)).fetchall()
+    rows = search(db, q)
     if years:
         lo, hi = years
         rows = [r for r in rows if r[1].isdigit() and lo <= int(r[1]) <= hi]

@@ -55,7 +55,7 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 | G7 review loop | a major comment never closed in a re-review; G6 not re-run after edits |
 | G8 submission docs | title page / cover letter numbers that no longer match the body; a blind copy with the author's name in it |
 
-Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_check.py skeleton`, knowledge in `references/latex-templates.csv`), real `\textwidth` measurement with pdflatex, subfigure blocks from per-panel PDFs; SOTA/multi-dataset/ablation/seed tables with best/second-best marks and automatic provenance registration; main/ablation/seed figures from the result tables; qualitative result grids with insets; a method-overview figure traced from the model that produced the results (`make_architecture.py`: forward-hook trace, graphviz layout, TikZ source for hand polishing, and a G5 check that the figure still matches the code); a remote experiment bundle (pre-flight env check, smoke run, full matrix, collect) for the "Claude writes the scripts, you run them on the server" workflow.
+Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_check.py skeleton`, knowledge in `references/latex-templates.csv`), real `\textwidth` measurement with pdflatex, subfigure blocks from per-panel PDFs; SOTA/multi-dataset/ablation/seed tables with best/second-best marks and automatic provenance registration; main/ablation/seed figures from the result tables; qualitative result grids with insets; a figure plan learned from same-topic high-quality exemplars and tied to the claims (`figure_plan.py`: exemplar figures by role and width, claim-first plan, G5 check); a method-overview figure traced from the model that produced the results (`make_architecture.py`: forward-hook trace, graphviz layout, TikZ source for hand polishing, and a G5 check that the figure still matches the code); a remote experiment bundle (pre-flight env check, smoke run, full matrix, collect) for the "Claude writes the scripts, you run them on the server" workflow.
 
 ## Optional: local literature index
 
@@ -65,7 +65,7 @@ Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_ch
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 36 gate/generator scripts, all argparse, all `--help`
+scripts/                 37 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, tables.yaml, prisma2020_checklist.csv, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, figure-norms.md (which figure types each venue / family / topic uses), latex-templates.csv, acronym-norms.csv, validation-*.md

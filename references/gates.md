@@ -85,6 +85,11 @@
 为什么：唯一一张概念图（cvpr2027_medical Fig 1 b/c）是不从模型派生的卡通；手画的总览图在代码改动后不会跟着变，与 G3b 的仪器校准、伪代码的 source anchor 是同一个逻辑——图和跑出结果的东西之间要有一条机器可查的线。
 漏法：它只能判图有没有说谎，判不了图有没有把方法讲明白（阶段取得对不对、合并得合不合理、该突出的门控有没有突出）；形状和参数量一致不代表数据流画对了，tensor 身份追踪会把不可追的运算（`.item()`、numpy 往返）断开；Fig 1「现有 vs 本文」这类对比示意仍由 make_motivation.py schematic 画，不在本检查范围；印刷字号仍由上面的字号检查判（总览图太宽缩到 5 pt 以下会 FAIL）。
 
+**图表计划（2.13 新增，`figure_plan.py check`；`paper/figure_plan.csv` 不存在 → 一条 WARN，旧项目不受影响）**：
+判据：① 没有计划 WARN；范文 `literature/exemplars/exemplars.csv` < 3 篇 WARN；② 计划里 `kind=figure` 且未 dropped 的每一行，`files` 列要在 figures.csv 里有对应行（同名，或 `x_a`/`x_b` 面板对应 `x`；figures.csv 另有可选列 `plan_item` 写 `Fig N` 也行），否则 FAIL「计划里的 Fig N 还没画」；`status=dropped` 的行 `note` 为空 FAIL；③ figures.csv 里没有任何计划行覆盖的图 WARN「它支撑哪条主张」；④ 带数字的主张（evidence_key 非空或 expected 含数字）没有计划行承载（claim_ids，或 claims.table_or_figure 指向该行的 Fig/Table）WARN；⑤ 计划行引用的 claim_id 在 claims.csv 里已不存在 FAIL。
+为什么：P5 以前只按刊物平均数选图（『82% 的 CVPR 论文有总览图』），既不知道同主题论文怎么开场、怎么排版，也没有任何东西把图表和主张连起来——有主张没图承载，或有图不服务任何主张，都是靠人眼发现的。
+漏法：判不了图有没有把它的主张讲清楚；范文由标题上的 BM25 选，可能漏掉最接近的那几篇，用 `--pdf` 补；角色按题注关键词判定，题注写得含糊的图会落进 analysis；图的单/双栏宽按图像与矢量元素的外框估算，纯文字图或整页背景图会判不出。
+
 ## G6 正文六项
 ### refs
 bib 解析支持嵌套花括号与无尾逗号；DOI 从 doi/url 字段抽，arXiv 编号从 note/url/journal 字段抽（很多 bib 把 arXiv 写在 note 里）。CrossRef `works/{doi}` 取 title，与 bib title 做序列比率，<0.85 判 FAIL。PubMed 走 efetch 时限定 `PubmedData` 下的 ArticleId，否则会取到该文参考文献的 DOI。
