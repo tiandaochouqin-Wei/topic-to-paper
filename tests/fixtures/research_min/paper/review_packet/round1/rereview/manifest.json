@@ -1,0 +1,9 @@
+{
+  "round": 1,
+  "created": "2026-10-28T12:00:00",
+  "kind": "pdf",
+  "source": "paper/latex/main.pdf",
+  "sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "sha8": "9f8e7d6c",
+  "items": ["R1-1", "R2-1"]
+}

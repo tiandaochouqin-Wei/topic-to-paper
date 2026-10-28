@@ -4,10 +4,10 @@
 <150–200 words. Problem → limitation of existing methods (one sentence, specific) → what we propose (name it) → key mechanism → headline results on named benchmarks with numbers → code link.>
 
 ## 1. Introduction
-<≤20 % of body, 5–7 paragraphs. Para 1: task and why it matters. Para 2: what existing methods do and the specific failure (gap_map 失效点, cited; prereg §0 现象), shown in the motivation figure (references/motivation-figures.md). Para 3: why it fails (prereg §0 原因假设) — this is the insight paragraph. Para 4: our approach in one paragraph. Para 5: "Our contributions are summarised as follows:" 3–4 bullets, each = one claims.csv row with its number. Optional teaser figure (Fig. 1) on page 1 showing the failure and the fix.>
+<≤20 % of body. FOLLOW paper/argument.md `outline` (templates/argument.md), one paragraph per move, in this order: (1) context: the task and why it matters, one paragraph; (2) belief: what current methods assume or do; (3) gap: the failure with the evidence that shows it (gap_map 失效点, prereg §0 现象) — name at most 3 prior works here, the rest belong to Related Work; shown in the motivation figure (references/motivation-figures.md); (4) this paper: what we do, in one paragraph (prereg §0 原因假设 is the insight); (5) finding: the argument.md `claim`, in reader terms — the LAST paragraph before the contribution list repeats that sentence; (6) "Our contributions are summarised as follows:" 3–4 bullets, each ≤ 2 numbers and ≤ 60 words, one claims.csv row each; only the headline claim carries its number here, the other numbers live in Results. Fig. 1 on page 1 is the default (90 % of CVPR and 82 % of ICCV papers have a page-1 figure, references/figure-norms.md): the failure and the fix in one picture. Story changes go into argument.md first, then here.>
 
 ## 2. Related Work
-<2–3 paragraphs or 2.1–2.3 subsections by theme; each paragraph ends with how our work differs. Covers problem_table rows.>
+<2–3 paragraphs or 2.1–2.3 subsections GROUPED BY THEME, not one sentence per paper. Each paragraph: theme sentence → 2–4 works → how they relate to each other → how we differ. Covers problem_table rows; the works the Introduction named for the gap are named here again with their failure point.>
 
 ## 3. Method
 ### 3.1 Problem formulation / Preliminaries

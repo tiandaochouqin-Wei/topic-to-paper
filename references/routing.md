@@ -1,6 +1,6 @@
 # 路由表
 
-本 skill 只编排。下面每一行是"本阶段的某个动作 → 调哪个本地 skill 或工具"。全部在当前会话内调用，不开子代理。
+本 skill 只编排。下面每一行是"本阶段的某个动作 → 调哪个本地 skill 或工具"。全部在当前会话内调用，不开子代理——唯一例外是 P7/S6 的审稿与复审：每个席位一个新上下文子代理，只给审稿包（review_packet.py）。
 
 ## 外部 skill：必需 / 可选 / 缺失时怎么办
 
@@ -108,7 +108,7 @@
 ## 不用的
 - `academic-pipeline`：功能重叠，且每阶段要用户确认，不适合自治运行。
 - `autonomous-research-lab-complete-personalized-skill`：目标是 CCF-A 格式包，脚本与本 skill 的 gate 互相冲突。
-- Agent / Workflow 工具：默认不开。token 审计显示子代理工作流是支出主因之一。
+- Agent / Workflow 工具：默认不开。token 审计显示子代理工作流是支出主因之一。例外：P7/S6 独立审稿（每席一个，见 review-seats.md）——同一上下文的自审在三份真实稿上漏掉了已知结论、合成数据撑起的头条数字和缺失的强基线。
 
 ## 综述分支 S0–S6
 | 动作 | 工具 |

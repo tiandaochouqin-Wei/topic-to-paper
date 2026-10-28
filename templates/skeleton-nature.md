@@ -4,7 +4,7 @@
 <≤150 words, one paragraph, no subheadings, no citations, no abbreviations undefined. Sentence 1–2: the problem and why it matters. 3: what is unknown / what fails. 4: "Here we show …" + the central finding with one number. 5–6: mechanism / generality. 7: implication.>
 
 ## Introduction
-<No heading in the final PDF; 3–5 paragraphs, ≤600 words. Para 1: field-level importance (gap_map 判定.重要性). Para 2–3: what has been done and precisely where it fails — name the works (gap_map 失效点 原句, cited). Para 4: the unanswered question (prereg §0 现象 + 原因假设). Last paragraph: "Here we show that …" (prereg §1 主张, one sentence) + one sentence of scope. No contribution list. No "state-of-the-art".>
+<No heading in the final PDF; 3–5 paragraphs, ≤600 words. Para 1: field-level importance (gap_map 判定.重要性). Para 2–3: what has been done and precisely where it fails — name the works (gap_map 失效点 原句, cited). Para 4: the unanswered question (prereg §0 现象 + 原因假设). Last paragraph: "Here we show that …" = the paper/argument.md `claim` (templates/argument.md), one sentence, + one sentence of scope; the same sentence is the abstract's sentence 4 and opens the Discussion. Follow argument.md `outline`; name at most 3 prior works individually. No contribution list. No "state-of-the-art".>
 
 ## Results
 

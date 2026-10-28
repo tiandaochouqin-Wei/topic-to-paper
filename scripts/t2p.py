@@ -30,6 +30,7 @@ Gate → script mapping (inputs decide whether a gate runs):
   G6d paper/latex/main.tex (LaTeX projects only)           latex_check.py check: class matches venue, all figures PDF, panels via subfigure, algorithm blocks (make_algorithm.py check)
   G6e paper/claims.csv with rows                           claims_check.py: headline sentences ↔ claims rows, each row computed from results, strong scope ↔ scope_words
   G6f paper/manuscript.md (research)                      readability_check.py: numbers / semicolons / sentence length vs published norms, contribution bullets, protocol vocabulary, catalogue paragraphs
+  G6g paper/manuscript.md (research)                      argument_check.py: paper/argument.md (written before the draft) vs title / abstract / Introduction / Conclusion — one claim, one headline number, the reader's question; a manuscript without argument.md FAILs
   G7  paper/review_log.md                                  review_check.py
   G8  submission/ with cover_letter.md|title_page.md|…     gate_check.py submission
 A gate whose script crashes (traceback, or non-zero exit without a [FAIL] line) is reported as CRASH and counted as a
@@ -79,7 +80,7 @@ ENTRIES = ("topic_only", "topic_plus_data", "have_results", "have_draft", "have_
 # gates whose inputs an entry point legitimately lacks: N/A (not PENDING) while the inputs are absent; run normally once they exist
 SKIP_BY_ENTRY = {"have_results": {"G1b"}, "have_draft": {"G1b", "G2", "G3", "G3b", "G4", "G5"}, "have_reviews": {"G1b", "G2", "G3", "G3b", "G4", "G5"}}
 ENTRY_PHASE = {"topic_only": "P0", "topic_plus_data": "P0", "have_results": "P4", "have_draft": "P6", "have_reviews": "P7"}
-GATE_ORDER = ["G0", "G1", "G1b", "G2", "G3", "G3b", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G6f", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
+GATE_ORDER = ["G0", "G1", "G1b", "G2", "G3", "G3b", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G6f", "G6g", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
 SURVEY_GATES = ["G0", "G1", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
 
 def gate_key(g):
@@ -192,7 +193,7 @@ def check(root, net, write=True):
     na = SKIP_BY_ENTRY.get(entry, set())
     board = []   # (gate, status, detail)
     def rec(g, status, detail):
-        if survey and g in ("G2", "G3", "G3b", "G4", "G6e", "G6f"): return      # research-only gates are meaningless for a survey (G-S5 is the survey claim gate)
+        if survey and g in ("G2", "G3", "G3b", "G4", "G6e", "G6f", "G6g"): return     # research-only gates are meaningless for a survey (G-S5 is the survey claim gate)
         if status == "PENDING" and g in na: status, detail = "N/A", f"entry={entry}：无此阶段产物，不要求（文件出现即照常检查）；" + detail
         if status == "CRASH": detail += "；" + "；".join(_CRASH_NOTES); _CRASH_NOTES.clear()
         board.append((g, status, detail)); print(f"[{status}] {g}: {detail}")
@@ -274,7 +275,12 @@ def check(root, net, write=True):
         # G6f: readability — numbers per 1k words, contribution bullets, protocol vocabulary, catalogue paragraphs vs references/readability-norms.csv
         rc, f, w, out = run([S("readability_check.py")], root); m = re.search(r"family = (\w+)", out)
         rec("G6f", verdict(f, out), f"readability {f} FAIL / {w} WARN" + (f"，family={m.group(1)}" if m else ""))
-    else: rec("G6", "PENDING", f"无 {manuscript}")
+        # G6g: argument — paper/argument.md (claim, reader's question, headline number, outline) written before the draft vs title / abstract / Introduction / Conclusion; no argument.md next to a manuscript = FAIL
+        rc, f, w, out = run([S("argument_check.py")], root); m = re.search(r"family = (\w+)", out)
+        rec("G6g", verdict(f, out), f"argument {f} FAIL / {w} WARN" + (f"，family={m.group(1)}" if m else ""))
+    else:
+        rec("G6", "PENDING", f"无 {manuscript}")
+        rec("G6g", "PENDING", "先写论点 paper/argument.md（templates/argument.md：claim / reader_question / headline / outline），再写稿" if not exists(root, "paper/argument.md") else f"paper/argument.md 已有，无 {manuscript}：按提纲写稿")
     # G6d: LaTeX submission form, only for projects that write in the venue template
     if exists(root, tgt.get("latex_dir") or "paper/latex", "main.tex"):
         rc, f, w, out = run([S("latex_check.py"), "check"], root); rec("G6d", verdict(f, out), f"latex {f} FAIL / {w} WARN")
@@ -339,7 +345,7 @@ NEXT_BY_ENTRY = {
     "topic_only": "下载目标刊 Guide for Authors 到 submission/guide.txt，把硬规则抄进 research-state.yaml 的 target，然后 `t2p.py check`",
     "topic_plus_data": "下载目标刊 Guide for Authors 到 submission/guide.txt，把硬规则与数据可得性抄进 research-state.yaml（target / resources.data），然后 `t2p.py check`",
     "have_results": "把 runs/ 与 results/main.csv 放进来，填 state.audits 与 state.results；补一份 prereg.md 并在首行标 `post-hoc`；下载 guide.txt；然后 `t2p.py check`",
-    "have_draft": "把稿子转成 paper/manuscript.md（LaTeX 用 tex_to_md.py，PDF 用 pdf_to_md.py），refs.bib 放 paper/；下载 guide.txt 填 target 硬规则；然后 `t2p.py check`（G1b–G5 显示 N/A 是正常的）",
+    "have_draft": "把稿子转成 paper/manuscript.md（LaTeX 用 tex_to_md.py，PDF 用 pdf_to_md.py），refs.bib 放 paper/；下载 guide.txt 填 target 硬规则；为这份稿子写 paper/argument.md（templates/argument.md：一句主张 + 读者的问题 + 提纲，G6g 照它查）；然后 `t2p.py check`（G1b–G5 显示 N/A 是正常的）",
     "have_reviews": "同 have_draft，再把审稿意见逐条整理进 paper/review_log.md（[major]/[minor] + 处置），然后 `t2p.py check`",
 }
 

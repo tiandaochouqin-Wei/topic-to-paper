@@ -9,13 +9,13 @@
 **Keywords:** <≤6>
 
 ## 1. Introduction
-<15–20 % of body, 6–9 paragraphs. Importance → existing approaches and their specific failures (gap_map 失效点, cited; may cite 20–30 works here) → why they fail (prereg §0 原因) → our approach → contributions list (3–4, each with a number, = claims.csv rows) → paper organisation sentence.>
+<15–20 % of body, 6–9 paragraphs. FOLLOW paper/argument.md `outline`, one paragraph per move: context (importance) → belief (what current methods assume or do) → gap (the failure with its evidence, gap_map 失效点; name at most 3 prior works individually, the rest go to Related Work, and no paragraph cites more than 6 references) → this paper (prereg §0 原因, our approach) → finding (the argument.md `claim`; the last paragraph before the list repeats it) → contributions list (3–4 bullets, each ≤ 2 numbers and ≤ 60 words, = claims.csv rows; only the headline claim carries its number here, the other numbers live in Results) → paper organisation sentence. Fig. 1 on page 1 is the default for conference-style papers (references/figure-norms.md); image/medical journals vary (TIP 32 %, IJCV 8 %): follow the target's own norm. Story changes go into argument.md first.>
 
 ## 2. Related Work
 ### 2.1 <Theme A>
 ### 2.2 <Theme B>
 ### 2.3 <Theme C>
-<Each subsection 1–2 paragraphs, ends with the gap this paper fills. Journals expect this section to be thorough (references 60–80).>
+<Grouped by theme, each paragraph: theme sentence → 2–4 works → how they relate → how we differ (never one sentence per paper); ends with the gap this paper fills. Journals expect this section to be thorough (references 60–80).>
 
 ## 3. Problem Formulation
 <Notation table or paragraph; observed/unobserved variables; deployment conditions; what is assumed.>

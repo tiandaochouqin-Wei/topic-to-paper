@@ -149,10 +149,20 @@ G6d 的伪代码块检查（`scripts/make_algorithm.py check`，paper/latex 里�
 为什么：三个真实草稿（med2、medical、fusion）每千词 31–52 个数字（已发表 p95 24）、贡献条目 6–14 个数字、流程簿记词 8–17 处，同时超 p95 的指标 7–11 项，而其它关口全过。
 漏法：只量表面统计，不判断写得好不好、论点是否成立（那是 P7 审稿的事）；PDF 转换会丢项目符，贡献条目指标在已发表样本里 n 只有 23–25；协议记账换个说法（"frozen before running"）抓不到。
 
+## G6g 论点一致（`scripts/argument_check.py`，机械；2026-10-28；tests/test_argument.py）
+判据：`paper/argument.md`（`templates/argument.md`，写稿之前由 claims.csv + prereg 填）对照稿子。① 文件缺失 FAIL「先写论点再写稿」；claim / reader_question / headline / why_not_obvious / strongest_objection / outline 为空或仍是模板 `<…>` 各 FAIL；② claim > 35 词或 > 2 个数字、没有可证伪的动词 WARN；③ claim 须在摘要（任一句）、引言贡献列表之前的末段（Nature 为 "Here we show" 句）、Conclusion 前两句（Nature 为 Discussion 第一段）复现——实词重合 ≥ 50 %，或 claim 的全部数字都在且该处与 claim 共享 ≥ 25 % 实词——缺哪处 FAIL 哪处，标题与 claim 共享 < 2 个实词 WARN；④ headline.claim_id 不在 claims.csv、headline.number 的数字不在摘要里 FAIL；⑤ 引言前两段含 reader_question ≥ 40 % 实词、引言含 why_not_obvious ≥ 30 % 实词（缺 WARN）；⑥ where_answered 指向的 § / Table / Fig 存在，strongest_objection ≥ 30 % 实词出现在那里或 Limitations / Discussion（缺 WARN）；⑦ 提纲项数与引言段数差 ≤ 1，第 i 项（去掉 "move:" 前缀）与引言第 i±1 段重合 ≥ 35 %，顺序不倒（缺 WARN）；⑧ not_claimed 每条在 Limitations / Discussion / Conclusion 出现，headline 数字在引言里出现且与摘要同样取整（6.95 vs 7.0 WARN）。同步改动 draft_plan（G6b）：失效点点名改为 Related Work 或引言均可且 WARN，引言一段引 > 6 篇 WARN，只有 headline 主张的数字强制进贡献条目，argument.md 的 claim / reader_question 进必写清单。
+为什么：三个真实 CVPR 草稿（2026-10-23）写作是清单驱动——gap_map 每行变成引言里一句人名，每条主张的数字塞进贡献条目——没有人要求一句话的主张、标题 / 摘要 / 引言 / 结论共用它，也没有人要求写下读者的问题和最强反对意见；读者读完引言说不出这篇论文到底主张什么。
+漏法：词元重合只能证明论文前后讲的是同一个故事，不能证明这个论点好、新、对（那是 P7 独立审稿的 R0 席位的事）；同义改写可能把重合压到阈值下（误报 FAIL，改 argument.md 的措辞即可）；一句话里塞对词但逻辑相反（"does not lower"）抓不到；argument.md 与 claims.csv 的主张是否同义不核，只核 headline.claim_id 存在与数字出现；用户自己写的 argument.md 空话（"we propose a better method"）能过 ②。
+
 ## G7 审稿闭环（`scripts/review_check.py`，机械）
 判据：review_log.md 每条 [major]/[minor] 有处置（同行或后两行的 复核通过|已改|rebut|partial|自证，或在 Phase 2 编辑综合表里按 R1-3 编号出现）；每条 major 在 `## Re-review` 小节里按编号或前 12 字 + closed/已改 关闭（inline "→已自证" 也算；2.9.0 起带否定的句子 `NOT closed` / `未关闭` / `OPEN:` 不算关闭，只靠行内箭头关闭而复审节没提到该编号 → WARN；处置词表加「需新实验 / 待补实验」）；state.review.round ≥1 且 open_major 空；gate_report.md 新于 manuscript.md；处置里的 §x.y / Table n 在正文存在（缺 WARN）。
 测试：EAAI 真实 review_log 7 条全绿；追加一条无处置 major → 2 FAIL；加 Re-review 关闭后 ALL PASS。
 为什么：修订会引入新的数字与新的引用，第一次过关不代表第二次过。
+
+**独立审稿（2026-10-28 新增，`scripts/review_packet.py` + `review_check.py`；tests/test_review_independent.py）**
+判据：① 研究分支至少一节 `## Reviewer <席位> (independent, packet <sha8>)`，否则 FAIL（`state.review.independent_waiver: "<原因>"` 降为 WARN；综述分支默认 WARN；`entry: have_reviews` 的日志是真实审稿，不查）；② 必须有独立的 R0（区域主席 / 价值），带 `rating:`（缺 WARN）；评分均值在拒稿线上（cs_conf ≤ 3/6；期刊 reject 或 major；nature reject）→ WARN「先回证据或选题」；③ 每节的 packet sha8 要在 `paper/review_packet/round*/**/manifest.json` 登记，否则 FAIL（审稿不是在登记的稿件版本上做的）；④ 每条 `[major]` 带 `category:`（缺 WARN）；⑤ evidence / validity / novelty / value 类 major 只能由同一席位的 `## Re-review <席位> (independent, packet <sha8>)` 关闭，且复审 sha8 与原审稿不同（在改后版本上做的）；作者自己写 closed、行内箭头、别的席位关闭、同一 packet 复审都 FAIL，作者段落里带收窄词（收窄|narrow|reword|措辞|scope|限定|弱化|soften）的 FAIL「收窄措辞不是关闭」；有 waiver 且没有任何独立复审节时降为 WARN；⑥ validity 类 major 的关闭行或处置要引用一个存在的文件（故意弄坏的版本上会失败的检查输出），否则 FAIL。
+为什么：自审时同一会话带着作者上下文写全部席位——cvpr2027_med2 六条 major 里四条靠收窄措辞关闭，cvpr2027_medical 的输入朝向错误（SuPreM 等四个编码器喂 SPL 而非 RAS）扛过 10 轮自审，cvpr2027_fusion 根本没审；谁也没问过「这个发现是不是已经有人知道、值不值得占一个会议名额」，所以 R0 是必选席位。
+漏法：子代理仍是同一模型家族——独立的是上下文，不是判断力，共同的盲点照样共同；sha8 只证明审稿读的是登记过的版本，不证明子代理没有越权打开别的文件（提示里写了禁止，靠自觉）；validity 的「文件存在」不证明它在破坏版上真的会失败（那要 G3b 的 broken 对照或变异测试来保证）；category 是审稿人自己标的，标成 clarity 就绕开 ⑤，所以 R5 综合时要核一遍类别；最终审稿人仍是用户。
 
 ## G8 投稿文件
 判据：标题页、cover letter、highlights 中出现的每个数字在正文中出现；盲稿 grep 作者姓、单位、邮箱、基金号、"our previous"、"we previously" 为空；文件清单与 guide.txt 的 required files 逐项勾选。

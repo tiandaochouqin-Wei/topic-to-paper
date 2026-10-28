@@ -47,8 +47,10 @@
 | "under any channel loss" 只测了四种 | 全称量化词不在作用域词表 | SCOPE_STRONG 含 any/all/every + 名词 |
 | 参考文献超限 | 没提前算预算 | G0 抄硬规则，加一删一 |
 | 伪代码写的是想象中的方法，不是跑出结果的那个函数 | 凭记忆写；超参与循环结构在代码里早改过 | G6d：伪代码锚到 state.algorithms 的函数（ast），Require 里的数值对账 ref run 的 args，循环数对照函数 |
+| 引言是 1000+ 词的人名目录，贡献条目一条 4–14 个数字，标题 / 摘要 / 结论各说各的，读不出论文要回答什么问题（三个真实 CVPR 草稿，2026-10-23） | 写作清单驱动：draft_plan 把 gap_map 每行变成"点名某篇并说失效点"、把每条主张的数字强塞进贡献条目；没有任何一步要求一句主张和读者的问题 | 论点先行（G6g）：写稿前填 `paper/argument.md`（一句主张、读者的问题、一个 headline 数字、最强反对意见、引言提纲）；`argument_check.py` 查它们在标题 / 摘要 / 引言末段 / 结论里一致；Related Work 按主题成段，引言至多点名 3 篇，只有 headline 的数字进贡献条目 |
 | LaTeX 出空白页 | author 间空行 | 模板固定 |
 | 公式符号包冲突 | amssymb × newtxmath | 模板固定 |
+| 自审 major 靠收窄措辞关闭（六条里四条）、输入朝向错误扛过 10 轮自审、一个项目根本没审；没人问过「这个发现是不是已经有人知道」 | 审稿席位由写稿的同一会话带着 prereg / claims 写；作者自己判「已改」就关闭；没有价值席位 | P7：`review_packet.py` 冻结稿件，R0 / R1+R3 / R2 / DA 各一个新上下文子代理，只给 PDF 与审稿表；evidence / validity / novelty / value 类 major 只能由同一席位在改后 PDF 上独立复审关闭；validity 要引用破坏版会失败的检查输出（G7） |
 
 ## 工具
 
@@ -58,7 +60,7 @@
 | 长文件写入报 unexpected EOF | heredoc >8 KB 截断 | 长文件用 Write 工具 |
 | PubMed 取到的 DOI 是别人的 | `.//ArticleIdList` 匹配到参考文献 | 限定 PubmedData |
 | 分页模拟与真实 PDF 不符 | 只重排不绑定页首 | 页首加 break-before，判据保守 1 px |
-| 会话卡死数小时 | 超大上下文经中转超时重试 | 单会话、不开子代理、及时 /clear |
+| 会话卡死数小时 | 超大上下文经中转超时重试 | 单会话、及时 /clear；子代理只用于 P7/S6 独立审稿 |
 
 ## 图表（验证轮 15）
 

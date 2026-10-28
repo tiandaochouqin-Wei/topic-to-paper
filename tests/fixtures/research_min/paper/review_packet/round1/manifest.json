@@ -1,0 +1,12 @@
+{
+  "round": 1,
+  "created": "2026-10-28T09:00:00",
+  "kind": "pdf",
+  "source": "paper/latex/main.pdf",
+  "sha256": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "sha8": "1a2b3c4d",
+  "venue": "Engineering Applications of Artificial Intelligence",
+  "family": "cs_journal",
+  "branch": "research",
+  "seats": ["R0", "R1+R3", "R2", "DA"]
+}

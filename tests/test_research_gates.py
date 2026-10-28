@@ -339,10 +339,11 @@ def test_g7_needs_new_experiment_is_a_disposition_until_closed(research):
 
 
 def test_g7_inline_only_closure_warns(research):
+    """a clarity major closed by the author's arrow only: WARN (the re-review never looked at it). An evidence major closed that way is a FAIL: tests/test_review_independent.py"""
     _g6(research)
-    edit(research / "paper" / "review_log.md", "- R1-1 closed: Table 2 and Section 4.4 updated.", "")
+    edit(research / "paper" / "review_log.md", "- R2-1 closed: convention stated in Section 4.1 and in the Table 1 caption.", "")
     r = run("review_check.py", cwd=research)
-    assert r.fails == 0 and "[WARN] review:" in r.out and "R1-1" in r.out, r.out
+    assert r.fails == 0 and "[WARN] review:" in r.out and "R2-1" in r.out, r.out
 
 
 # ------------------------------------------------------------------ G8  submission package

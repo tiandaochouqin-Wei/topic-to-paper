@@ -49,6 +49,7 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 | G5 figures | dpi measured on screen not at print width; fonts unreadable after the figure is scaled into a half column; expected figure types (overview, qualitative, comparison, ablation) missing without a stated reason; dual-axis plots |
 | G6 manuscript | DOI strings that resolve to other papers; orphan figures; acronyms never expanded; "outperforms all" without a scope; table numbers that drift from result files; venue hard limits |
 | G6b/G6c writing | the sentence a section must contain is missing or in the wrong section; a CS-shaped draft sent to a Nature-family journal (Related Work, Conclusion, contribution list, equations in the main text) |
+| G6g argument | a draft written from a checklist instead of an argument: no one-sentence claim shared by title, abstract, end of the Introduction and Conclusion; the reader's question never asked; the headline number written 6.95 in one place and 7.0 in another; an Introduction that follows no outline (`templates/argument.md` is filled before the draft) |
 | G6e claims | a "Here we show" sentence or contribution bullet that no claims row backs; a claims row whose number the result files no longer produce; an ablation cell inside seed noise written up as an effect; "outperforms all" with no row saying all of what, on which table |
 | G6d LaTeX form | manuscript not in the venue's LaTeX template; a figure that is not a PDF; a multi-panel figure pasted together instead of composed from one PDF per panel with subfigure; stale derived manuscript.md |
 | G6d pseudocode | an Algorithm block written from memory that no longer matches the function that ran (a hyper-parameter, a loop that was removed); a block never referenced from the Method text; result numbers inside the pseudocode; no pseudocode where 20-30% of the venue's method papers have one |
@@ -65,9 +66,9 @@ Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_ch
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 38 gate/generator scripts, all argparse, all `--help`
+scripts/                 40 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
-templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, tables.yaml, prisma2020_checklist.csv, skeleton-{cs_conf,cs_journal,nature}.md, …
+templates/               research-state.yaml, prereg.md, argument.md, protocol.md, codebook.md, tables.yaml, prisma2020_checklist.csv, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, figure-norms.md (which figure types each venue / family / topic uses), latex-templates.csv, acronym-norms.csv, validation-*.md
 ```
 

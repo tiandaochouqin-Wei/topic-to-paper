@@ -5,10 +5,13 @@
   python draft_plan.py check [--project .] [--manuscript paper/manuscript.md] verify every item has a matching sentence; exit = #FAIL
 
 Sources -> items (each item: section, what must be said, probe used to verify):
-  gap_map.md   判定.重要性 / 关键论文失效点原句 / 评测盲区 / 邻域默认假设  -> Introduction (works named must be cited there; 盲区 -> Results or Discussion)
+  gap_map.md   判定.重要性 / 关键论文失效点原句 / 评测盲区 / 邻域默认假设  -> Introduction; each 失效点 work is named in Related Work OR the Introduction (WARN; Related Work is organised
+               by theme, the Introduction names at most 3 works individually: an Introduction paragraph citing > 6 distinct references is a WARN); 盲区 -> Results or Discussion
   prereg.md    §0 现象+原因 -> Introduction & Method motivation; §1 一句话主张 -> Introduction; §5 baselines -> Results (each name);
                §6 ablations -> Method (each component named) & Results; §8 failure 分支 + §7 最小改进量 -> Limitations/Discussion
-  claims.csv   每条 statement 的数字 -> Introduction contributions AND the section its table_or_figure lives in
+  claims.csv   每条 statement 的数字 -> the section its table_or_figure lives in; ONLY the headline claim (paper/argument.md headline.claim_id, else the first claim that carries a number)
+               must also carry its number in the Introduction contributions (G6f allows <= 2 numbers per bullet; every other claim's number lives in Results)
+  paper/argument.md (templates/argument.md, written before the draft; argument_check.py is its gate G6g)  -> Introduction last paragraph carries `claim`, first two paragraphs carry `reader_question`
   results/     main.csv: ref vs strongest baseline on primary metric -> Results must state the relative change (±1 in last digit);
                strongest = min or max by results.metric_direction / primary_direction (metric_direction.py; name regex if unset);
                ablation resolve: unresolvable cells -> Results must say "noise/resolution/not resolvable/within" — in the prose OR in a figure/table caption / table footnote;
@@ -39,6 +42,7 @@ def section(md, name):
 
 SECTION_ALIASES = {
     "intro": ["Introduction", "引言", "绪论"],
+    "related": ["Related Work", "Related Works", "Prior Work", "Background", "相关工作"],
     "method": ["Method", "Methods", "Methodology", "Approach", "Proposed", "方法"],
     "results": ["Experiments", "Results", "Experimental", "Evaluation", "实验", "结果"],
     "limitations": ["Limitation", "Discussion", "讨论", "局限"],
@@ -64,6 +68,97 @@ def overlap(need, hay):
     if not need: return 1.0
     h = hay.lower()
     return sum(1 for t in need if t in h) / len(need)
+
+def _stem(t):
+    return re.sub(r"(?:ing|ed|es|s|ly)$", "", t) if len(t) > 5 and not CJK.search(t) else t
+
+def cwords(s):
+    """content words of a sentence: toks() minus stop words, hyphenated words split into their parts (>= 4 letters), CJK runs as bigrams."""
+    out = []
+    for w in toks(s):
+        if CJK.search(w): out += [w[i:i + 2] for i in range(len(w) - 1)]
+        elif "-" in w: out += [x for x in w.split("-") if len(x) >= 4 and x not in STOP]
+        else: out.append(w)
+    return list(dict.fromkeys(out))
+
+def stem_overlap(need, hay):
+    """share of the content words of `need` found in `hay` at a word start, after a light suffix strip (lowers ~ lower); CJK bigrams only when hay has CJK."""
+    need = cwords(need)
+    if not CJK.search(hay): need = [t for t in need if not CJK.search(t)]
+    if not need: return 1.0
+    h = hay.lower()
+    return sum(1 for t in need if re.search(r"(?<![a-z0-9])" + re.escape(_stem(t)), h)) / len(need)
+
+def has_number(n, hay):
+    return bool(re.search(r"(?<![\d.])" + re.escape(n) + r"(?!\d|\.\d)", hay))
+
+def claim_in(claim, hay, thr, floor=0.25):
+    """the claim sentence recurs in `hay`: content-word overlap >= thr, or every number of the claim is present (with at least `floor` overlap, so a stray number does not count)."""
+    ov = stem_overlap(claim, hay)
+    if ov >= thr: return True
+    nums = sorted(set(re.findall(r"\d+(?:\.\d+)?", claim)))
+    return bool(nums) and ov >= floor and all(has_number(n, hay) for n in nums)
+
+# ------------------------------------------------------------------ paper/argument.md  (templates/argument.md)
+ARGUMENT_REL = os.path.join("paper", "argument.md")
+PLACEHOLDER = re.compile(r"<[A-Za-z一-鿿][^<>]*>")
+def is_placeholder(v):
+    """empty, or still the template's <angle-bracket> prompt; a list / mapping with ANY such entry counts as unfinished."""
+    if v is None: return True
+    if isinstance(v, (list, tuple)): return not v or any(is_placeholder(x) for x in v)
+    if isinstance(v, dict): return not v or any(is_placeholder(x) for x in v.values())
+    t = str(v).strip()
+    return not t or bool(PLACEHOLDER.search(t)) or (t.startswith("<") and t.endswith(">"))
+
+def load_argument(path):
+    """paper/argument.md -> dict (YAML front matter between two --- lines, else the whole file as YAML); None when the file is missing; ValueError on bad YAML.
+    An outline entry written without quotes (`- context: why …`) parses as a one-key dict; it is folded back into the string "context: why …"."""
+    if not os.path.exists(path): return None
+    import yaml
+    txt = io.open(path, encoding="utf-8-sig").read()
+    m = re.match(r"\s*---[ \t]*\n(.*?)\n---[ \t]*(?:\n|$)", txt, re.S)
+    try: d = yaml.safe_load(m.group(1) if m else txt)
+    except yaml.YAMLError as e: raise ValueError(f"{os.path.basename(path)} 的 YAML 前置块解析失败: {str(e).splitlines()[0]}")
+    if not isinstance(d, dict): raise ValueError(f"{os.path.basename(path)} 没有 YAML 前置块（--- … ---）")
+    ol = d.get("outline")
+    if isinstance(ol, list): d["outline"] = [f"{next(iter(x))}: {next(iter(x.values()))}" if isinstance(x, dict) and len(x) == 1 else str(x) for x in ol]
+    return d
+
+def arg_text(d, key):
+    """a scalar field of argument.md, "" when missing / empty / still the template prompt."""
+    v = (d or {}).get(key)
+    return "" if is_placeholder(v) or isinstance(v, (list, dict)) else str(v).strip()
+
+def paragraphs(text):
+    """prose blocks separated by blank lines; headings, `>` notes and empty blocks dropped."""
+    out = []
+    for b in re.split(r"\n\s*\n", text or ""):
+        ls = [l for l in b.splitlines() if l.strip() and not l.lstrip().startswith(("#", ">"))]
+        if ls: out.append("\n".join(ls).strip())
+    return out
+
+CONTRIB_CUE = re.compile(r"contributions?\s+(?:of (?:this|our) (?:paper|work)\s+)?(?:are|can be|is|include|lie)|contributions?\s+(?:are|can be)\s+(?:summari[sz]ed|categori[sz]ed|listed|threefold|twofold|fourfold)|(?:three|four|two)[- ]?fold|主要贡献|贡献如下", re.I)
+LISTLINE = re.compile(r"^\s*(?:[-*•▪–]|\d+[.)]|\(\d\)|\(?[ivx]+\))\s+")
+def intro_paragraphs(intro):
+    """(prose paragraphs of the Introduction before the contribution block, the contribution block or ""). A Nature draft has no block: all paragraphs."""
+    out, contrib = [], ""
+    for b in paragraphs(intro):
+        ls = b.splitlines(); nlist = sum(1 for l in ls if LISTLINE.match(l))
+        if CONTRIB_CUE.search(b) or (nlist >= 2 and nlist * 2 >= len(ls)): contrib = b; break
+        out.append(b)
+    return out, contrib
+
+def distinct_refs(p):
+    """distinct references cited in one paragraph: [3], [1,2], [4-7], (Name et al., 2020), \\cite{a,b}."""
+    refs = set()
+    for m in re.finditer(r"\[(\s*\d+(?:\s*[,;–—-]\s*\d+)*\s*)\]", p):
+        for part in re.split(r"[,;]", m.group(1)):
+            r = [x.strip() for x in re.split(r"[–—-]", part)]
+            if len(r) == 2 and r[0].isdigit() and r[1].isdigit() and 0 < int(r[1]) - int(r[0]) <= 50: refs.update(str(i) for i in range(int(r[0]), int(r[1]) + 1))
+            else: refs.update(re.findall(r"\d+", part))
+    refs.update("ay:" + m.group(1).lower() + m.group(2) for m in re.finditer(r"([A-Z][\w\-]+)(?: et al\.?| and [A-Z][\w\-]+)?,?\s+((?:19|20)\d\d[a-z]?)", p))
+    refs.update("key:" + k.strip() for m in re.finditer(r"\\cite[tp]?\{([^}]*)\}", p) for k in m.group(1).split(","))
+    return refs
 
 def table_rows(txt):
     """data rows of markdown tables: the line right before a |---| separator is a header and is dropped."""
@@ -149,6 +244,9 @@ def build(root):
     algs = [r for r in (st.get("algorithms") or []) if isinstance(r, dict) and r.get("id")]
     if algs:   # pseudocode blocks (make_algorithm.py): the Method text must point at them; the caption line `**Algorithm 1.**` does not count (lookbehind)
         add("method", "state.algorithms", "方法节正文要引用 Algorithm 1" + (f"–{len(algs)}" if len(algs) > 1 else "") + f"（{', '.join(str(r['id']) for r in algs)}）：写 'Algorithm 1 summarises …'", r"(?<!\*)\b(?:Algorithm|Alg\.)\s*\d", "regex")
+    try: arg = load_argument(os.path.join(root, ARGUMENT_REL)) or {}
+    except ValueError: arg = {}          # argument_check.py reports a broken argument.md; the checklist must not crash on it
+    hl = arg.get("headline") if isinstance(arg.get("headline"), dict) else {}
     # ---- gap_map
     gp = os.path.join(root, "literature", "gap_map.md"); gap = io.open(gp, encoding="utf-8").read() if os.path.exists(gp) else ""
     if gap:
@@ -158,11 +256,18 @@ def build(root):
         for cells in table_rows(section(gap, "现有方法在哪里失效") or ""):
             if len(cells) >= 3 and cells[2] and not cells[0].startswith("陆地"):
                 work = re.sub(r"\(.*?\)|\*", "", cells[0]).strip()
-                add("intro", f"gap_map 失效点：{work}", f"引言或相关工作里点名 {work} 并说它的失效点（{cells[2][:60]}…）", work, "name")
+                add("intro", f"gap_map 失效点：{work}", f"相关工作（按主题成段）或引言里点名 {work} 并说它的失效点（{cells[2][:60]}…）", work, "name", "WARN")
+                items[-1]["also"] = ["related"]       # Related Work OR Introduction
         for k, sec in (("评测盲区", "results"), ("邻域默认假设", "intro")):
             t = section(gap, k) or ""
             if t.strip() and not t.strip().startswith("未知"):
                 add(sec, f"gap_map {k}", f"{k}的答案要进正文（{t.strip()[:60]}…）", t.strip()[:300], "tokens", "WARN")
+    add("intro", "G6g 引言引用密度", "引言每段至多引 6 篇不同文献：间隙段最多点名 3 篇，其余按主题放 Related Work", "6", "max_cites", "WARN")
+    # ---- paper/argument.md: keeps the checklist in step with the argument gate (argument_check.py is the gate)
+    if arg_text(arg, "claim"):
+        add("intro", "argument.md claim", "引言最后一段（贡献列表之前）要出现论点句：" + arg_text(arg, "claim")[:70], arg_text(arg, "claim"), "para_last")
+    if arg_text(arg, "reader_question"):
+        add("intro", "argument.md reader_question", "引言前两段要提出读者的问题：" + arg_text(arg, "reader_question")[:70], arg_text(arg, "reader_question"), "para_first2", "WARN")
     # ---- prereg
     pp = os.path.join(root, "prereg.md"); pr = io.open(pp, encoding="utf-8").read() if os.path.exists(pp) else ""
     if pr:
@@ -186,12 +291,19 @@ def build(root):
         m = re.search(r"(\d+(?:\.\d+)?)\s*(%|points?|pp|个百分点|CSI|RMSE|AUC|F1|Dice|mIoU)", suc)
         if m: add("results", "prereg §7 最小改进量", f"结果节要对照预注册的最小改进量 {m.group(0)} 说明达到与否", m.group(1), "number", "WARN")
     # ---- claims.csv
-    for r in read_csv(os.path.join(root, "paper", "claims.csv")):
-        if r.get("statement", "").strip():
-            nums = numbers_in(r["statement"])
-            add("intro", f"claims {r.get('claim_id')}", "贡献条目要含该主张的数字：" + r["statement"][:70], " ".join(sorted(nums)) if nums else r["statement"], "numbers" if nums else "tokens")
-            if (r.get("table_or_figure") or "").strip():     # a claim without a table/figure (prereg §0 control experiment, protocol claims) is stated in the intro only
-                add("results", f"claims {r.get('claim_id')} @ {r.get('table_or_figure','')}", "结果节陈述该主张并指向 " + str(r.get("table_or_figure", "")), " ".join(sorted(nums)) if nums else r["statement"], "numbers" if nums else "tokens")
+    crows = [r for r in read_csv(os.path.join(root, "paper", "claims.csv")) if r.get("statement", "").strip()]
+    head_id = str(hl.get("claim_id") or "").strip()
+    if not any(r.get("claim_id") == head_id for r in crows):      # no argument.md (or an id it does not know): the first claim that carries a number, else the first claim
+        head_id = next((r.get("claim_id") for r in crows if numbers_in(r["statement"])), crows[0].get("claim_id") if crows else "")
+    for r in crows:
+        nums = numbers_in(r["statement"]); has_tf = bool((r.get("table_or_figure") or "").strip())
+        probe = " ".join(sorted(nums)) if nums else r["statement"]; kind = "numbers" if nums else "tokens"
+        if r.get("claim_id") == head_id:      # only the headline claim carries its number in the contribution bullets; every other claim's number lives in Results (G6f: <= 2 numbers per bullet)
+            add("intro", f"claims {r.get('claim_id')}", "贡献条目要含主打主张的数字：" + r["statement"][:70], probe, kind)
+        elif not has_tf:                      # no table / figure to carry it (prereg §0 control experiment, protocol claims): stated in the Introduction only
+            add("intro", f"claims {r.get('claim_id')}", "引言里陈述该主张（无表 / 图承载）：" + r["statement"][:70], probe, kind, "WARN")
+        if has_tf:
+            add("results", f"claims {r.get('claim_id')} @ {r.get('table_or_figure','')}", "结果节陈述该主张并指向 " + str(r.get("table_or_figure", "")), probe, kind)
     # ---- results: ref vs strongest baseline on primary metric
     mt = os.path.join(root, res.get("main_table", "results/main.csv")); rows = read_csv(mt)
     pm = res.get("primary_metric"); gk = res.get("group_key", "method"); ref = res.get("reference_method", "ours")
@@ -262,11 +374,12 @@ def check(a):
     md = io.open(mp, encoding="utf-8").read().split("\n## References")[0]
     md = "\n".join(l for l in md.splitlines() if not l.lstrip().startswith(">"))   # drop editing-log quote lines: they are not prose
     secs = {k: ms_section(md, k) for k in SECTION_ALIASES}
-    missing_secs = [k for k, v in secs.items() if v is None and k != "conclusion"]
+    missing_secs = [k for k, v in secs.items() if v is None and k not in ("conclusion", "related")]
     if missing_secs: say("WARN", f"正文里找不到章节 {missing_secs}（按标题别名匹配 {[SECTION_ALIASES[k][0] for k in missing_secs]}）；这些项退化为全文搜索")
     hits = 0; done = {}
     for it in items:
         hay = secs.get(it["section"]) or md; k = it["kind"]; p = it["probe"]
+        for extra in it.get("also", []): hay += "\n" + (secs.get(extra) or "")       # e.g. a prior work may be named in Related Work instead of the Introduction
         if k == "name":
             ok = bool(re.search(r"(?<![A-Za-z0-9])" + re.escape(p) + r"(?![A-Za-z0-9])", hay, re.I)) or overlap(p, hay) >= 0.99
             if ok and len(p) <= 2: it = {**it, "level": "WARN", "must": it["must"] + "（名字太短，匹配不可靠：人工确认）"}; ok = False
@@ -278,6 +391,10 @@ def check(a):
         elif k == "number": ok = p in hay
         elif k == "number_prefix": ok = p in hay
         elif k == "number_pm1": ok = pct_change_stated(int(p), hay, it.get("dir"))
+        elif k in ("para_last", "para_first2"):
+            paras, _ = intro_paragraphs(hay); sel = paras[-1:] if k == "para_last" else paras[:2]
+            ok = claim_in(p, "\n".join(sel), 0.5 if k == "para_last" else 0.4)
+        elif k == "max_cites": ok = all(len(distinct_refs(x)) <= int(p) for x in paragraphs(hay))
         elif k == "regex": ok = bool(re.search(p, hay, re.I))
         elif k == "regex_cap": ok = bool(re.search(p, hay + "\n" + caption_text(md), re.I))   # the statement may live in a caption / table footnote instead of the prose
         else: ok = overlap(p, hay) >= a.min_overlap

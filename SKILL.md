@@ -1,6 +1,6 @@
 ---
 name: topic-to-paper
-description: "Gated topic-to-submission pipeline. One sentence from the user (a topic, a draft path, or 'resume <project>') and Claude runs every script to a submission package: research branch P0–P8 and survey branch S0–S6, each stage closed by a machine-checked gate (preregistration lock, leakage/effective-config audit, number traceability, ablation resolution, figure dpi, manuscript shape, review loop, submission consistency). Single session, no subagents, state in research-state.yaml. Triggers: 用 topic-to-paper, 从选题到论文, 投稿包, 端到端论文, 自动化科研, 帮我做一篇综述, 写一篇综述, write a survey on X, 这是我的稿子帮我过一遍关口, check my draft against the gates, resume/继续 <项目>. Not for a single writing, citation or figure task (nature-writing, nature-citation, nature-figure do those)."
+description: "Gated topic-to-submission pipeline. One sentence from the user (a topic, a draft path, or 'resume <project>') and Claude runs every script to a submission package: research branch P0–P8 and survey branch S0–S6, each stage closed by a machine-checked gate (preregistration lock, leakage/effective-config audit, number traceability, ablation resolution, figure dpi, manuscript shape, review loop, submission consistency). Single session (fresh-context subagents only for the P7/S6 reviewers), state in research-state.yaml. Triggers: 用 topic-to-paper, 从选题到论文, 投稿包, 端到端论文, 自动化科研, 帮我做一篇综述, 写一篇综述, write a survey on X, 这是我的稿子帮我过一遍关口, check my draft against the gates, resume/继续 <项目>. Not for a single writing, citation or figure task (nature-writing, nature-citation, nature-figure do those)."
 version: 2.12.0
 author: Wei Zhang (KI) + Claude
 license: MIT
@@ -27,10 +27,10 @@ license: MIT
 
 ## 三条纪律（两条分支共用）
 
-1. **单会话、不开子代理。** 每阶段末更新 `research-state.yaml`；上下文满了告诉用户"说 resume 继续"。
+1. **单会话；只有 P7/S6 审稿与复审用新上下文子代理（每席一个，只给 PDF 与审稿表）。** 每阶段末更新 `research-state.yaml`；上下文满了告诉用户"说 resume 继续"。
 2. **每个数字有出处。** 研究稿的数字回溯到 `results/` 文件；综述的数字回溯到编码表的行。写作时登记到 `paper/numbers.csv`，不登记过不了关口。
 3. **先注册再动手。** 研究稿锁 `prereg.md`；综述锁 `protocol.md`（检索式、纳入/排除规则、编码表字段、主张清单）。事后改口径必须在 state 的 `convention_changes` 留记录。
-4. **外部 skill 缺则自己做。** 路由到的任何外部 skill 不在本机时，按 [references/routing.md](references/routing.md) 开头的替代做法在本会话内做同样的事，产物格式不变，不为此停下来问用户（`t2p.py doctor --skills` 可查哪些在）。关口只依赖 `scripts/`。
+4. **外部 skill 缺则自己做。** 路由到的外部 skill 不在本机时，按 [references/routing.md](references/routing.md) 开头的替代做法在本会话内做，产物格式不变，不停下来问用户（`t2p.py doctor --skills` 可查）。关口只依赖 `scripts/`。
 
 ## 工作区（两条分支共用骨架）
 
@@ -52,7 +52,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 
 # 研究分支 P0–P8
 
-每站四件事：做什么 → 产物 → 命令 → 出口关口。**进入某站之前先读 `references/phases/P<n>.md`（该站全部细则），照做，不凭记忆补细节。** 关口的判据与为什么在 [references/gates.md](references/gates.md)。下表是索引，不是全文。
+每站四件事：做什么 → 产物 → 命令 → 出口关口。**进入某站之前先读 `references/phases/P<n>.md`（该站全部细则），照做，不凭记忆补细节。** 关口的判据与为什么在 [references/gates.md](references/gates.md)。
 
 | 站 | 做什么 | 产物 | 命令（Claude 跑） | 出口关口 |
 |---|---|---|---|---|
@@ -62,8 +62,8 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 | **P3 搭建** [细则](references/phases/P3.md) | 填 state.audits（泄漏开关、关键超参证据列、必需输入、烟测）；**仪器校准**见细则（G3b）；实验在服务器跑时填 state.bundle 出实验包 | runs/ 结构；bundle/ | `audit_check.py --smoke`；`bundle.py check\|make\|tables` | G3 = `audit_check.py` 全绿（runs 空时 `bundle.py check` 顶上）；G3b = `instrument_check.py`（已知答案 + 破坏对照） |
 | **P4 实验** [细则](references/phases/P4.md) | 每 run 写 run_card；反常先记 findings.md 再动配置（分诊 [anomaly-triage](references/anomaly-triage.md)）；对本文方法切失败片 | results/main.csv、ablation.csv、runs/*/eval.json、findings.md、results/failure_slices.md | `failure_slice.py`；`results_check.py`；`ablation_plan.py resolve` | G4 = 两脚本全绿 |
 | **P5 图** [细则](references/phases/P5.md) | 数据图、定性网格、方法总览图由脚本生成；**全部 PDF，组合图每面板一个 PDF**；每张裁图目测后 inspected=yes；**按印刷宽度画**（印刷字号 ≥ 5 pt） | figures/*.pdf+ .source.csv；figures.csv | `make_figure.py`；`make_comparison.py grid`；`make_motivation.py`；`make_architecture.py`；`figure_plan.py`（范文→计划） | G5 = `gate_check.py dpi` + `figure_plan.py check` |
-| **P6 写作** [细则](references/phases/P6.md) | 按 family 取骨架 → 填 claims.csv → 生成必写清单 → 写 → 表格由脚本生成并登记数字；LaTeX 稿写 paper/latex/main.tex，`tex_to_md.py` 派生 manuscript.md 再过关口 | paper/manuscript.md、claims.csv、numbers.csv、draft_plan.md | `draft_plan.py plan\|check`；`make_comparison.py sota\|multi\|ablation\|seeds --numbers`；`make_algorithm.py skeleton\|check`；`gate_check.py all`；`shape_check.py`；`readability_check.py` | G6 = `gate_check.py all`；G6b = `draft_plan.py check`；G6c = `shape_check.py`；G6d = `latex_check.py check`（LaTeX 稿）；G6e = `claims_check.py`（主张 ↔ 结果文件）；G6f = `readability_check.py`（数字密度、贡献条目、流程簿记词，对照已发表论文） |
-| **P7 审稿** [细则](references/phases/P7.md) | 五席审稿在本会话内做；每条先回结果文件复核再写 review_log.md；修完 `## Re-review` 逐条关闭 major，G6 重跑 | paper/review_log.md；state.review.round + 1 | `review_check.py` | G7 = `review_check.py` 全绿 |
+| **P6 写作** [细则](references/phases/P6.md) | 按 family 取骨架 → 填 claims.csv → 生成必写清单 → 写 → 表格由脚本生成并登记数字；LaTeX 稿写 paper/latex/main.tex，`tex_to_md.py` 派生 manuscript.md 再过关口 | paper/manuscript.md、claims.csv、numbers.csv、draft_plan.md | `draft_plan.py plan\|check`；`make_comparison.py sota\|multi\|ablation\|seeds --numbers`；`make_algorithm.py skeleton\|check`；`gate_check.py all`；`shape_check.py`；`readability_check.py` | G6 = `gate_check.py all`；G6b = `draft_plan.py check`；G6c = `shape_check.py`；G6d = `latex_check.py check`（LaTeX 稿）；G6e = `claims_check.py`（主张 ↔ 结果文件）；G6f = `readability_check.py`（对照已发表论文）；G6g = `argument_check.py`（paper/argument.md 先写，一句主张贯穿全文） |
+| **P7 审稿** [细则](references/phases/P7.md) | 独立审稿：`review_packet.py make` → 每席一个子代理 → 复审由同一席位在改后版本上关 major；G6 重跑 | paper/review_packet/；paper/review_log.md；state.review.round + 1 | `review_packet.py make\|rereview`；`review_check.py` | G7 = `review_check.py` 全绿（独立节、packet 登记、独立复审） |
 | **P8 投稿包** [细则](references/phases/P8.md) | 标题页、cover letter、highlights、盲稿、数据声明 | submission/* | `gate_check.py submission` | G8 |
 
 
@@ -71,7 +71,7 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 
 # 综述分支 S0–S6
 
-来自两篇 Information Fusion 综述的真实流程（InfoFusion_review 纵向稿、InfoFusion_multimodal 融合增益稿）。综述的"实验"是文献本身，所以关口查的是**检索可复现、筛选可追溯、每个主张能回到编码表的一行**。
+来自两篇 Information Fusion 综述的真实流程。综述的"实验"是文献本身，所以关口查的是**检索可复现、筛选可追溯、每个主张能回到编码表的一行**。
 
 每站同研究分支：**进入某站之前先读 `references/phases/S<n>.md`**，照做。
 
@@ -95,4 +95,4 @@ Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir>
 综述分支：`survey_check.py`（scope…writing）、`survey_tables.py`、`survey_figure.py` + `gate_check.py`。
 输入转换：`tex_to_md.py`（LaTeX）、`pdf_to_md.py`（已发表 PDF）、`jats_to_md.py`（Europe PMC XML）。
 校准：`calibrate.py` `venue_norms.py`（在已发表语料上重算关口阈值与刊物规范）。
-模板在 `templates/`（研究：prereg.md run-card.md；综述：protocol.md codebook.md）。改任何脚本后先跑 `python -m pytest tests -q`（tests/README.md），全绿才算改完。每站细则在 `references/phases/P0.md`–`P8.md` 与 `S0.md`–`S6.md`（进站前读）。验证记录在 `references/validation-*.md`，失败模式总表 [references/lessons.md](references/lessons.md)，路由 [references/routing.md](references/routing.md)。
+模板在 `templates/`（研究：prereg.md run-card.md；综述：protocol.md codebook.md）。改任何脚本后先跑 `python -m pytest tests -q`（tests/README.md），全绿才算改完。验证记录在 `references/validation-*.md`，失败模式总表 [references/lessons.md](references/lessons.md)，路由 [references/routing.md](references/routing.md)。
