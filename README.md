@@ -65,7 +65,7 @@ Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_ch
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 37 gate/generator scripts, all argparse, all `--help`
+scripts/                 38 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, protocol.md, codebook.md, tables.yaml, prisma2020_checklist.csv, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, figure-norms.md (which figure types each venue / family / topic uses), latex-templates.csv, acronym-norms.csv, validation-*.md

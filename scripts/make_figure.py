@@ -25,6 +25,22 @@
   python make_figure.py hbar     --csv results/drop.csv --value dAP --group dataset [--lower] [--fmt "{:+.2f}"] --out figures/fig_hbar.png
       horizontal bars, value printed at the bar end, negative bars extend left of the zero line (rows of one group are averaged)
 
+  python make_figure.py roc      --csv results/preds.csv --y-true label --score score [--group method] [--ours ours] [--ci bootstrap:200] [--seed 0] --out figures/fig_roc.png
+      one ROC curve per group + chance diagonal, AUC in the legend; --ci = stratified bootstrap 95 % band, AUC [lo, hi] in legend and source CSV
+      (curve points + one summary row per group: auc, ci_lo, ci_hi, n_pos, n_neg); FAIL when a group has one class, WARN when n_pos or n_neg < 10
+  python make_figure.py pr       (same inputs)  precision-recall curves, prevalence line, average precision (step-wise area) in the legend, same --ci
+  python make_figure.py confusion --csv results/pred.csv --true-col y --pred-col p [--labels a,b,c] [--normalize true|none] | --matrix  (square table CSV)
+      heatmap, count + row-normalised % in each cell (n <= 8; counts only up to 12 classes), per-class recall / precision / support rows in the source CSV
+  python make_figure.py calibration --csv results/preds.csv --y-true label --prob prob [--group method] [--bins 10] [--strategy quantile|uniform]
+      reliability diagram (marker area ~ bin count, hollow = fewer than 5 samples) + prediction histogram strip below (shared x); ECE, Brier in legend / source CSV
+  python make_figure.py bland-altman --csv results/agree.csv --a measA --b measB [--group dataset] [--unit HU]
+      mean vs difference, bias line, +-1.96 SD limits with numbers, dash-dot regression line (slope +- 95 % CI in the source CSV) when the slope excludes 0
+
+  Provenance watermark (every subcommand, here and in make_motivation.py): a diagonal light-grey "SYNTHETIC DEMO" is drawn across the axes (it is in the PDF
+  text layer) and figures.csv `issues` gets `synthetic` when the data CSV lies OUTSIDE the project directory, its path contains synthetic / fake / demo, its
+  header (or a leading # comment) names them, or --synthetic is given. A CSV inside the project but outside results/ and runs/ only prints a WARN (source not
+  verified). --no-watermark-check skips the whole check (WARN, issues gets `provenance-unchecked`) for projects that keep their data elsewhere.
+
   --lower m1,m2   metrics where lower is better (unlisted: state.results metric_direction / primary_direction, else the
                   name regex of metric_direction.py, else higher). Only affects which value is called best in
                   the source CSV / caption text; bars and dots are drawn the same either way.
@@ -33,7 +49,7 @@ Reads state.results (main_table, ablation_table, group_key, reference_method, me
 Writes <out>.png (400 dpi at --width-mm), <out>.pdf, <out>.source.csv, and appends/updates a row in figures.csv (path, print width, source).
 Style: serif 7.5 pt, no top/right spines, NMI-pastel blues + one red accent (same family as the validated demo_comparison figure).
 """
-import argparse, csv, io, os, sys, statistics, collections
+import argparse, csv, io, os, re, sys, statistics, collections
 import numpy as np
 import matplotlib
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
@@ -55,6 +71,7 @@ def load(a):
     res = st.get("results") or {}
     main = list(csv.DictReader(open(os.path.join(root, res.get("main_table", "results/main.csv")), encoding="utf-8-sig")))
     ap_ = os.path.join(root, res.get("ablation_table", "results/ablation.csv"))
+    a._data_paths = [os.path.join(root, res.get("main_table", "results/main.csv"))] + ([ap_] if os.path.exists(ap_) else [])
     abl = list(csv.DictReader(open(ap_, encoding="utf-8-sig"))) if os.path.exists(ap_) else []
     gk = res.get("group_key", "method"); ref = res.get("reference_method", "ours")
     skip = {"run_id", gk, "seed", "table", "hardware", "ablation"}
@@ -133,10 +150,52 @@ def audit_layout(fig, clip_tol_px=2.0, overlap_tol_px=1.0):
     if over: issues.append(("WARN", "inset/annotation covers plotted lines: " + ", ".join(over)))
     return issues
 
+_SYN_NAME = re.compile(r"synthetic|fake|demo(?!g|cr)", re.I)                    # in a file name: figdemo.csv, fake_preds.csv (not demographics.csv)
+_SYN_HEAD = re.compile(r"(?<![a-z])(synthetic|fake|demo)(?![a-z])", re.I)       # in a header cell as a word
+
+def provenance(a, root):
+    """decide whether a figure's data counts as synthetic -> (watermark?, issue tag or "", [warning lines]).
+    --synthetic: yes. --no-watermark-check: no check at all. Otherwise per data CSV: outside the project directory, or synthetic / fake / demo in its
+    path, header or leading # comment: yes; inside the project under results/ or runs/: verified; inside the project elsewhere: WARN only."""
+    if getattr(a, "synthetic", False): return True, "synthetic", ["--synthetic 已给出，按合成数据加水印"]
+    if getattr(a, "no_watermark_check", False): return False, "provenance-unchecked", ["--no-watermark-check：数据来源未核，水印判断已跳过"]
+    paths = []
+    c = getattr(a, "csv", "")
+    if isinstance(c, str) and c: paths.append(os.path.join(root, c))
+    paths += list(getattr(a, "_data_paths", []) or [])
+    unchecked = []
+    for p in paths:
+        p = os.path.abspath(p)
+        try: rel = os.path.relpath(p, root).replace(os.sep, "/")
+        except ValueError: rel = "../" + os.path.basename(p)                      # another drive = outside the project
+        if rel.startswith(".."): return True, "synthetic", ["数据不在 results/ 或 runs/ 下，按合成数据加水印"]
+        if _SYN_NAME.search(rel): return True, "synthetic", [f"数据文件 {rel} 的路径含 synthetic / fake / demo，按合成数据加水印"]
+        try:
+            with io.open(p, encoding="utf-8-sig", errors="replace") as f: head = [f.readline() for _ in range(3)]
+        except OSError: head = []
+        for k, ln in enumerate(head):
+            if (ln.lstrip().startswith("#") and _SYN_NAME.search(ln)) or (not ln.lstrip().startswith("#") and k < 2 and _SYN_HEAD.search(ln)):
+                return True, "synthetic", [f"数据文件 {rel} 的表头 / 注释含 synthetic / fake / demo，按合成数据加水印"]
+        if rel.split("/")[0].lower() not in ("results", "runs"): unchecked.append(rel)
+    if unchecked: return False, "", [f"数据 {', '.join(unchecked)} 在项目内但不在 results/ 或 runs/ 下，来源未核（不加水印；正式图的数据请放进 results/ 或 runs/，或加 --no-watermark-check）"]
+    return False, "", []
+
+def add_watermark(fig):
+    """diagonal light-grey SYNTHETIC DEMO across the union of the visible axes (real text, so it is in the PDF text layer)"""
+    axs = [ax for ax in fig.axes if ax.get_visible()]
+    if not axs: return
+    x0 = min(ax.get_position().x0 for ax in axs); x1 = max(ax.get_position().x1 for ax in axs); y0 = min(ax.get_position().y0 for ax in axs); y1 = max(ax.get_position().y1 for ax in axs)
+    W, H = fig.get_size_inches() * 72; w_pt, h_pt = (x1 - x0) * W, (y1 - y0) * H; ang = float(np.clip(np.degrees(np.arctan2(h_pt, w_pt)), 15, 40))
+    fs = float(np.clip(0.8 * np.hypot(w_pt, h_pt) / 8.7, 7, 44))              # "SYNTHETIC DEMO" is about 8.7 font sizes wide
+    fig.text((x0 + x1) / 2, (y0 + y1) / 2, "SYNTHETIC DEMO", rotation=ang, rotation_mode="anchor", ha="center", va="center", fontsize=fs, color="#b5b5b5", alpha=0.5, fontweight="bold", zorder=100, gid="synthetic-watermark")
+
 def finish(fig, a, src_rows, src_hdr, root, caption):
     out = os.path.join(root, a.out); os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     issues = audit_layout(fig)
     for sev, msg in issues: print(f"[{sev}] layout: {msg}")
+    mark, ptag, pwarn = provenance(a, root)
+    for w_ in pwarn: print(f"[WARN] figure: {w_}")
+    if mark: add_watermark(fig)
     png = os.path.splitext(out)[0] + ".png"   # raster always .png (--out x.pdf used to crash PIL below)
     fig.savefig(png, dpi=400, bbox_inches="tight"); fig.savefig(os.path.splitext(out)[0] + ".pdf", bbox_inches="tight")
     if os.path.splitext(out)[1].lower() not in (".png", ".pdf"): fig.savefig(out, dpi=400, bbox_inches="tight")
@@ -155,7 +214,7 @@ def finish(fig, a, src_rows, src_hdr, root, caption):
     new = {h: "" for h in hdr}; new.update({"file": rel, "print_width_mm": str(a.width_mm), "inspected": "no"})
     for k in ("source_data", "source"):
         if k in hdr: new[k] = os.path.relpath(sp, root).replace("\\", "/")
-    if "issues" in hdr: new["issues"] = "auto: " + caption + ("" if not issues else " | layout: " + "; ".join(f"{sv} {m}" for sv, m in issues))
+    if "issues" in hdr: new["issues"] = "auto: " + caption + ("" if not issues else " | layout: " + "; ".join(f"{sv} {m}" for sv, m in issues)) + (f" | {ptag}" if ptag else "")
     rows.append(new)
     with open(fp, "w", newline="", encoding="utf-8") as f: wr = csv.DictWriter(f, fieldnames=hdr); wr.writeheader(); wr.writerows(rows)
     print(f"{rel}: {w}px -> {dpi:.0f} dpi @ {a.width_mm} mm; source {os.path.basename(sp)}; grayscale {os.path.basename(os.path.splitext(out)[0])}_gray.png; layout audit {'clean' if not issues else str(len(issues)) + ' issue(s)'}; figures.csv updated (inspected=no → 裁图目测后改 yes)")
@@ -291,7 +350,7 @@ def ema(values, alpha):
 def _csv_rows(root, rel, need):
     path = os.path.join(root, rel)
     if not os.path.exists(path): print(f"[FAIL] {rel} does not exist"); sys.exit(1)
-    rows = list(csv.DictReader(open(path, encoding="utf-8-sig")))
+    rows = list(csv.DictReader(l_ for l_ in open(path, encoding="utf-8-sig") if not l_.startswith("#")))      # leading "# ..." provenance comments are not data
     if not rows: print(f"[FAIL] {rel} is empty"); sys.exit(1)
     for c in need:
         if c and c not in rows[0]: print(f"[FAIL] column {c} not in {rel}: {list(rows[0])}"); sys.exit(1)
@@ -561,6 +620,302 @@ def fig_hbar(a):
     finish(fig, a, src, [a.group, a.value, "n", "best"], root, f"{labels.get(a.value, a.value)} per {a.group}" + (" (mean over rows per group)" if max(ns) > 1 else "") + "; bars left of the zero line are negative.")
 
 
+# ------------------------------------------------------------------ classification / agreement panels (roc, pr, confusion, calibration, bland-altman)
+def _to01(v):
+    s = str(v).strip().lower()
+    if s in ("1", "1.0", "true", "yes", "pos", "positive"): return 1
+    if s in ("0", "0.0", "false", "no", "neg", "negative"): return 0
+    raise ValueError(v)
+
+def _ci_spec(a):
+    """'--ci bootstrap:200' -> 200 resamples (0 = no interval)"""
+    s = getattr(a, "ci", "") or ""
+    if not s: return 0
+    kind, _, n = s.partition(":")
+    try: b = int(n)
+    except ValueError: b = 0
+    if kind != "bootstrap" or b < 20: print(f"[FAIL] --ci wants bootstrap:N with N >= 20, got {s!r}"); sys.exit(1)
+    return b
+
+def _binary_groups(root, a, ycol, scol, gcol, tag):
+    """long CSV -> OrderedDict group -> (y in {0,1}, score); rows whose score is not a finite number are dropped and counted"""
+    rows = _csv_rows(root, a.csv, [ycol, scol, gcol]); groups = collections.OrderedDict(); bad = 0
+    for r in rows:
+        try: y = _to01(r[ycol])
+        except ValueError: print(f"[FAIL] {tag}: label {r[ycol]!r} in column {ycol} is not binary (0/1, true/false)"); sys.exit(1)
+        try: s = float(r[scol])
+        except ValueError: bad += 1; continue
+        if not np.isfinite(s): bad += 1; continue
+        ys, ss = groups.setdefault(r[gcol] if gcol else "", ([], [])); ys.append(y); ss.append(s)
+    if bad: print(f"[WARN] {tag}: {bad} row(s) with a non-numeric / non-finite {scol} dropped")
+    if not groups: print(f"[FAIL] {tag}: no usable rows in {a.csv}"); sys.exit(1)
+    out = collections.OrderedDict()
+    for g, (ys, ss) in groups.items():
+        y = np.array(ys, int); s = np.array(ss, float); npos = int(y.sum()); nneg = int(len(y) - npos); name = g or "all"
+        if npos == 0 or nneg == 0: print(f"[FAIL] {tag}: group {name!r} has only one class (n_pos={npos}, n_neg={nneg}); the curve is undefined"); sys.exit(1)
+        if npos < 10 or nneg < 10: print(f"[WARN] {tag}: group {name!r} n_pos={npos}, n_neg={nneg} (< 10): {'AUC' if tag == 'roc' else 'AP'} unstable")
+        out[g] = (y, s)
+    return out
+
+def _trapz(x, y): return float(np.sum(np.diff(x) * (y[1:] + y[:-1]) / 2.0))
+
+def roc_points(y, s):
+    """(fpr, tpr) at every distinct score threshold, starting at (0, 0); tied scores share one point, so the area equals the Mann-Whitney AUC"""
+    o = np.argsort(-s, kind="mergesort"); y = y[o]; s = s[o]
+    tps = np.cumsum(y); fps = np.cumsum(1 - y); idx = np.r_[np.where(np.diff(s))[0], len(s) - 1]
+    return np.r_[0.0, fps[idx] / fps[-1]], np.r_[0.0, tps[idx] / tps[-1]]
+
+def auc_score(y, s):
+    f, t = roc_points(y, s); return _trapz(f, t)
+
+def pr_points(y, s):
+    """(recall, precision) at every distinct score threshold, recall ascending"""
+    o = np.argsort(-s, kind="mergesort"); y = y[o]; s = s[o]
+    tps = np.cumsum(y); fps = np.cumsum(1 - y); idx = np.r_[np.where(np.diff(s))[0], len(s) - 1]
+    return tps[idx] / tps[-1], tps[idx] / (tps[idx] + fps[idx])
+
+def average_precision(y, s):
+    """step-wise area under the PR curve: sum (R_n - R_n-1) * P_n (the scikit-learn definition)"""
+    r, p = pr_points(y, s); return float(np.sum(np.diff(np.r_[0.0, r]) * p))
+
+def _interp_precision(r, p, grid):
+    pm = np.maximum.accumulate(p[::-1])[::-1]; idx = np.searchsorted(r, grid, side="left")
+    return np.where(idx < len(r), pm[np.minimum(idx, len(r) - 1)], 0.0)
+
+def _bootstrap(y, s, kind, B, rng, grid):
+    """stratified bootstrap (positives and negatives resampled separately): -> (metric samples, curve samples on `grid`)"""
+    pos = np.where(y == 1)[0]; neg = np.where(y == 0)[0]; m = np.empty(B); cur = np.empty((B, len(grid)))
+    for b in range(B):
+        ix = np.r_[rng.choice(pos, len(pos)), rng.choice(neg, len(neg))]; yb, sb = y[ix], s[ix]
+        if kind == "roc":
+            f, t = roc_points(yb, sb); m[b] = _trapz(f, t); cur[b] = np.interp(grid, f, t)
+        else:
+            r, p = pr_points(yb, sb); m[b] = float(np.sum(np.diff(np.r_[0.0, r]) * p)); cur[b] = _interp_precision(r, p, grid)
+    return m, cur
+
+def _fig_binary(a, kind):
+    """roc / pr: one curve per group, chance / prevalence reference, area in the legend (+ stratified bootstrap 95 % band with --ci)"""
+    root = os.path.abspath(a.project); tag = kind; B = _ci_spec(a)
+    groups = _binary_groups(root, a, a.y_true, a.score, a.group, tag)
+    if a.ours and a.ours not in groups: print(f"[FAIL] {tag}: --ours {a.ours!r} not in groups {list(groups)}"); sys.exit(1)
+    rng = np.random.default_rng(a.seed); grid = np.linspace(0, 1, 101); metric = "auc" if kind == "roc" else "ap"; MET = metric.upper()
+    fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); fig.subplots_adjust(left=0.15, right=0.97, bottom=0.14, top=0.97)
+    names = [g for g in groups if not a.ours or g != a.ours] + ([a.ours] if a.ours else []); src = []; summ = []; prevs = []
+    if len(names) > len(CAT): print(f"[WARN] {tag}: {len(names)} groups, colours repeat after {len(CAT)}")
+    for i, g in enumerate(names):
+        y, s = groups[g]; npos = int(y.sum()); nneg = int(len(y) - npos); is_ours = bool(a.ours) and g == a.ours; col = ACCENT if is_ours else CAT[i % len(CAT)]; ls = "-" if is_ours else ["-", "--", "-.", ":"][i % 4]
+        if kind == "roc": xs, ys_ = roc_points(y, s); val = _trapz(xs, ys_)
+        else: xs, ys_ = pr_points(y, s); val = float(np.sum(np.diff(np.r_[0.0, xs]) * ys_)); xs = np.r_[0.0, xs]; ys_ = np.r_[ys_[0], ys_]; prevs.append(npos / len(y))
+        lo = hi = None; label = f"{g or 'all'}  {MET} {val:.3f}"
+        if B:
+            m, cur = _bootstrap(y, s, kind, B, rng, grid); lo, hi = (float(v) for v in np.percentile(m, [2.5, 97.5]))
+            blo, bhi = np.percentile(cur, [2.5, 97.5], axis=0); label += f" [{lo:.3f}, {hi:.3f}]"
+            ax.fill_between(grid, blo, bhi, color=col, alpha=0.15, lw=0, zorder=2)
+            for gx, l_, h_ in zip(grid, blo, bhi): src.append([g or "all", "band", gx, "", l_, h_, "", "", "", "", ""])
+        if kind == "roc": ax.plot(xs, ys_, color=col, ls=ls, lw=1.2 if is_ours else 0.9, label=label, zorder=4 if is_ours else 3)
+        else: ax.step(xs, ys_, where="pre", color=col, ls=ls, lw=1.2 if is_ours else 0.9, label=label, zorder=4 if is_ours else 3)
+        for x_, y_ in zip(xs, ys_): src.append([g or "all", "curve", x_, y_, "", "", "", "", "", "", ""])
+        src.append([g or "all", "summary", "", "", "", "", val, "" if lo is None else lo, "" if hi is None else hi, npos, nneg]); summ.append((g or "all", val, lo, hi, npos, nneg))
+        print(f"{kind}: {g or 'all'}: {MET} {val:.4f}" + ("" if lo is None else f" [95% CI {lo:.4f}, {hi:.4f}; bootstrap {B}, seed {a.seed}]") + f" (n_pos={npos}, n_neg={nneg})")
+    if kind == "roc":
+        ax.plot([0, 1], [0, 1], ls=":", lw=0.7, color="#8a8a8a", zorder=1, label="chance"); ax.set_xlabel(a.xlabel or "False positive rate"); ax.set_ylabel(a.ylabel or "True positive rate"); loc = "lower right"
+        ax.set_aspect("equal", adjustable="box")
+    else:
+        pv_ = sorted({round(p_, 6) for p_ in prevs})
+        for k, pv in enumerate(pv_): ax.axhline(pv, ls=":", lw=0.7, color="#8a8a8a", zorder=1, label=(f"prevalence {pv:.2f}" if len(pv_) == 1 else f"prevalence {pv_[0]:.2f}–{pv_[-1]:.2f}") if k == 0 else None)
+        ax.set_xlabel(a.xlabel or "Recall"); ax.set_ylabel(a.ylabel or "Precision"); loc = "lower left"
+    ax.set_xlim(-0.01, 1.01); ax.set_ylim(-0.01, 1.01); ax.grid(lw=0.4, color="#ececec", zorder=0); ax.legend(fontsize=5.8, loc=loc, handlelength=1.6, labelspacing=0.3)
+    cap = (f"{'ROC' if kind == 'roc' else 'Precision–recall'} curves; {MET} in the legend" + (f" with a stratified bootstrap 95 % interval ({B} resamples, seed {a.seed}), band = pointwise 95 % interval" if B else "") + "; "
+           + "; ".join(f"{g}: n_pos={p_}, n_neg={n_}" for g, _, _, _, p_, n_ in summ) + ".")
+    xn, yn = ("fpr", "tpr") if kind == "roc" else ("recall", "precision")
+    finish(fig, a, src, ["group", "kind", xn, yn, f"{yn}_lo", f"{yn}_hi", metric, "ci_lo", "ci_hi", "n_pos", "n_neg"], root, cap)
+
+def fig_roc(a): _fig_binary(a, "roc")
+def fig_pr(a): _fig_binary(a, "pr")
+
+
+def _read_confusion(root, a):
+    """-> (labels, integer-valued count matrix, rows = true class, columns = predicted class)"""
+    cls = [t.strip() for t in a.labels.split(",") if t.strip()] if a.labels else []
+    if a.matrix:
+        path = os.path.join(root, a.csv)
+        if not os.path.exists(path): print(f"[FAIL] {a.csv} does not exist"); sys.exit(1)
+        grid = [r for r in csv.reader(open(path, encoding="utf-8-sig")) if any(c.strip() for c in r)]
+        if not grid: print(f"[FAIL] {a.csv} is empty"); sys.exit(1)
+        lab_row = not all(_isnum(c) for c in grid[0][1:]) if len(grid[0]) > 1 else False
+        if lab_row: names = [c.strip() for c in grid[0][1:]]; body = [r[1:] for r in grid[1:]]
+        else: body = grid; names = []
+        try: M = np.array([[float(c) for c in r] for r in body])
+        except ValueError: print(f"[FAIL] confusion: {a.csv} holds non-numeric cells in the matrix body"); sys.exit(1)
+        if M.ndim != 2 or M.shape[0] != M.shape[1]: print(f"[FAIL] confusion: matrix is {M.shape}, a square class x class table is required"); sys.exit(1)
+        if (M < 0).any() or not np.isfinite(M).all(): print("[FAIL] confusion: counts must be finite and >= 0"); sys.exit(1)
+        n = M.shape[0]; labels = cls or names or [str(i) for i in range(n)]
+        if len(labels) != n: print(f"[FAIL] confusion: {len(labels)} labels for a {n} x {n} matrix"); sys.exit(1)
+        return labels, M
+    if not (a.true_col and a.pred_col): print("[FAIL] confusion: give --true-col and --pred-col (or --matrix for a precomputed table)"); sys.exit(1)
+    rows = _csv_rows(root, a.csv, [a.true_col, a.pred_col]); seen = set(); pairs = []
+    for r in rows:
+        t_, p_ = r[a.true_col].strip(), r[a.pred_col].strip()
+        if t_ == "" or p_ == "": continue
+        pairs.append((t_, p_)); seen.update((t_, p_))
+    if not pairs: print(f"[FAIL] confusion: no complete (true, pred) rows in {a.csv}"); sys.exit(1)
+    if cls:
+        extra = sorted(seen - set(cls))
+        if extra: print(f"[FAIL] confusion: values {extra} in the data are not in --labels {cls}"); sys.exit(1)
+        labels = cls
+    else: labels = sorted(seen, key=(lambda v: float(v)) if all(_isnum(v) for v in seen) else str)
+    ix = {l_: i for i, l_ in enumerate(labels)}; M = np.zeros((len(labels), len(labels)))
+    for t_, p_ in pairs: M[ix[t_], ix[p_]] += 1
+    return labels, M
+
+def fig_confusion(a):
+    """confusion matrix heatmap: count + row-normalised percentage in each cell, per-class recall / precision in the source CSV"""
+    root = os.path.abspath(a.project); labels, M = _read_confusion(root, a); n = len(labels); total = float(M.sum())
+    if total <= 0: print("[FAIL] confusion: the matrix is empty"); sys.exit(1)
+    rs = M.sum(1); cs = M.sum(0); tp = np.diag(M)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        R = np.where(rs[:, None] > 0, M / rs[:, None], np.nan); rec = np.where(rs > 0, tp / rs, np.nan); prec = np.where(cs > 0, tp / cs, np.nan)
+    norm = a.normalize == "true"; Z = np.nan_to_num(R, nan=0.0) if norm else M
+    fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in))
+    im = ax.pcolormesh(np.arange(n + 1) - 0.5, np.arange(n + 1) - 0.5, Z, cmap="Blues", vmin=0, vmax=1.0 if norm else max(1.0, M.max()), edgecolors="white", linewidth=0.6)   # a mesh, not imshow: stays vector
+    ax.set_xlim(-0.5, n - 0.5); ax.set_ylim(n - 0.5, -0.5); ax.set_aspect("equal")
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03); cb.solids.set_rasterized(False); cb.ax.tick_params(labelsize=6, length=2); cb.set_label("Row-normalised share" if norm else "Count", fontsize=6.3)
+    ax.set_xticks(range(n)); ax.set_yticks(range(n)); ax.set_xticklabels(labels, fontsize=6.3, rotation=45 if n > 6 or max(len(l_) for l_ in labels) > 6 else 0, ha="right" if (n > 6 or max(len(l_) for l_ in labels) > 6) else "center")
+    ax.set_yticklabels(labels, fontsize=6.3); ax.set_xlabel(a.xlabel or "Predicted"); ax.set_ylabel(a.ylabel or "True"); ax.tick_params(length=0)
+    for sp_ in ax.spines.values(): sp_.set_visible(False)
+    if n > 12: print(f"[WARN] confusion: {n} classes, cell text would fall below 5 pt and is left out; counts and shares are in the source CSV")
+    else:
+        fs = 6.3 if n <= 5 else (5.5 if n <= 8 else 5.0)
+        for i in range(n):
+            for j in range(n):
+                frac = Z[i, j] / (1.0 if norm else max(1.0, M.max())); colr = "white" if frac > 0.55 else "#222"
+                share = "–" if np.isnan(R[i, j]) else f"{100 * R[i, j]:.1f}%"
+                ax.text(j, i, f"{int(round(M[i, j]))}" + (f"\n{share}" if n <= 8 else ""), ha="center", va="center", fontsize=fs, color=colr)
+    src = []
+    for i in range(n):
+        for j in range(n): src.append(["cell", labels[i], labels[j], int(round(M[i, j])), "" if np.isnan(R[i, j]) else 100 * R[i, j], "", "", ""])
+    for i in range(n): src.append(["class", labels[i], "", int(round(tp[i])), "", "" if np.isnan(rec[i]) else rec[i], "" if np.isnan(prec[i]) else prec[i], int(round(rs[i]))])
+    acc = float(tp.sum() / total); src.append(["accuracy", "", "", int(round(tp.sum())), "", acc, "", int(round(total))])
+    weak = [labels[i] for i in range(n) if rs[i] > 0 and rec[i] < 0.5]
+    print(f"confusion: n={int(round(total))}, accuracy {acc:.4f}; recall " + ", ".join(f"{l_} {('n/a' if np.isnan(r_) else format(r_, '.3f'))}" for l_, r_ in zip(labels, rec)))
+    if weak: print(f"[WARN] confusion: recall below 0.5 for {weak}")
+    finish(fig, a, src, ["kind", "true", "pred", "count", "row_pct", "recall", "precision", "support"], root,
+           f"Confusion matrix (rows = true class, columns = predicted); each cell: count and row-normalised percentage; n = {int(round(total))}, accuracy {acc:.3f}.")
+
+
+def calib_bins(p, y, bins, strategy):
+    """-> list of (lo, hi, n, mean confidence, observed frequency), empty bins omitted"""
+    if strategy == "quantile": edges = np.unique(np.quantile(p, np.linspace(0, 1, bins + 1)))
+    else: edges = np.linspace(0, 1, bins + 1)
+    if len(edges) < 2: edges = np.array([p.min(), p.max() + 1e-12])
+    idx = np.clip(np.searchsorted(edges, p, side="right") - 1, 0, len(edges) - 2); out = []
+    for b in range(len(edges) - 1):
+        m = idx == b
+        if m.any(): out.append((float(edges[b]), float(edges[b + 1]), int(m.sum()), float(p[m].mean()), float(y[m].mean())))
+    return out
+
+def ece_score(p, y, bins, strategy):
+    bs = calib_bins(p, y, bins, strategy); return float(sum(n / len(p) * abs(acc - conf) for _, _, n, conf, acc in bs))
+
+def fig_calibration(a):
+    """reliability diagram + prediction histogram strip (two axes sharing x); ECE and Brier per group"""
+    root = os.path.abspath(a.project)
+    if a.bins < 2: print("[FAIL] calibration: --bins must be >= 2"); sys.exit(1)
+    rows = _csv_rows(root, a.csv, [a.y_true, a.prob, a.group]); groups = collections.OrderedDict(); bad = 0
+    for r in rows:
+        try: y = _to01(r[a.y_true])
+        except ValueError: print(f"[FAIL] calibration: label {r[a.y_true]!r} is not binary (0/1, true/false)"); sys.exit(1)
+        try: p = float(r[a.prob])
+        except ValueError: bad += 1; continue
+        if not np.isfinite(p): bad += 1; continue
+        if not 0.0 <= p <= 1.0: print(f"[FAIL] calibration: probability {p} outside [0, 1] in column {a.prob} (give probabilities, not logits)"); sys.exit(1)
+        ys, ps = groups.setdefault(r[a.group] if a.group else "", ([], [])); ys.append(y); ps.append(p)
+    if bad: print(f"[WARN] calibration: {bad} row(s) with a non-numeric {a.prob} dropped")
+    if not groups: print(f"[FAIL] calibration: no usable rows in {a.csv}"); sys.exit(1)
+    names = list(groups)
+    if a.ours and a.ours not in groups: print(f"[FAIL] calibration: --ours {a.ours!r} not in groups {names}"); sys.exit(1)
+    names = [g for g in names if not a.ours or g != a.ours] + ([a.ours] if a.ours else [])
+    from matplotlib.lines import Line2D
+    fig, (ax, ax2) = plt.subplots(2, 1, sharex=True, figsize=(a.width_mm / 25.4, a.height_in), gridspec_kw=dict(height_ratios=[3.4, 1]))
+    fig.subplots_adjust(left=0.15, right=0.97, bottom=0.12, top=0.97, hspace=0.07)
+    ax.plot([0, 1], [0, 1], ls=":", lw=0.7, color="#8a8a8a", zorder=1); nmax = max(len(groups[g][0]) for g in names); src = []; hollow = False; hb = np.linspace(0, 1, 21)
+    allbins = max(max(b[2] for b in calib_bins(np.array(groups[g][1]), np.array(groups[g][0]), a.bins, a.strategy)) for g in names)
+    for i, g in enumerate(names):
+        y = np.array(groups[g][0], float); p = np.array(groups[g][1], float); col = ACCENT if (a.ours and g == a.ours) else CAT[i % len(CAT)]
+        bs = calib_bins(p, y, a.bins, a.strategy); ece = ece_score(p, y, a.bins, a.strategy); brier = float(np.mean((p - y) ** 2))
+        if a.strategy == "quantile" and len(bs) < a.bins: print(f"[WARN] calibration: group {g or 'all'!r}: {a.bins - len(bs)} quantile bin(s) merged because of tied probabilities")
+        if len(p) < 50: print(f"[WARN] calibration: group {g or 'all'!r} has only {len(p)} samples; the reliability diagram is mostly noise")
+        cx = [b[3] for b in bs]; cy = [b[4] for b in bs]; ax.plot(cx, cy, color=col, lw=0.7, alpha=0.7, zorder=2)
+        for lo, hi, n, conf, acc in bs:
+            sz = 6 + 50 * n / allbins; small = n < 5; hollow |= small
+            ax.scatter([conf], [acc], s=sz, facecolors="white" if small else col, edgecolors=col, linewidths=0.8, zorder=4)
+            src.append([g or "all", "bin", f"{lo:.6g}", f"{hi:.6g}", n, conf, acc, "", "", ""])
+        ax.plot([], [], color=col, marker="o", ms=3.5, lw=0.7, label=f"{g or 'all'}  ECE {ece:.3f}, Brier {brier:.3f}")
+        ax2.hist(p, bins=hb, histtype="step", color=col, lw=0.9); src.append([g or "all", "summary", "", "", "", "", "", ece, brier, len(p)])
+        print(f"calibration: {g or 'all'}: ECE {ece:.4f} ({a.bins} {a.strategy} bins), Brier {brier:.4f}, n={len(p)}")
+    hs, ls = ax.get_legend_handles_labels()
+    if hollow: hs.append(Line2D([], [], marker="o", ls="", mfc="white", mec="#555", ms=3.5)); ls.append("bin with n < 5")
+    ax.legend(hs, ls, fontsize=5.8, loc="upper left", handlelength=1.4, labelspacing=0.3)
+    ax.set_xlim(-0.01, 1.01); ax.set_ylim(-0.01, 1.01); ax.set_ylabel(a.ylabel or "Observed frequency"); ax.grid(lw=0.4, color="#ececec", zorder=0); ax.tick_params(labelbottom=False)
+    ax2.set_xlabel(a.xlabel or "Predicted probability"); ax2.set_ylabel("Count", fontsize=6.3); ax2.yaxis.set_major_locator(plt.MaxNLocator(2)); ax2.grid(axis="y", lw=0.4, color="#ececec", zorder=0)
+    finish(fig, a, src, ["group", "kind", "bin_lo", "bin_hi", "n", "mean_conf", "obs_freq", "ece", "brier", "n_total"], root,
+           f"Reliability diagram ({a.bins} {a.strategy} bins; marker area ∝ bin count, hollow = fewer than 5 samples); ECE and Brier score in the legend; lower strip = histogram of predicted probabilities (n = {nmax} in the largest group).")
+
+
+def t_crit(df, conf=0.95):
+    """two-sided Student t quantile, Cornish–Fisher expansion about the normal quantile (error < 0.5 % from df = 5)"""
+    from statistics import NormalDist
+    z = NormalDist().inv_cdf(0.5 + conf / 2); d = float(df)
+    return z + (z ** 3 + z) / (4 * d) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * d ** 2) + (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / (384 * d ** 3)
+
+def ba_stats(A, B_):
+    """-> dict: n, bias, sd (ddof = 1), limits of agreement, proportional-bias regression of the difference on the mean"""
+    m = (A + B_) / 2.0; d = A - B_; n = len(d); bias = float(d.mean()); sd = float(d.std(ddof=1)) if n > 1 else float("nan")
+    out = dict(n=n, bias=bias, sd=sd, lo=bias - 1.96 * sd, hi=bias + 1.96 * sd, slope=float("nan"), s_lo=float("nan"), s_hi=float("nan"), icpt=float("nan"), prop=False)
+    sxx = float(((m - m.mean()) ** 2).sum())
+    if n >= 4 and sxx > 0:
+        slope = float(((m - m.mean()) * (d - d.mean())).sum() / sxx); icpt = float(d.mean() - slope * m.mean())
+        rss = float(((d - icpt - slope * m) ** 2).sum()); se = float(np.sqrt(rss / (n - 2) / sxx)); tc = t_crit(n - 2)
+        out.update(slope=slope, icpt=icpt, s_lo=slope - tc * se, s_hi=slope + tc * se, prop=bool(slope - tc * se > 0 or slope + tc * se < 0))
+    return out
+
+def fig_bland_altman(a):
+    """mean vs difference with bias and +-1.96 SD limits; regression line of the difference on the mean when its slope is significant"""
+    root = os.path.abspath(a.project); rows = _csv_rows(root, a.csv, [a.a, a.b, a.group]); pts = collections.OrderedDict(); bad = 0
+    for r in rows:
+        try: x, y = float(r[a.a]), float(r[a.b])
+        except ValueError: bad += 1; continue
+        if not (np.isfinite(x) and np.isfinite(y)): bad += 1; continue
+        pts.setdefault(r[a.group] if a.group else "", []).append((x, y))
+    if bad: print(f"[WARN] bland-altman: {bad} row(s) with a non-numeric measurement dropped")
+    A = np.array([p[0] for g in pts.values() for p in g]); Bv = np.array([p[1] for g in pts.values() for p in g])
+    if len(A) < 3: print(f"[FAIL] bland-altman: {len(A)} paired measurement(s); at least 3 are needed for limits of agreement"); sys.exit(1)
+    if len(A) < 30: print(f"[WARN] bland-altman: n={len(A)} < 30; the limits of agreement are imprecise (their own 95 % CI is wide)")
+    st = ba_stats(A, Bv); unit = f" ({a.unit})" if a.unit else ""; u = f" {a.unit}" if a.unit else ""
+    fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); fig.subplots_adjust(left=0.15, right=0.97, bottom=0.15, top=0.97)
+    names = list(pts)
+    if len(names) > len(CAT): print(f"[WARN] bland-altman: {len(names)} groups, colours repeat after {len(CAT)}")
+    src = []
+    for i, g in enumerate(names):
+        xy = np.array(pts[g]); mm = xy.mean(1); dd = xy[:, 0] - xy[:, 1]
+        ax.scatter(mm, dd, s=7, color=CAT[i % len(CAT)] if a.group else PALETTE[4], alpha=0.75, linewidths=0, zorder=3, label=(g if a.group else None))
+        for m_, d_ in zip(mm, dd): src.append([g or "all", "point", m_, d_, "", "", "", "", len(mm), "", "", "", ""])
+        if a.group:
+            sg = ba_stats(xy[:, 0], xy[:, 1]); src.append([g, "summary", "", "", sg["bias"], sg["sd"], sg["lo"], sg["hi"], sg["n"], sg["slope"], sg["s_lo"], sg["s_hi"], sg["prop"]])
+    src.append(["all", "summary", "", "", st["bias"], st["sd"], st["lo"], st["hi"], st["n"], st["slope"], st["s_lo"], st["s_hi"], st["prop"]])
+    for v, ls_, nm in ((st["bias"], "-", "bias"), (st["hi"], "--", "+1.96 SD"), (st["lo"], "--", "−1.96 SD")):
+        ax.axhline(v, ls=ls_, lw=0.8, color=ACCENT if nm == "bias" else "#555", zorder=2)
+        ax.annotate(f"{nm} {v:+.2f}{u}".replace("-", "−"), (0.985, v), xycoords=ax.get_yaxis_transform(), xytext=(0, 2.2), textcoords="offset points", ha="right", va="bottom", fontsize=5.8, color="#222", zorder=6, bbox=dict(fc="white", ec="none", alpha=0.7, pad=0.3))
+    if st["prop"]:
+        mx = (A + Bv) / 2; xs = np.array([mx.min(), mx.max()], float); ax.plot(xs, st["icpt"] + st["slope"] * xs, ls="-.", lw=0.8, color="#2b4c6f", zorder=4, label=f"slope {st['slope']:+.3f} [{st['s_lo']:+.3f}, {st['s_hi']:+.3f}]".replace("-", "−"))
+        print(f"[WARN] bland-altman: proportional bias, slope of the difference on the mean {st['slope']:+.4f} (95 % CI {st['s_lo']:+.4f} to {st['s_hi']:+.4f}); constant limits of agreement understate the spread at the ends")
+    if a.group or st["prop"]: ax.legend(fontsize=5.8, loc="upper left", handlelength=1.2, labelspacing=0.3, markerscale=1.2)
+    ax.set_xlabel(a.xlabel or f"Mean of {a.a} and {a.b}{unit}"); ax.set_ylabel(a.ylabel or f"{a.a} − {a.b}{unit}"); ax.grid(lw=0.4, color="#ececec", zorder=0)
+    print(f"bland-altman: n={st['n']}, bias {st['bias']:+.4f}{u}, SD {st['sd']:.4f}, limits {st['lo']:+.4f} to {st['hi']:+.4f}" + (f"; slope {st['slope']:+.4f} [{st['s_lo']:+.4f}, {st['s_hi']:+.4f}]" if not np.isnan(st["slope"]) else ""))
+    finish(fig, a, src, ["group", "kind", "mean", "diff", "bias", "sd", "loa_lo", "loa_hi", "n", "slope", "slope_lo", "slope_hi", "proportional_bias"], root,
+           f"Bland–Altman plot of {a.a} vs. {a.b}: bias {st['bias']:+.2f}{u} (solid), limits of agreement bias ± 1.96 SD = {st['lo']:+.2f} to {st['hi']:+.2f}{u} (dashed); n = {st['n']}.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     for n in ("main", "ablation", "seeds", "curves"):
@@ -591,7 +946,27 @@ def main():
             p.add_argument("--value", required=True); p.add_argument("--group", required=True)
         if n == "box": p.add_argument("--whis", default="5,95", help="whisker percentiles"); p.add_argument("--vline", type=float, default=None, help="dashed reference line (0.5 for AUROC)")
         if n == "hbar": p.add_argument("--lower", action="store_true", help="lower is better (only changes which group is flagged best in the source CSV)"); p.add_argument("--fmt", default="{:+.2f}", help="value label format")
-    a = ap.parse_args(); {"main": fig_main, "ablation": fig_ablation, "seeds": fig_seeds, "curves": fig_curves, "stems": fig_stems, "box": fig_box, "hbar": fig_hbar}[a.cmd](a)
+    for n in ("roc", "pr", "confusion", "calibration", "bland-altman"):
+        p = sub.add_parser(n); p.add_argument("--project", default="."); p.add_argument("--out", required=True); p.add_argument("--csv", required=True)
+        p.add_argument("--width-mm", type=float, default=88); p.add_argument("--height-in", type=float, default={"roc": 3.0, "pr": 3.0, "confusion": 3.1, "calibration": 3.6, "bland-altman": 2.8}[n])
+        p.add_argument("--xlabel", default=""); p.add_argument("--ylabel", default="")
+        if n in ("roc", "pr"):
+            p.add_argument("--y-true", required=True, help="0/1 label column"); p.add_argument("--score", required=True, help="score column (higher = more positive)")
+            p.add_argument("--group", default="", help="column naming the method / model: one curve per value"); p.add_argument("--ours", default="", help="group drawn in the accent colour, on top")
+            p.add_argument("--ci", default="", help="'bootstrap:200': stratified bootstrap 95 %% band and interval"); p.add_argument("--seed", type=int, default=0)
+        elif n == "confusion":
+            p.add_argument("--true-col", default="", help="true class column (long rows)"); p.add_argument("--pred-col", default="", help="predicted class column")
+            p.add_argument("--labels", default="", help="class names in display order, comma list"); p.add_argument("--normalize", choices=["true", "none"], default="true", help="colour by row share (true) or by count (none); both numbers are always printed")
+            p.add_argument("--matrix", action="store_true", help="--csv is a precomputed square table (rows = true, columns = predicted; optional label row / column)")
+        elif n == "calibration":
+            p.add_argument("--y-true", required=True); p.add_argument("--prob", required=True, help="predicted probability column in [0, 1]"); p.add_argument("--group", default=""); p.add_argument("--ours", default="")
+            p.add_argument("--bins", type=int, default=10); p.add_argument("--strategy", choices=["quantile", "uniform"], default="quantile")
+        else:
+            p.add_argument("--a", required=True, help="first measurement column"); p.add_argument("--b", required=True, help="second measurement column"); p.add_argument("--group", default=""); p.add_argument("--unit", default="")
+    for p in sub.choices.values():
+        p.add_argument("--synthetic", action="store_true", help="simulated / demo data: draw the SYNTHETIC DEMO watermark and tag figures.csv issues")
+        p.add_argument("--no-watermark-check", action="store_true", dest="no_watermark_check", help="skip the data-provenance check (data kept outside results/ and runs/)")
+    a = ap.parse_args(); {"roc": fig_roc, "pr": fig_pr, "confusion": fig_confusion, "calibration": fig_calibration, "bland-altman": fig_bland_altman, "main": fig_main, "ablation": fig_ablation, "seeds": fig_seeds, "curves": fig_curves, "stems": fig_stems, "box": fig_box, "hbar": fig_hbar}[a.cmd](a)
 
 if __name__ == "__main__":
     main()

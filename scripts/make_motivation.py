@@ -724,6 +724,8 @@ def main():
     for name, q in (("condition", c), ("paired", p), ("tradeoff", t), ("radar", r), ("strip", s), ("schematic", sc)):
         q.add_argument("--project", default="."); q.add_argument("--out", required=True, help="figures/<name>.png (the .pdf is written next to it)")
         q.add_argument("--labels", default="", help="'col=display name,…'")
+        q.add_argument("--synthetic", action="store_true", help="simulated / demo data: SYNTHETIC DEMO watermark (provenance rule of make_figure.py)")
+        q.add_argument("--no-watermark-check", action="store_true", dest="no_watermark_check", help="skip the data-provenance check")
         if name != "schematic": q.add_argument("--width-mm", type=float, default=widths[name])
         if name in ("condition", "paired", "tradeoff"):
             q.add_argument("--height-in", type=float, default=2.1); q.add_argument("--xlabel", default=""); q.add_argument("--ylabel", default="")

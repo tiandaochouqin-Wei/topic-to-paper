@@ -17,6 +17,9 @@ state.results:
   seed_waiver: ""                      # non-empty = reason accepted instead of ≥ min_seeds
   group_key: method                    # rows sharing this value are one method; seeds counted within
   freshness_ref: log.json              # eval_file must be newer than this (eval before training finished = stale)
+  protocol_keys: [input_size, split, checkpoint_rule, class_map, evaluator]   # default; read from runs/<id>/args.json (else eval/protocol.json)
+  protocol_waiver: {}                  # {key: "reason"}: mixed values of that key -> WARN carrying the reason (the paper must say so)
+  dataset_key: dataset                 # main.csv column that splits comparison sets for the protocol check (absent column = one set)
   predictions:                         # optional pre-stated sign checks: expected sign of (b - a) on metric
     - {a: ours, b: no_dom, metric: rmse_E5, sign: "+"}
 
@@ -24,7 +27,7 @@ Checks: (1) every main/ablation row's run dir + eval_file exist, every mapped me
 CSV's precision; eval newer than freshness_ref; no `_tainted`; (2) primary metric column present and named in prereg;
 convention string from prereg §4 appears in the table header/note; (3) seeds ≥ min_seeds per method, else waiver; the same seed
 set across methods; (4) ablation rows ⊇ prereg §6 items, baselines ⊇ prereg §5 items (fuzzy token match); (5) sign of each
-pre-stated prediction; (6) `reproductions` empty while the main table has a baseline -> WARN; (7) findings.md: a block (`## F#`) that closes an
+pre-stated prediction; (6) `reproductions` empty while the main table has a baseline -> WARN; (7) protocol mixing: within one comparison set a protocol key logged with >=2 distinct values = FAIL (waiver -> WARN); (8) findings.md: a block (`## F#`) that closes an
 anomaly (`cause: real|impl|data|convention|leak`, `<step>: excluded|排除`) needs an `evidence:` line naming >=1 existing file (command output, not prose),
 and `cause: real` needs a `control:` line. Exit 1 on any FAIL."""
 import argparse, csv, io, json, os, re, sys, collections, statistics
@@ -140,6 +143,63 @@ def check_rows(cfg, root, rows, label):
                 bad += 1; say("FAIL", "trace", f"{label} {rid}.{col} = {s}，但 {ef}#{path} = {v!r}（按 {s} 的打印精度不一致）")
     if bad == 0: say("PASS", "trace", f"{label} {len(rows)} 行全部回溯到 {ef} 且数值一致、评估不陈旧")
 
+PROTOCOL_KEYS = ["input_size", "split", "checkpoint_rule", "class_map", "evaluator"]
+PROTOCOL_WHY = "不同输入尺寸 / 划分 / checkpoint 选择规则 / 类别映射 / 评价器 的结果不能当公平对照；另立表或在 results.protocol_waiver 里写明理由"
+
+def _proto_val(d, ef, key):
+    """value of `key` for one run dir: args.json first, then eval.json (state eval_file) and protocol.json; dotted paths allowed; None = not logged."""
+    for fn in ("args.json", ef, "protocol.json"):
+        p = os.path.join(d, fn)
+        if not os.path.exists(p): continue
+        try: o = json.load(open(p, encoding="utf-8"))
+        except Exception: continue
+        try: v = o[key] if isinstance(o, dict) and key in o else get_path(o, key)
+        except Exception: continue
+        if v is None or (isinstance(v, str) and not v.strip()): continue
+        return v.strip() if isinstance(v, str) else json.dumps(v, sort_keys=True, ensure_ascii=False)
+    return None
+
+def _runs_txt(rs, n=4): return "[" + ", ".join(rs[:n]) + (f", …(+{len(rs) - n})" if len(rs) > n else "") + "]"
+
+def check_protocol(cfg, root, rows, gk):
+    """G4 protocol mixing: the rows of one comparison set (same `results.dataset_key` value, default column `dataset`; no such column = one set)
+    must not differ on any `results.protocol_keys` value the runs logged. Only catches keys the runs actually wrote down."""
+    keys = cfg.get("protocol_keys") or PROTOCOL_KEYS
+    rd, ef = cfg.get("runs_dir", "runs"), cfg.get("eval_file", "eval.json")
+    waiver = {str(k): str(v).strip() for k, v in (cfg.get("protocol_waiver") or {}).items()}
+    repro = {q.get("method") for q in (cfg.get("reproductions") or []) if isinstance(q, dict)}
+    dk = cfg.get("dataset_key", "dataset")
+    sets = collections.OrderedDict()
+    for r in rows:
+        rid = r.get("run_id", "").strip(); d = os.path.join(root, rd, rid)
+        if rid and os.path.isdir(d): sets.setdefault(r.get(dk, "") if dk in r else "", []).append((rid, r.get(gk, ""), d))
+    if not sets: return
+    print("\n== protocol ==")
+    ok_keys = []
+    for key in keys:
+        all_runs = [x for g in sets.values() for x in g]
+        vals = {rid: _proto_val(d, ef, key) for rid, _, d in all_runs}
+        have = [rid for rid, v in vals.items() if v is not None]
+        if not have: say("INFO", "protocol", f"{key} 未登记（args.json / {ef} / protocol.json 都没有），无法核对"); continue
+        miss = [rid for rid, v in vals.items() if v is None]
+        if miss: say("WARN", "protocol", f"{key} 只有部分 run 登记了，缺 {len(miss)} 个: {_runs_txt(miss)} —— 缺的那些无法核对")
+        mixed = False
+        for gname, g in sets.items():
+            by = collections.OrderedDict()
+            for rid, _, _ in g:
+                if vals[rid] is not None: by.setdefault(vals[rid], []).append(rid)
+            if len(by) < 2: continue
+            mixed = True
+            det = "{" + ", ".join(f"{v}: {_runs_txt(rs)}" for v, rs in by.items()) + "}"
+            where = f"（{dk}={gname}）" if gname != "" else ""
+            hint = ""
+            rp = sorted({m for rid, m, _ in g if m in repro and vals[rid] is not None})
+            if rp: hint = f" 其中 {rp} 在 reproductions 里：口径有意不同也要在 protocol_waiver 登记，不自动豁免。"
+            if waiver.get(key): say("WARN", "protocol", f"{key} 混用{where} = {det} —— 已在 results.protocol_waiver 豁免：{waiver[key]}；正文须说明（表注或方法节写明各行口径）")
+            else: say("FAIL", "protocol", f"混用了不同口径：{key} = {det}{where} —— {PROTOCOL_WHY}。{hint}".rstrip())
+        if not mixed: ok_keys.append(key)
+    if ok_keys: say("PASS", "protocol", f"{len(ok_keys)} 项口径在同一对照集内一致: {', '.join(ok_keys)}")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default="research-state.yaml"); ap.add_argument("--prereg", default="prereg.md"); ap.add_argument("--project", default=".")
@@ -194,6 +254,7 @@ def main():
     else: say("PASS", "seeds", f"所有 {len(seeds)} 个方法 ≥{ms} seeds")
     sets = {frozenset(x for x in s if x) for s in seeds.values()}
     if len(sets) > 1: say("WARN", "seeds", f"各方法的 seed 集合不一致: {[sorted(s) for s in sets][:4]} —— 配对比较要求同 seed")
+    check_protocol(cfg, root, main_rows, gk)
     if md:
         # ---- coverage
         print("\n== coverage ==")
