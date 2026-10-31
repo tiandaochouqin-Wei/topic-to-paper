@@ -14,6 +14,7 @@ Sources -> items (each item: section, what must be said, probe used to verify):
   paper/argument.md (templates/argument.md, written before the draft; argument_check.py is its gate G6g)  -> Introduction last paragraph carries `claim`, first two paragraphs carry `reader_question`
   results/     main.csv: ref vs strongest baseline on primary metric -> Results must state the relative change (±1 in last digit);
                strongest = min or max by results.metric_direction / primary_direction (metric_direction.py; name regex if unset);
+               a tie -> results.strongest_baseline, else the other main.csv columns, else the name; strongest at 0 -> absolute difference (number_abs);
                ablation resolve: unresolvable cells -> Results must say "noise/resolution/not resolvable/within" — in the prose OR in a figure/table caption / table footnote;
                failure_slices.md: worst slice + AUROC -> Results/Discussion must mention them
   transfer_scan.md  selected row's 失效点 -> Method/Introduction (tokens)
@@ -21,7 +22,7 @@ Sources -> items (each item: section, what must be said, probe used to verify):
 Verification is token overlap inside the right section (≥ 60 % of content words, or the exact number), not semantics.
 It catches "forgot to say it" and "said it in the wrong section"; it cannot catch "said it wrong" — G6 numbers/scope do that.
 """
-import argparse, csv, io, json, os, re, sys, statistics, collections
+import argparse, csv, io, json, math, os, re, sys, statistics, collections
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -48,14 +49,23 @@ SECTION_ALIASES = {
     "limitations": ["Limitation", "Discussion", "讨论", "局限"],
     "conclusion": ["Conclusion", "结论"],
 }
+_HEAD = re.compile(r"^(#{1,3})[ \t]+([^\n]*?)[ \t#]*$", re.M)
+_HEAD_NUM = re.compile(r"^(?:\d+(?:\.\d+)*\.?|[IVXLC]+\.)\s*")
 def ms_section(md, key):
-    """body of the first top-level/second-level heading matching any alias; limitations may be a sub-heading inside results."""
-    for al in SECTION_ALIASES[key]:
-        m = re.search(r"^(#{1,3})\s*\d*\.?\d*\s*[^\n]*\b" + re.escape(al) + r"[^\n]*$", md, re.M | re.I)
-        if m:
-            depth = len(m.group(1)); rest = md[m.end():]
-            nxt = re.search(r"^#{1,%d}\s" % depth, rest, re.M)
-            return rest[:nxt.start()] if nxt else rest
+    """body of the heading whose text STARTS with an alias ("## 4. Experiments", "## Results and Discussion"); an alias inside a heading
+    ("### Passive particles are flagged ... of experiments", bmemat_motion 2026-10-31) is not a section name. The section level (the shallowest
+    heading level used at least twice: ## under a # title) is tried first, then the other levels shallow to deep, so limitations may still be
+    a sub-heading inside results."""
+    heads = [(len(m.group(1)), _HEAD_NUM.sub("", m.group(2).strip("* ")).strip("* "), m) for m in _HEAD.finditer(md)]
+    if not heads: return None
+    n = collections.Counter(d for d, _, _ in heads)
+    top = min((d for d, c in n.items() if c >= 2), default=min(n))
+    for lvl in [top] + sorted(d for d in n if d != top):
+        for al in SECTION_ALIASES[key]:
+            for d, text, m in heads:
+                if d == lvl and re.match(re.escape(al), text, re.I):
+                    rest = md[m.end():]; nxt = re.search(r"^#{1,%d}\s" % d, rest, re.M)
+                    return rest[:nxt.start()] if nxt else rest
     return None
 
 STOP = set("the a an of to in on for and or with by from as is are be that this we our it its at under over than into via using use used based across between per each all any not no non new novel method methods approach model models result results paper work study data set sets".split())
@@ -220,6 +230,38 @@ def pct_change_stated(v, hay, dirw=None):
                     if any(not signed_neg(m, sent) for m in re.finditer(num, sent)) and re.search(dirw, sent, re.I): return True
     return False
 
+def _tied(vals, target):
+    return sorted(k for k, v in vals.items() if math.isclose(v, target, rel_tol=1e-9, abs_tol=1e-12))
+
+def strongest(others, lower_better, rows, gk, pm, res):
+    """(strongest baseline, note for the checklist line). A tie on pm is broken by results.strongest_baseline when it names one of the tied
+    methods, else by the seed mean of the other main.csv columns in column order (each in its own direction; unknown direction = pm's),
+    else by name. Never by row order: every baseline sat at worst_coverage 0.0 in bmemat_motion (2026-10-31) and the first row won."""
+    pick = min if lower_better else max
+    tied = _tied(others, pick(others.values()))
+    if len(tied) == 1: return tied[0], ""
+    named = str(res.get("strongest_baseline") or "").strip()
+    if named in tied: return named, f"；{len(tied)} 个基线在 {pm} 上并列，按 results.strongest_baseline 取 {named}"
+    for col in rows[0]:
+        if col in (gk, pm, "seed", "run_id"): continue
+        means = {k: v for k, v in seed_means(rows, gk, col)[0].items() if k in tied}   # same shared seeds as the pm means
+        if set(means) != set(tied): continue      # not numeric for every tied method
+        lb = mdir.lower_is_better(col, res, default=lower_better)
+        t2 = _tied(means, (min if lb else max)(means.values()))
+        if len(t2) == 1: return t2[0], f"；{len(tied)} 个基线在 {pm} 上并列，按 {col} 均值（{'低' if lb else '高'}者强）取 {t2[0]}"
+        tied = t2
+    return tied[0], f"；{len(tied)} 个基线在 {pm} 及其余列上都并列，按名字取 {tied[0]}"
+
+def fmt_abs(d):
+    """|d| printed to 2 significant digits in fixed notation (0.912 -> 0.91, 12.3 -> 12, 0.00123 -> 0.0012); 0 -> 0."""
+    a = abs(d)
+    return "0" if a == 0 else f"{a:.{max(0, 1 - math.floor(math.log10(a)))}f}"
+
+def abs_diff_stated(p, hay):
+    """number_abs: a number within ±1 in the last printed digit of p appears in hay."""
+    v = float(p); tol = 10 ** -(len(p.split(".")[1]) if "." in p else 0) * (1 + 1e-9)
+    return any(abs(float(x) - v) <= tol for x in re.findall(r"(?<![\d.])\d+(?:\.\d+)?", hay))
+
 # ------------------------------------------------------------------ plan
 def build(root):
     items = []
@@ -314,11 +356,16 @@ def build(root):
             except ValueError as e: print(f"[FAIL] research-state.yaml {e}"); sys.exit(1)
             rv = by[ref]; others = {k: v for k, v in by.items() if k != ref}
             if lower_better: others = {k: v for k, v in others.items() if v > 0} or others   # a risk identically 0 is a trivial set, not a strongest baseline
-            best = min(others, key=others.get) if lower_better else max(others, key=others.get)
-            rel = (others[best] - rv) / others[best] * 100 if lower_better else (rv - others[best]) / others[best] * 100
-            add("results", "main.csv 主指标", f"结果节必须给出 {ref} 相对最强基线 {best} 在 {pm} 上的相对变化（约 {rel:.0f}%，{seed_note}；正文可取整到 ±1，"
-                f"写成带符号的 {rel:.0f}% 或绝对值加方向词，如 {abs(rel):.0f}% {'better' if rel >= 0 else 'worse'}）", f"{rel:.0f}", "number_pm1")
-            items[-1]["dir"] = direction_words(rel >= 0, lower_better)
+            best, tie_note = strongest(others, lower_better, rows, gk, pm, res)
+            if others[best] == 0:   # relative change undefined (every baseline at 0, bmemat_motion 2026-10-31): ask for the absolute difference instead
+                diff = rv - others[best]; probe = fmt_abs(diff)
+                add("results", "main.csv 主指标", f"结果节必须给出 {ref} 与最强基线 {best} 在 {pm} 上的绝对差（{ref} {rv:.4g} vs {best} 0，差约 {probe}，{seed_note}{tie_note}；"
+                    f"基线为 0，相对变化无定义；正文可写差值或 {ref} 的值，末位可差 ±1）", probe, "number_abs")
+            else:
+                rel = (others[best] - rv) / others[best] * 100 if lower_better else (rv - others[best]) / others[best] * 100
+                add("results", "main.csv 主指标", f"结果节必须给出 {ref} 相对最强基线 {best} 在 {pm} 上的相对变化（约 {rel:.0f}%，{seed_note}{tie_note}；正文可取整到 ±1，"
+                    f"写成带符号的 {rel:.0f}% 或绝对值加方向词，如 {abs(rel):.0f}% {'better' if rel >= 0 else 'worse'}）", f"{rel:.0f}", "number_pm1")
+                items[-1]["dir"] = direction_words(rel >= 0, lower_better)
             add("results", "main.csv 主指标", f"结果节必须出现最强基线的名字 {best}", best, "name")
     # ---- ablation resolution
     at = os.path.join(root, res.get("ablation_table", "results/ablation.csv"))
@@ -395,8 +442,9 @@ def check(a):
             paras, _ = intro_paragraphs(hay); sel = paras[-1:] if k == "para_last" else paras[:2]
             ok = claim_in(p, "\n".join(sel), 0.5 if k == "para_last" else 0.4)
         elif k == "max_cites": ok = all(len(distinct_refs(x)) <= int(p) for x in paragraphs(hay))
-        elif k == "regex": ok = bool(re.search(p, hay, re.I))
-        elif k == "regex_cap": ok = bool(re.search(p, hay + "\n" + caption_text(md), re.I))   # the statement may live in a caption / table footnote instead of the prose
+        elif k == "number_abs": ok = abs_diff_stated(p, hay)
+        elif k == "regex": ok = bool(re.search(p, hay, re.I | re.M))      # re.M: heading probes (^###, ^##…ablation) match line starts; a section body starts with "\n"
+        elif k == "regex_cap": ok = bool(re.search(p, hay + "\n" + caption_text(md), re.I | re.M))   # the statement may live in a caption / table footnote instead of the prose
         else: ok = overlap(p, hay) >= a.min_overlap
         done[it["id"]] = ok
         if ok: hits += 1; print(f"[PASS] {it['id']} {it['section']}: {it['must'][:70]}")
