@@ -5,7 +5,7 @@ The toy has two conv stems (rgb, x), a fuse made of add + 1x1 conv gate (sigmoid
 identical blocks (residual add inside each), and a Linear head after adaptive pool + flatten, so that every kind of node the tracer
 knows (module, glue op, repeat, input, output) occurs. One shared project is traced/rendered once per module (torch import is the slow part);
 tests that mutate something copy it first."""
-import csv, hashlib, io, json, shutil
+import csv, hashlib, io, json, re, shutil
 
 import pytest
 import yaml
@@ -432,3 +432,111 @@ def test_t2p_g5_folds_an_architecture_fail(research_arch):
     edit(research_arch / "code" / "toy.py", "self.head = nn.Linear(3 * c, nc)", "self.head = nn.Linear(3 * c, nc + 2)")
     line = _g5(research_arch)
     assert line.startswith("[FAIL] G5") and "architecture 1 FAIL" in line, line
+
+
+# ------------------------------------------------------------------ figure style registry (figure_style.py): stage names, ours fill, input / output words, meta + caption
+ARCH_STYLE = """figures:
+  style:
+    ours: [neck]
+    methods:
+      neck: {label: "Fusion neck (ours)", color: "#c94a5e", line: "-", marker: "o"}
+      rgb: {label: "Visible image"}
+    stages: {stem_rgb: "RGB branch", neck: "Fusion neck", head: "Detection head"}
+    font_pt: 7
+"""
+
+
+def _oursish(png, tol=30):
+    """pixels near the 45 % tint of the ours colour #c94a5e (the fill of our modules)"""
+    import numpy as np
+    from PIL import Image
+    tint = np.array([255 - (255 - v) * 0.45 for v in (0xc9, 0x4a, 0x5e)])
+    return (np.abs(np.asarray(Image.open(png).convert("RGB")).astype(float) - tint).sum(-1) <= tol)
+
+
+@needs_dot
+def test_stage_names_input_output_words_and_ours_fill_in_the_dot_figure(work):
+    write(work / "research-state.yaml", ARCH_STYLE)
+    r = arch(work, "render", "--spec", "figures/arch/toy2.yaml", "--out", "figures/fig_s.pdf", "--engine", "dot")
+    assert r.returncode == 0 and not r.crashed, r.out
+    import fitz
+    text = fitz.open(work / "figures" / "fig_s.pdf")[0].get_text()
+    assert "RGB branch" in text and "Stem rgb" not in text                                                                    # stage names from figures.style.stages (a one-node stage has no frame, so "Fusion neck" is only in stage_names)
+    assert "Visible image" in text and "X input" in text and "Output" in text                                                 # registry label, plain words; never rgb / x / out
+    assert not re.search(r"\bout\b", text)
+    rj = json.load(io.open(work / "figures" / "fig_s.render.json", encoding="utf-8"))
+    assert {"RGB branch", "Fusion neck"} <= set(rj["stage_names"]) and rj["ours_modules"] == ["neck.0"]
+    rows = list(csv.DictReader(io.open(work / "figures" / "fig_s.source.csv", encoding="utf-8")))
+    by = {x["id"]: x for x in rows}
+    assert by["neck.0"]["ours"] == "yes" and by["neck.0"]["color"].lower() == "#e7aeb7" and by["stem_rgb.0"]["ours"] == "no" and by["stem_rgb.0"]["color"].lower() == "#f2f2f2"   # ours filled, every other module light grey
+    assert by["input:rgb"]["label"] == "Visible image" and by["input:x"]["label"] == "X input" and by["output:out"]["label"] == "Output"
+    assert _oursish(work / "figures" / "fig_s.png").sum() > 200                                                                # the ours fill is really in the picture
+    c = arch(work, "check", "--spec", "figures/arch/toy2.yaml")
+    assert c.returncode == 0 and "trace 里没有的文字" not in c.out, c.out                                                      # registry words are allowed words, not hand-added modules
+
+
+@needs_tex
+def test_ours_modules_regex_fills_in_the_tikz_source_and_other_modules_stay_light_grey(work):
+    r = arch(work, "render", "--spec", "figures/arch/toy2.yaml", "--out", "figures/fig_t.pdf", "--engine", "tikz", "--ours-modules", "^stem_x")
+    assert r.returncode == 0 and not r.crashed, r.out
+    tex = read(work / "figures" / "fig_t.tex")
+    assert "\\definecolor{oursfill}{HTML}{EAADB5}" in tex and "\\definecolor{oursdraw}{HTML}{D1495B}" in tex          # default ours colour (no registry) = the accent
+    assert tex.count("fill=oursfill,draw=oursdraw") == 3                                                                   # stem_x.0 / .1 / .2
+    assert "fill=st" not in tex and "fill=lightgrey" in tex                                                                # once ours is marked the stage tints give way to light grey
+
+
+@needs_dot
+def test_no_ours_keeps_the_stage_tints_and_warns_only_when_a_registry_exists(work):
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_n.pdf", "--engine", "dot")
+    assert r.returncode == 0 and "no ours modules" not in r.out and json.load(io.open(work / "figures" / "fig_n.render.json", encoding="utf-8"))["ours_modules"] == [], r.out
+    write(work / "research-state.yaml", "figures:\n  style:\n    methods:\n      smm: {label: SMM}\n")
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_n.pdf", "--engine", "dot")
+    assert "[WARN] render: no ours modules" in r.out, r.out
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_n.pdf", "--engine", "dot", "--ours-modules", "^nothing$")
+    assert "[WARN] render: ours modules: ^nothing$ matches no module node" in r.out, r.out
+
+
+@needs_dot
+def test_generic_stage_names_warn_and_a_bad_regex_fails(work):
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_g.pdf", "--engine", "dot", "--ours-modules", "(")
+    assert r.fails == 1 and "--ours-modules" in r.out and not r.crashed, r.out
+    sp = work / "figures" / "arch" / "toy1.yaml"; d = yaml.safe_load(io.open(sp, encoding="utf-8"))
+    for n in d["nodes"]:
+        if n["id"] in ("stem_rgb", "stem_x"): n["stage"] = "Layers"
+    io.open(sp, "w", encoding="utf-8").write(yaml.safe_dump(d, allow_unicode=True))
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_g.pdf", "--engine", "dot")
+    assert "[WARN] render: stage name 'Layers' is a generic code name" in r.out, r.out
+    write(work / "research-state.yaml", "figures:\n  style:\n    stages: {layers: \"Backbone\"}\n")
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_g.pdf", "--engine", "dot")
+    assert "generic code name" not in r.out and "Backbone" in json.load(io.open(work / "figures" / "fig_g.render.json", encoding="utf-8"))["stage_names"], r.out   # registered: the registry name replaces it
+
+
+@needs_dot
+def test_architecture_writes_meta_and_caption_draft(work):
+    write(work / "research-state.yaml", ARCH_STYLE)
+    r = arch(work, "render", "--spec", "figures/arch/toy2.yaml", "--out", "figures/fig_c.pdf", "--engine", "dot", "--show-params")
+    assert r.returncode == 0, r.out
+    meta = json.load(io.open(work / "figures" / "fig_c.meta.json", encoding="utf-8"))
+    assert meta["kind"] == "architecture" and meta["model"] == "Toy" and meta["ours_modules"] == ["Block"] and "RGB branch" in meta["stages"] and meta["shapes"] is True and meta["n_params"] > 0
+    cap = read(work / "figures" / "fig_c.caption.md")
+    assert cap.startswith("<takeaway") and "Architecture of Toy" in cap and "Modules of our method (Block) are filled in red" in cap and "light grey" in cap and "RGB branch" in cap
+    assert "tensor shapes" in cap and "3×32×32 / 1×32×32" in cap
+
+
+@needs_dot
+def test_font_size_comes_from_the_registry_unless_given(work):
+    write(work / "research-state.yaml", ARCH_STYLE.replace("font_pt: 7", "font_pt: 8"))
+    r = arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_f.pdf", "--engine", "dot")
+    assert r.returncode == 0, r.out
+    assert json.load(io.open(work / "figures" / "fig_f.render.json", encoding="utf-8"))["font_pt"] == 8
+    arch(work, "render", "--spec", "figures/arch/toy1.yaml", "--out", "figures/fig_f.pdf", "--engine", "dot", "--font-pt", "6")
+    assert json.load(io.open(work / "figures" / "fig_f.render.json", encoding="utf-8"))["font_pt"] == 6
+
+
+@needs_dot
+def test_style_check_passes_on_a_rendered_architecture_figure(work):
+    """the source.csv carries a colour column (so figure_style.py check does not call it pre-registry) and no code-like label"""
+    write(work / "research-state.yaml", ARCH_STYLE)
+    assert arch(work, "render", "--spec", "figures/arch/toy2.yaml", "--out", "figures/fig_k.pdf", "--engine", "dot").returncode == 0
+    c = run("figure_style.py", "check", cwd=work)
+    assert c.fails == 0 and "fig_k.source.csv: no style columns" not in c.out, c.out

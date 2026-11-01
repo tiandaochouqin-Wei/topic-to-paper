@@ -25,7 +25,7 @@ Gate → script mapping (inputs decide whether a gate runs):
   G3  state.audits.runs_dir exists                         audit_check.py
   G3b state.audits.code_dirs holds .py files (research)    instrument_check.py: every pretrained model / harness / train loop has a known-answer check + a broken-input control
   G4  results/main.csv                                     results_check.py + ablation_plan.py resolve
-  G5  figures.csv                                          gate_check.py dpi (+ make_architecture.py check when figures/arch/*.yaml exist; + figure_plan.py check: planned figures drawn, figures / claims in the plan; + figure_review.py check)
+  G5  figures.csv                                          gate_check.py dpi (+ make_architecture.py check when figures/arch/*.yaml exist; + figure_plan.py check: planned figures drawn, figures / claims in the plan; + figure_review.py check; + figure_style.py check: one name / colour per method, no code-like labels; + caption_draft.py check: captions vs what was drawn)
   G6  paper/manuscript.md                                  gate_check.py floats acronyms scope numbers limits (+refs with --net)
   G6d paper/latex/main.tex (LaTeX projects only)           latex_check.py check: class matches venue, all figures PDF, panels via subfigure, algorithm blocks (make_algorithm.py check)
   G6e paper/claims.csv with rows                           claims_check.py: headline sentences ↔ claims rows, each row computed from results, strong scope ↔ scope_words
@@ -251,6 +251,10 @@ def check(root, net, write=True):
         detail += f"；plan {f3} FAIL / {w3} WARN"; outs.append(out3); f_all += f3
         rc4, f4, w4, out4 = run([S("figure_review.py"), "check"], root)   # independent visual review of the printed figures (paper/figure_review.md; FAIL once a plan exists)
         detail += f"；review {f4} FAIL / {w4} WARN"; outs.append(out4); f_all += f4
+        rc5, f5, w5, out5 = run([S("figure_style.py"), "check"], root)   # one name / colour per method across the figures, no code-like labels, roles vs ours colour, datasets without a hue (figures.style)
+        rc6, f6, w6, out6 = run([S("caption_draft.py"), "check"], root)  # the LaTeX captions still agree with what the generators drew (figures/*.meta.json)
+        detail += f"；style {f5}/{w5}，captions {f6}/{w6}"; outs += [out5, out6]; f_all += f5 + f6
+        if "no figure style registry" in out5: detail += "；WARN no figure style registry (figure_style.py init)"
         rec("G5", verdict(f_all, *outs), detail)
     else: rec("G5", "PENDING", "figures.csv 不存在、无数据行或仍是模板")
     # G6

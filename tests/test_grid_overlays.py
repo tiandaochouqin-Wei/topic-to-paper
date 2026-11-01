@@ -13,7 +13,8 @@ from PIL import Image
 
 from conftest import SCRIPTS, run, write
 
-GT_GREEN = np.array([0x2c, 0xa2, 0x5f]); ACCENT_RED = np.array([0xd1, 0x49, 0x5b])
+GT_YELLOW = np.array([0xff, 0xd2, 0x3f]); ACCENT_RED = np.array([0xd1, 0x49, 0x5b])     # gt role / ours colour of the default figure style (figure_style.py)
+OURS_STYLE = "figures:\n  style:\n    ours: [M1]\n    methods:\n      M1: {label: \"M1 (ours)\", color: \"#d1495b\", line: \"-\", marker: \"o\"}\n"     # M1 registered as ours: its boxes are drawn in the ours colour
 sys.path.insert(0, str(SCRIPTS))
 
 
@@ -97,23 +98,24 @@ def test_read_boxes_normalises_every_format(tmp_path):
     assert np.allclose(mc.read_boxes(str(tmp_path / "c.json"), "coco", 64, 64)[0][1:], (0.25, 0.25, 0.75, 0.5))
 
 
-def test_gt_boxes_green_others_accent_pixel_probe(tmp_path):
+def test_gt_boxes_use_the_gt_role_and_a_method_its_registry_colour_pixel_probe(tmp_path):
     _scene(tmp_path, samples=("s",))
+    write(tmp_path / "research-state.yaml", OURS_STYLE)
     write(tmp_path / "lab" / "GT" / "s.txt", "0 0.5 0.5 0.5 0.5\n"); write(tmp_path / "lab" / "M1" / "s.txt", "0 0.5 0.5 0.5 0.5\n")
     r = _grid(tmp_path, "--labels-dir", tmp_path / "lab", "--row-labels", "none", samples="s")
     assert r.returncode == 0, r.out
     rows = {x["method"]: x for x in _rows(tmp_path / "figures" / "g.source.csv")}
-    assert rows["GT"]["box_color"].lower() == "#2ca25f" and rows["M1"]["box_color"].lower() == "#d1495b"
+    assert rows["GT"]["box_color"].lower() == "#ffd23f" and rows["M1"]["box_color"].lower() == "#d1495b"
     png = tmp_path / "figures" / "g.png"; w = Image.open(png).size[0]
-    green, red = _near(png, GT_GREEN), _near(png, ACCENT_RED)
-    assert green[:, :w // 2].sum() > 200 and green[:, w // 2:].sum() == 0        # GT column (left) only green
-    assert red[:, w // 2:].sum() > 200 and red[:, :w // 2].sum() == 0            # method column (right) only accent
+    yel, red = _near(png, GT_YELLOW), _near(png, ACCENT_RED)
+    assert yel[:, :w // 2].sum() > 200 and yel[:, w // 2:].sum() == 0        # GT column (left) only in the gt role colour (yellow, not the green that also meant TP)
+    assert red[:, w // 2:].sum() > 200 and red[:, :w // 2].sum() == 0        # the registered ours column (right) in the ours colour
 
 
 def test_box_line_width_has_a_printed_floor_and_scales_with_the_cell(tmp_path):
     _scene(tmp_path, methods=("GT", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11"), samples=("s",))
     r = _grid(tmp_path, "--box-lw", "0.1", methods="GT,M1,M2,M3,M4,M5,M6,M7,M8,M9,M10,M11", samples="s", out="figures/narrow.png", width=60)
-    assert "box line 0.40 pt" in r.out and "0.4 pt printed floor" in r.out, r.out
+    assert "box line 0.80 pt" in r.out and "0.8 pt printed floor" in r.out, r.out
     r2 = _grid(tmp_path, samples="s", width=180, out="figures/wide.png")
     assert "box line 1.00 pt" in r2.out, r2.out                                  # big cells cap at 1 pt
 
@@ -123,6 +125,7 @@ def test_overlay_colorbar_and_gt_column_as_base(tmp_path):
     for s in "ab":
         m = np.zeros((16, 16), np.float32); m[4:8, 4:8] = 3.0; m[0, 0] = 5.0         # not 0-1: must be min-max normalised
         (tmp_path / "cam" / "M1").mkdir(parents=True, exist_ok=True); np.save(tmp_path / "cam" / "M1" / f"{s}.npy", m)
+    write(tmp_path / "research-state.yaml", "figures:\n  style:\n    roles: {allow_jet: true}\n")        # jet only with the registry's explicit permission
     r = _grid(tmp_path, "--overlay-dir", tmp_path / "cam", "--cmap", "jet", "--colorbar", "Low,High", "--overlay-alpha", "0.55")
     assert r.returncode == 0, r.out
     rows = {(x["sample"], x["method"]): x for x in _rows(tmp_path / "figures" / "g.source.csv")}
@@ -156,8 +159,9 @@ def test_highlight_frame_and_label_position(tmp_path):
     assert r.returncode == 0, r.out
     rows = {x["method"]: x for x in _rows(tmp_path / "figures" / "top.source.csv")}
     assert rows["Ours"]["highlight"] == "yes" and rows["GT"]["highlight"] == "no"
-    png = tmp_path / "figures" / "top.png"; w = Image.open(png).size[0]; red = _near(png, ACCENT_RED)
-    assert red[:, w // 2:].sum() > 500 and red[:, :w // 2 - 20].sum() == 0          # frame (and its label) only round the highlighted column
+    png = tmp_path / "figures" / "top.png"; w = Image.open(png).size[0]; dark = _near(png, np.array([0x1f, 0x1f, 0x1f]), 12)
+    assert dark[:, w // 2:].sum() > 500 and dark[:, :w // 2 - 20].sum() < 100        # the ours_frame role (neutral dark, not the red that also meant false positives) only round the highlighted column
+    assert _near(png, ACCENT_RED).sum() == 0
     def ylab(pdf, word):
         pg = fitz.open(pdf)[0]; return next(b[1] for b in pg.get_text("words") if b[4] == word) / pg.rect.height
     assert ylab(tmp_path / "figures" / "top.pdf", "GT") < 0.2                        # label above the photos

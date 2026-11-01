@@ -40,6 +40,13 @@ X <-> Y is forced", "ours is a different paradigm"). Choose the subcommand by th
 Every subcommand writes <out>.png, <out>.pdf, <out>_gray.png and <out>.source.csv, registers the panel in figures.csv through
 make_figure.finish (layout audit, inspected=no) and prints the numbers the caption may quote. Hybrids (concept + data) are
 separate panels composed in LaTeX: latex_check.py figure --panels a.pdf,b.pdf --width 0.45,0.53 --env figure*
+
+Style registry: like make_figure.py every subcommand reads figures.style (names, colours, lines, ours, datasets, font_pt), writes the style columns
+(label, color, line, marker) into source.csv and <out>.meta.json / <out>.caption.md, and refuses code-like names and a bare "value" axis
+(--allow-code-labels overrides). Tradeoff with --color: the dataset is a marker shape (--dataset-encoding marker, default), a fill (<= 2 datasets) or one
+panel per dataset, NEVER a hue; the hue belongs to the method (the same method has the same colour in every figure); the first source column is the input's
+name column (method). Labels farther than 2 mm from their marker get a leader line; limits include the marker radius; --ylabel is required by `paired`
+unless --value / --labels name the axis. condition --legend auto places the legend by the occupancy test.
 """
 import argparse, collections, csv, io, math, os, sys, zlib
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK
@@ -130,34 +137,43 @@ def _stats(pts):
 def condition(a):
     root = os.path.abspath(a.project)
     rows = _rows(root, a.csv, [a.x, a.y, a.series])
+    sty = mf.Sty(a, root); labels = _parse_kv(a.labels); sty.set_labels(labels)
     pts = collections.OrderedDict()
     for r in rows:
         try: xv, yv = float(r[a.x]), float(r[a.y])
         except ValueError: continue
         pts.setdefault(r[a.series] if a.series else a.y, collections.defaultdict(list))[xv].append(yv)
     if not pts: fail(f"{a.csv} 里 {a.x} / {a.y} 没有数值")
-    st = _stats(pts); labels = _parse_kv(a.labels); hib = not a.lower
+    st = _stats(pts); hib = not a.lower
     xs_all = sorted({x for d in st.values() for x in d})
     if len(xs_all) < 2: fail(f"条件轴 {a.x} 至少要 2 个取值，现在 {xs_all}")
     ours = a.ours or ""
+    if not ours:                                                             # no --ours: the registry's ours applies
+        reg = sty.ours_names(list(st))
+        ours = reg[0] if reg else ""
     if ours and ours not in st: fail(f"--ours {ours} 不在系列里：{list(st)}")
+    if a.series: sty.check(list(st), "series")
+    sty.warn_no_ours(list(st))
+    lab = sty.label
     among = [s.strip() for s in a.among.split(",") if s.strip()] if a.among else [s for s in st if s != ours]
     miss = [s for s in among if s not in st]
     if miss: fail(f"--among 里没有这些系列 {miss}（有：{list(st)}）")
+    ylab = sty.axis(a.y, a.ylabel, rows, labels); xlab = sty.axis(a.x, a.xlabel, labels=labels)
+    metric_name = ylab.split(" (")[0]; direction = "higher" if hib else "lower"
     fig, ax = _new_axes(a)
     for i, part in enumerate([p for p in a.regions.split(",") if p.strip()] if a.regions else []):
         try:
             name, lo, hi = part.rsplit(":", 2); lo, hi = float(lo), float(hi)
         except ValueError: fail(f"--regions 写成 '名字:下限:上限,…'：{part}")
         ax.axvspan(lo, hi, color=REGION[i % 2], zorder=0, lw=0)
-        ax.text((lo + hi) / 2, 1.01, name.strip(), transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=6.3, color="#555555", fontstyle="italic", clip_on=False)
+        ax.text((lo + hi) / 2, 1.01, name.strip(), transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=mf.T(6.3), color="#555555", fontstyle="italic", clip_on=False)
     order = [s for s in st if s != ours] + ([ours] if ours else [])
-    src = []
+    src = []; drawn = {}
     for i, s in enumerate(order):
         xs = sorted(st[s]); m = np.array([st[s][x][0] for x in xs]); sd = np.array([st[s][x][1] for x in xs]); n = max(st[s][x][2] for x in xs)
-        is_o = s == ours; c = mf.ACCENT if is_o else OTHERS[i % len(OTHERS)]
-        ax.plot(xs, m, color=c, lw=1.5 if is_o else 1.0, marker="D" if is_o else MARKERS[i % len(MARKERS)], ms=3.0 if is_o else 2.6,
-                label=labels.get(s, s) + (f" (n={n})" if n > 1 else ""), zorder=5 if is_o else 3)
+        is_o = s == ours; d = sty.style(s, i); c = d["color"]
+        ln, = ax.plot(xs, m, color=c, lw=1.5 if is_o else 1.0, ls=d["line"], marker=d["marker"], ms=3.0 if is_o else 2.6, zorder=5 if is_o else 3)
+        drawn[s] = (ln, d["label"] + (f" (n={n})" if n > 1 else ""))
         if n > 1: ax.fill_between(xs, m - sd, m + sd, color=c, alpha=0.15, lw=0, zorder=2)
     # where does the leading series (among --among) change along the condition axis?
     def leader(x):
@@ -182,9 +198,9 @@ def condition(a):
         crossings.append((l0, l1, xc, verdict))
         if verdict == "inside seed noise": continue          # not drawn: a line on the figure would claim a reversal the seeds do not support
         ax.axvline(xc, color="#777777", lw=0.6, ls=":", zorder=1)
-        ax.text(xc, 0.04, f"{labels.get(l0, l0)} → {labels.get(l1, l1)}" + (" (1 run)" if verdict.startswith("single") else "") + " ", transform=ax.get_xaxis_transform(),
-                rotation=90, ha="right", va="bottom", fontsize=5.6, color="#555555", bbox=dict(boxstyle="square,pad=0.05", fc="white", ec="none", alpha=0.7))
-    gaps = []
+        ax.text(xc, 0.04, f"{lab(l0)} → {lab(l1)}" + (" (1 run)" if verdict.startswith("single") else "") + " ", transform=ax.get_xaxis_transform(),
+                rotation=90, ha="right", va="bottom", fontsize=mf.T(5.6), color="#555555", bbox=dict(boxstyle="square,pad=0.05", fc="white", ec="none", alpha=0.7))
+    gaps = []; gap_meta = []
     for g in a.gap or []:
         spec, _, at = g.partition("@")
         names = [p.strip() for p in spec.split(",")]
@@ -201,14 +217,19 @@ def condition(a):
             xg = max(common, key=lambda x: abs(st[s1][x][0] - st[s2][x][0]))
         y1, y2 = st[s1][xg][0], st[s2][xg][0]; d = y1 - y2
         ax.annotate("", xy=(xg, y1), xytext=(xg, y2), arrowprops=dict(arrowstyle="<->", lw=0.8, color="#222222", shrinkA=0, shrinkB=0), zorder=6)
-        ax.text(xg, (y1 + y2) / 2, f" Δ {_g(d)}", ha="left", va="center", fontsize=6.4, fontweight="bold", color="#222222", zorder=6)
+        ax.text(xg, (y1 + y2) / 2, f" Δ {metric_name} {_g(d)}\n ({direction} is better)", ha="left", va="center", fontsize=mf.T(6.4), fontweight="bold", color="#222222", zorder=6, linespacing=1.15)      # the Δ names its metric and which way is better
         r = resolved(s1, s2, xg)
-        gaps.append(f"{labels.get(s1, s1)} − {labels.get(s2, s2)} = {_g(d)} at {a.x} = {xg:g}" + ("" if r is None else ("" if r else " (inside seed noise)")))
+        gaps.append(f"{s1} − {s2} = {_g(d)} at {a.x} = {xg:g}" + ("" if r is None else ("" if r else " (inside seed noise)")))
+        gap_meta.append({"x": xg, "ours": s1, "baseline": s2, "delta": d, "metric": a.y, "label": metric_name, "direction": direction})
     if a.logx: ax.set_xscale("log")
-    ax.set_xlabel(a.xlabel or labels.get(a.x, a.x)); ax.set_ylabel(a.ylabel or labels.get(a.y, a.y))
+    ax.set_xlabel(xlab); ax.set_ylabel(ylab)
     ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
-    if a.legend == "below": ax.legend(fontsize=6.0, loc="upper center", bbox_to_anchor=(0.5, -0.24), ncol=min(len(st), 3), handlelength=1.6, frameon=False)
-    else: ax.legend(fontsize=6.0, loc=a.legend, handlelength=1.6, framealpha=0.85)
+    leg_order = sty.order(list(st)) if a.series else []
+    hs = [drawn[s][0] for s in leg_order]; ls_ = [drawn[s][1] for s in leg_order]
+    if not a.series: pass
+    elif a.legend == "below": ax.legend(hs, ls_, fontsize=mf.T(6.0), loc="upper center", bbox_to_anchor=(0.5, -0.24), ncol=min(len(st), 3), handlelength=1.6, frameon=False)
+    elif a.legend == "auto": mf.place_legend(fig, ax, hs, ls_, fontsize=mf.T(6.0), handlelength=1.6)
+    else: ax.legend(hs, ls_, fontsize=mf.T(6.0), loc=a.legend, handlelength=1.6, framealpha=1.0)
     fit_width(fig, [ax], a.width_mm / 25.4, what="condition")
     for l0, l1, xc, v in crossings:
         print(f"leader change: {l0} -> {l1} at {a.x} ≈ {xc:.3g} ({v})")
@@ -216,12 +237,18 @@ def condition(a):
         if v.startswith("single run"): print(f"[INFO] condition: one run per point; the {l0} -> {l1} change is unverified until seeds are added")
     if not crossings: print(f"no leader change among {among} along {a.x}")
     for gtxt in gaps: print("gap: " + gtxt)
-    cap = f"{labels.get(a.y, a.y)} vs. {labels.get(a.x, a.x)}"
+    cap = f"{a.y} vs. {a.x}"
     if crossings: cap += "; leader changes: " + "; ".join(f"{l0}→{l1} at ≈{xc:.3g} ({v})" for l0, l1, xc, v in crossings)
     if gaps: cap += "; " + "; ".join(gaps)
-    if any(max(st[s][x][2] for x in st[s]) > 1 for s in st): cap += "; shaded = ± s.d. over seeds"
-    finish(fig, a, src, ["series", a.x, f"{a.y}_mean", f"{a.y}_sd", "n", "leader"], root, cap + ".")
-
+    multi = any(max(st[s][x][2] for x in st[s]) > 1 for s in st)
+    if multi: cap += "; shaded = ± s.d. over seeds"
+    meta = sty.meta_base(list(st) if a.series else [], y_label=ylab, x_label=xlab, x_name=a.x, metric=a.y, direction=direction, band="sd" if multi else "none", logx=bool(a.logx),
+                         n_seeds=max(max(st[s][x][2] for x in st[s]) for s in st) if multi else None)
+    if ours: meta["ours"] = ours
+    if gap_meta: meta["annotate"] = gap_meta[0]
+    mf.set_meta(a, "curves", meta)
+    src, hdr = mf.with_style(src, ["series", a.x, f"{a.y}_mean", f"{a.y}_sd", "n", "leader"], 0, sty)
+    finish(fig, a, src, hdr, root, cap + ".")
 
 # ------------------------------------------------------------------ paired
 def _spread(vals, gap):
@@ -239,6 +266,7 @@ def _spread(vals, gap):
 
 def paired(a):
     root = os.path.abspath(a.project)
+    sty = mf.Sty(a, root); labels = _parse_kv(a.labels); sty.set_labels(labels)
     items = [c.strip() for c in a.item.split(",") if c.strip()]
     fcols = [c.strip() for c in a.from_.split(",") if c.strip()]; tcols = [c.strip() for c in a.to.split(",") if c.strip()]
     hib = not a.lower; best = max if hib else min
@@ -264,8 +292,10 @@ def paired(a):
         pairs = [(k, float(np.mean([q[0] for q in v])), float(np.mean([q[1] for q in v]))) for k, v in acc.items()]
         value = a.value if a.value != "value" else ""
     if len(pairs) < 2: fail(f"少于 2 个成对项（{len(pairs)}）：检查 --item / --from / --to")
-    fl = a.from_label or (fcols[0] if len(fcols) == 1 else ("best of " if hib else "lowest of ") + "/".join(fcols))
-    tl = a.to_label or (tcols[0] if len(tcols) == 1 else ("best of " if hib else "lowest of ") + "/".join(tcols))
+    fn = [sty.text(c) for c in fcols]; tn = [sty.text(c) for c in tcols]                  # the setting names are registry / --labels names, not column names
+    fl = a.from_label or (fn[0] if len(fn) == 1 else ("best of " if hib else "lowest of ") + "/".join(fn))
+    tl = a.to_label or (tn[0] if len(tn) == 1 else ("best of " if hib else "lowest of ") + "/".join(tn))
+    ylab = a.ylabel or sty.axis(value or "value", "", labels=labels)                      # never the literal "value": --ylabel, --value, or --labels value=...
     d = np.array([t - f for _, f, t in pairs]); worse = (d < 0) if hib else (d > 0)
     n = len(pairs); nw = int(worse.sum()); med = float(np.median(d)); mean = float(np.mean(d))
     style = a.style if a.style != "auto" else ("slope" if n <= 12 else "bars")
@@ -278,19 +308,19 @@ def paired(a):
         if n <= 12:
             lo, hi = ax.get_ylim(); ys = _spread([p[2] for p in pairs], (hi - lo) * 0.055)
             for (lab, f, t), w, yl in zip(pairs, worse, ys):
-                ax.text(1.05, yl, lab, fontsize=5.6, va="center", ha="left", color=BAD if w else "#555555", clip_on=False)
-        ax.set_ylabel(a.ylabel or value or "value")
-        ax.legend(fontsize=6.0, loc="lower left" if hib else "upper left", handlelength=1.6)
+                ax.text(1.05, yl, lab, fontsize=mf.T(5.6), va="center", ha="left", color=BAD if w else "#555555", clip_on=False)
+        ax.set_ylabel(ylab)
+        hs, ls_ = ax.get_legend_handles_labels(); mf.place_legend(fig, ax, hs, ls_, fontsize=mf.T(6.0), handlelength=1.6)
     else:
         order = np.argsort(d) if hib else np.argsort(-d)
         dd = d[order]; ww = worse[order]
         ax.bar(np.arange(n), dd, color=[BAD if w else NEUTRAL for w in ww], width=0.8, zorder=3)
         ax.axhline(0, color="#333333", lw=0.6, zorder=4)
         if n <= 30:
-            ax.set_xticks(np.arange(n)); ax.set_xticklabels([pairs[i][0] for i in order], rotation=90, fontsize=5.4)
+            ax.set_xticks(np.arange(n)); ax.set_xticklabels([pairs[i][0] for i in order], rotation=90, fontsize=mf.T(5.4))
         else:
             ax.set_xticks([]); ax.set_xlabel(f"{n} items, sorted by Δ")
-        ax.set_ylabel(a.ylabel or (f"Δ {value}" if value else "Δ"))
+        ax.set_ylabel(a.ylabel or f"Δ {ylab}")
         ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
     summary = f"{nw}/{n} worse; median Δ {_g(med)}; mean Δ {_g(mean)}"
     if style == "bars":   # sorted bars leave the corner opposite the long bars empty
@@ -298,28 +328,21 @@ def paired(a):
     else:                 # slope: the corner the mean line moves away from is empty
         down = np.mean([q[2] for q in pairs]) < np.mean([q[1] for q in pairs])
         tx, ty, ha, va = (0.97, 0.97, "right", "top") if down else (0.97, 0.04, "right", "bottom")
-    ax.text(tx, ty, summary + chr(10) + f"Δ = {tl} − {fl}", transform=ax.transAxes, fontsize=6.2, fontweight="bold", va=va, ha=ha, linespacing=1.3,
+    ax.text(tx, ty, summary + chr(10) + f"Δ = {tl} − {fl} ({'higher' if hib else 'lower'} is better)", transform=ax.transAxes, fontsize=mf.T(6.2), fontweight="bold", va=va, ha=ha, linespacing=1.3,
             color=BAD if nw * 2 > n else "#333333", zorder=6, bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85))
     fit_width(fig, [ax], a.width_mm / 25.4, what="paired")
     print(f"{fl} -> {tl}: {summary} (Δ = {tl} − {fl}; {'higher' if hib else 'lower'} is better)")
     src = [[lab, f, t, t - f, bool(w)] for (lab, f, t), w in zip(pairs, worse)]
-    finish(fig, a, src, ["item", fl, tl, "delta", "worse"], root,
-           f"{tl} vs. {fl} over {n} items: {nw}/{n} worse, median Δ {_g(med)}, mean Δ {_g(mean)}" + (" (slope chart)" if style == "slope" else " (sorted Δ)") + ".")
-
+    for lab_, _f, _t in pairs: sty.record(lab_, lab_)
+    cap = (f"{tl} vs. {fl} over {n} items: {nw}/{n} worse, median Δ {_g(med)}, mean Δ {_g(mean)}" + (" (slope chart)" if style == "slope" else " (sorted Δ)") + ".")
+    facts = (f"{ylab}: {tl} versus {fl} for {n} items ({'slope chart' if style == 'slope' else 'bars sorted by the change'}); {nw} of {n} get worse (median Δ {_g(med)}, mean Δ {_g(mean)}; "
+             f"Δ = {tl} − {fl}; {'higher' if hib else 'lower'} is better). Red marks an item that gets worse, grey one that does not.")
+    mf.set_meta(a, "paired", {"y_label": ylab, "from": fl, "to": tl, "n_items": n, "n_worse": nw, "median_delta": med, "mean_delta": mean, "direction": "higher" if hib else "lower", "layout": style, "facts": facts, "styles": {}})
+    src, hdr = mf.with_style(src, ["item", fl, tl, "delta", "worse"], 0, sty)
+    finish(fig, a, src, hdr, root, cap)
 
 # ------------------------------------------------------------------ tradeoff
 STAR = {"star": ("*", 2.2), "circle": ("o", 1.8), "diamond": ("D", 1.5)}
-
-
-def _legend_auto(fig, ax, handles, labels, pts_disp, **kw):
-    """legend in the corner of `ax` that covers the fewest points (ties: the first corner listed)"""
-    rend = fig.canvas.get_renderer(); best = None
-    for loc in ("lower right", "upper right", "lower left", "upper left", "center right", "center left"):
-        leg = ax.legend(handles, labels, loc=loc, **kw); fig.canvas.draw(); bb = leg.get_window_extent(rend)
-        n = sum(1 for (px, py) in pts_disp if bb.x0 <= px <= bb.x1 and bb.y0 <= py <= bb.y1); leg.remove()
-        if best is None or n < best[0]: best = (n, loc)
-        if n == 0: break
-    return ax.legend(handles, labels, loc=best[1], **kw)
 
 
 def _human(col):
@@ -329,10 +352,20 @@ def _human(col):
     return t[:1].upper() + t[1:]
 
 
+def _dlook(sty, c, i, enc):
+    """(marker, fill) of dataset `c`: a dataset is a marker shape, a fill or a panel, never a hue (the hue belongs to the method)"""
+    d = sty.dataset_look(c, i); reg = sty.dataset_registered(c)
+    if enc == "fill": return (d["marker"] if reg else "o"), d["fill"]
+    if enc == "panel": return "o", "full"
+    return d["marker"], (d["fill"] if reg else "full")
+
+
 def tradeoff(a):
     from matplotlib.lines import Line2D
     root = os.path.abspath(a.project)
     rows = _rows(root, a.csv, [a.x, a.y, a.label] + ([a.size] if a.size else []) + ([a.color] if a.color else []))
+    sty = mf.Sty(a, root); labels = _parse_kv(a.labels); sty.set_labels(labels)
+    xtxt = sty.axis(a.x, a.xlabel, labels=labels); ytxt = sty.axis(a.y, a.ylabel, rows, labels)             # a bare "value" / "y" column is refused here, before anything is drawn
     acc = collections.OrderedDict()
     for r in rows:
         try: xv, yv = float(r[a.x]), float(r[a.y]); sv = float(r[a.size]) if a.size else None
@@ -351,7 +384,7 @@ def tradeoff(a):
                 ref = pts[hit[0]][1]
             else: ref = (max if not a.lower else min)(pts[k][1] for k in grp)
             for k in grp: pts[k] = (pts[k][0], pts[k][1] - ref, *pts[k][2:])
-        ref_note = f"{a.y_ref} of each {a.color}" if a.y_ref else f"the best value of each {a.color}"
+        ref_note = f"{sty.label(a.y_ref)} of each {sty.text(a.color)}" if a.y_ref else f"the best value of each {a.color}"
     else:
         rng = {c: (min(raw_y[k] for k in pts if k[1] == c), max(raw_y[k] for k in pts if k[1] == c)) for c in dict.fromkeys(k[1] for k in pts)} if a.color else {}
         cs = list(rng)
@@ -360,12 +393,16 @@ def tradeoff(a):
             disjoint = all(rng[c1][1] < rng[c2][0] or rng[c2][1] < rng[c1][0] for i_, c1 in enumerate(cs) for c2 in cs[i_ + 1:])
             if disjoint and tot > 0 and max(v[1] - v[0] for v in rng.values()) < 0.5 * tot:
                 print(f"[WARN] tradeoff: the {a.color} groups have disjoint {a.y} ranges ({', '.join(f'{c} {v[0]:g}–{v[1]:g}' for c, v in rng.items())}); on one axis the points of one group sit within "
-                      f"{max(v[1] - v[0] for v in rng.values()):g} of each other and the fronts are flat lines. Use --y-norm per-color [--y-ref <method>] (y as gain over a reference)")
-    ours_set = [s for s in (a.ours or "").split(",") if s]
-    for s in ours_set:
-        if s not in {k[0] for k in pts}: fail(f"--ours {s} 不在 {a.label} 列里：{sorted({k[0] for k in pts})}")
-    is_ours = lambda k: k[0] in ours_set
+                      f"{max(v[1] - v[0] for v in rng.values()):g} of each other and the fronts are flat lines. Use --y-norm per-color [--y-ref <method>] (y as gain over a reference) or --dataset-encoding panel")
+    methods = list(dict.fromkeys(k[0] for k in pts))
+    for s in [s for s in (a.ours or "").split(",") if s]:
+        if s not in methods: fail(f"--ours {s} 不在 {a.label} 列里：{sorted(methods)}")
+    sty.check(methods, "method"); sty.warn_no_ours(methods)
+    is_ours = lambda k: sty.is_ours(k[0])
     nm = lambda k: k[0] + (f" [{k[1]}]" if a.color else "")
+    mlab = {m: sty.label(m) for m in methods}
+    mcol = {}
+    for i, m in enumerate(sty.order(methods)): mcol[m] = sty.style(m, i)["color"]                     # the method owns the hue: one colour in every figure
     hib, lowx = not a.lower, not a.higher_x
     def dominates(p, q):
         bx = p[0] <= q[0] if lowx else p[0] >= q[0]; by = p[1] >= q[1] if hib else p[1] <= q[1]
@@ -373,22 +410,25 @@ def tradeoff(a):
         return bx and by and (sx or sy)
     peers = lambda k: [o for o in pts if o != k and (not a.color or o[1] == k[1])]      # with --color a front only makes sense inside one benchmark
     front = [k for k in pts if not any(dominates(pts[o], pts[k]) for o in peers(k))]
-    labels = _parse_kv(a.labels)
     for col_ in [a.x, a.y, a.size, a.color]:
         if col_ and col_ not in labels: labels[col_] = _human(col_)                   # raw column names (params_M) never reach the figure
+    labels[a.x] = xtxt; labels[a.y] = ytxt
     cats = list(dict.fromkeys(k[1] for k in pts)) if a.color else []
-    if len(cats) > len(mf.CAT): print(f"[WARN] tradeoff: {len(cats)} {a.color} values, fill colours repeat after {len(mf.CAT)}")
-    cmap = {c: mf.CAT[i % len(mf.CAT)] for i, c in enumerate(cats)}
+    enc = a.dataset_encoding if a.color else "none"
+    if enc == "fill" and len(cats) > 2: print(f"[WARN] tradeoff: {len(cats)} {a.color} values cannot be told apart by fill alone (full / open): marker shapes are used instead"); enc = "marker"
+    if len(cats) > len(mf.MARKS) and enc == "marker": print(f"[WARN] tradeoff: {len(cats)} {a.color} values, marker shapes repeat after {len(mf.MARKS)}: use --dataset-encoding panel")
     gap = None
     if a.broken_x:
         try: gap = tuple(sorted(float(t) for t in a.broken_x.split(",")))
         except ValueError: gap = None
         if gap is None or len(gap) != 2 or gap[0] == gap[1]: fail("--broken-x wants the hidden x interval, e.g. 65,110")
         if a.logx: fail("--broken-x and --logx cannot be combined")
+        if enc == "panel": fail("--broken-x and --dataset-encoding panel cannot be combined")
         inside = [nm(k) for k, p in pts.items() if gap[0] < p[0] < gap[1]]
         if inside: fail(f"points inside the hidden interval {gap[0]:g}–{gap[1]:g}: {inside}")
         if not any(p[0] <= gap[0] for p in pts.values()) or not any(p[0] >= gap[1] for p in pts.values()): fail("--broken-x: each side of the break needs at least one point")
-    xs_all = [p[0] for p in pts.values()]
+    dlook = {c: _dlook(sty, c, i, enc) for i, c in enumerate(cats)}
+    xs_all = [p[0] for p in pts.values()]; wr = None
     if gap:
         xl = (min(xs_all) - 0.06 * ((gap[0] - min(xs_all)) or 1.0), gap[0]); xr = (gap[1], max(xs_all) + 0.06 * ((max(xs_all) - gap[1]) or 1.0))
         wr = [max(xl[1] - xl[0], 1e-9), max(xr[1] - xr[0], 1e-9)]; tot = sum(wr); wr = [max(w / tot, 0.18) for w in wr]
@@ -399,27 +439,42 @@ def tradeoff(a):
             for xe in ((1,) if ax_ is axs[0] else (0,)):
                 dx = 0.012 * sum(wr) / w
                 for ye in (0, 1): ax_.plot((xe - dx, xe + dx), (ye - 0.02, ye + 0.02), transform=ax_.transAxes, color="#222", lw=0.6, clip_on=False, zorder=9)
+    elif enc == "panel":
+        fig, axs = plt.subplots(1, len(cats), sharex=True, figsize=(a.width_mm / 25.4, a.height_in), squeeze=False); axs = list(axs[0])
+        fig.subplots_adjust(left=0.1, right=0.97, bottom=0.2, top=0.85 if a.title else 0.88, wspace=0.28)
+        for ax_, c in zip(axs, cats): ax_.set_title(sty.text(c), fontsize=mf.T(7.5))
     else:
         fig, ax0 = _new_axes(a); axs = [ax0]
         if a.title: fig.subplots_adjust(top=0.91)
     side = lambda k: 0 if (not gap or pts[k][0] <= gap[0]) else 1
+    where = (lambda k: cats.index(k[1])) if enc == "panel" else side                 # which axes a point lives on
     smax = max((p[2] for p in pts.values() if p[2] is not None), default=None)
     def area(sv): return 14 + 110 * (sv / smax) if (smax and sv is not None) else 16
     mark, star_k = STAR[a.marker_ours]
+    if a.color: star_k = 1.7                                                         # with datasets the marker shape is taken: ours = larger, outlined, in the accent colour
+    radii = {ax_: [] for ax_ in axs}
     for k, p in pts.items():
-        ax_ = axs[side(k)]; fc = cmap[k[1]] if a.color else (mf.ACCENT if is_ours(k) else OTHERS[0])
-        if is_ours(k): ax_.scatter(p[0], p[1], s=area(p[2]) * star_k, marker=mark, color=fc, edgecolors="#333333" if a.color else "white", linewidths=0.5 if a.color else 0.4, zorder=5)
-        else: ax_.scatter(p[0], p[1], s=area(p[2]), color=fc, alpha=0.75, edgecolors="white", linewidths=0.4, zorder=3)
+        ax_ = axs[where(k)]; fc = mcol[k[0]]
+        mk_, fill = (dlook[k[1]] if a.color else ("o", "full"))
+        if is_ours(k):
+            mk_ = mark if not a.color else mk_; s_ = area(p[2]) * star_k
+            ax_.scatter(p[0], p[1], s=s_, marker=mk_, facecolors=fc if fill == "full" else "none", edgecolors="#333333" if a.color else ("white" if fill == "full" else fc), linewidths=0.6 if a.color else 0.4, zorder=5)
+        else:
+            s_ = area(p[2])
+            ax_.scatter(p[0], p[1], s=s_, marker=mk_, facecolors=fc if fill == "full" else "none", edgecolors="white" if fill == "full" else fc, linewidths=0.4 if fill == "full" else 0.9, alpha=0.75 if fill == "full" else 1.0, zorder=3)
+        radii[ax_].append((p[0], p[1], float(np.sqrt(s_)) / 2 + 0.6))
+    if a.logx:
+        from matplotlib.ticker import FuncFormatter
+        for ax_ in (axs if enc == "panel" else axs[:1]): ax_.set_xscale("log"); ax_.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     if not a.no_front:
         groups = [None] if not a.color else cats
         for g in groups:
             fx_ = sorted([k for k in front if g is None or k[1] == g], key=lambda k: pts[k][0])
             if len(fx_) > 1:
-                for ax_ in axs: ax_.plot([pts[k][0] for k in fx_], [pts[k][1] for k in fx_], ls="--", lw=0.8, color="#9a9a9a" if g is None else cmap[g], alpha=1 if g is None else 0.6, zorder=1)
-    if a.logx:
-        from matplotlib.ticker import FuncFormatter
-        axs[0].set_xscale("log"); axs[0].xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+                for ax_ in ([axs[cats.index(g)]] if (enc == "panel" and g is not None) else axs): ax_.plot([pts[k][0] for k in fx_], [pts[k][1] for k in fx_], ls="--", lw=0.8, color="#9a9a9a", zorder=1)
     for ax_ in axs: ax_.grid(lw=0.4, color="#ececec", zorder=0)
+    mf.fit_markers(fig, axs, radii, radius_pt=3.0)                                   # no half-clipped markers at the edge
+    if gap: axs[0].set_xlim(axs[0].get_xlim()[0], xl[1]); axs[1].set_xlim(xr[0], axs[1].get_xlim()[1])      # the break itself stays where it was asked for
     # labels: with --color every method is named once (at its best point), ours at every point; --label-each names every point
     cand = []
     for k, p in pts.items():
@@ -428,7 +483,7 @@ def tradeoff(a):
             if k != bestk: continue
         cand.append(k)
     cand.sort(key=lambda k: not is_ours(k))
-    placed = {}; taken = []
+    placed = {}; taken = []; n_leaders = 0
     seff = lambda k: area(pts[k][2]) * (star_k if is_ours(k) else 1.0)
     def offs_for(k):       # label offsets clear of the point's own marker: three rings (radius + 2, + 9, + 18 pt) in 8 directions
         r = math.sqrt(seff(k)) / 2 + 1.0; out_ = []
@@ -437,41 +492,43 @@ def tradeoff(a):
                 out_.append(((ux * (r + ring), uy * (r + ring * .5)), ha, va))
         return out_
     for si, ax_ in enumerate(axs):
-        onax = [k for k in pts if side(k) == si]; ks = [k for k in cand if side(k) == si]
-        res = mf.place_labels(fig, ax_, [(pts[k][0], pts[k][1], labels.get(k[0], k[0]), mf.ACCENT if is_ours(k) else "#333333", is_ours(k), offs_for(k), onax.index(k)) for k in ks],
-                              fontsize=5.8, obstacles=taken, markers=[(pts[k][0], pts[k][1], seff(k)) for k in onax])
+        onax = [k for k in pts if where(k) == si]; ks = [k for k in cand if where(k) == si]; lead = []
+        res = mf.place_labels(fig, ax_, [(pts[k][0], pts[k][1], mlab[k[0]], sty.ours_color if is_ours(k) else "#333333", is_ours(k), offs_for(k), onax.index(k)) for k in ks],
+                              fontsize=mf.T(5.8), obstacles=taken, markers=[(pts[k][0], pts[k][1], seff(k)) for k in onax], leader_mm=2.0, leaders=lead)
+        n_leaders += len(lead)
         for k, bb in zip(ks, res):
             placed[k] = "yes" if bb is not None else "no"
             if bb is not None: taken.append(bb)
     dropped = [nm(k) for k in cand if placed.get(k) == "no"]
     if dropped: print(f"[WARN] tradeoff: {len(dropped)} label(s) dropped, no free spot: {dropped} (points are in the source CSV)")
     ar = axs[0] if lowx else axs[-1]
-    corner = ((0.05 if lowx else 0.95), (0.95 if hib else 0.05)); tail = (corner[0] + (0.13 if lowx else -0.13) / (1 if len(axs) == 1 else 2), corner[1] + (-0.13 if hib else 0.13))
+    corner = ((0.05 if lowx else 0.95), (0.95 if hib else 0.05)); tail = (corner[0] + (0.13 if lowx else -0.13) / (2 if gap else 1), corner[1] + (-0.13 if hib else 0.13))
     if not a.no_arrow:
         ar.annotate("", xy=corner, xytext=tail, xycoords="axes fraction", arrowprops=dict(arrowstyle="-|>", lw=0.8, color="#2e9b57"))
-        ar.text(tail[0], tail[1], " better", transform=ar.transAxes, fontsize=6.0, color="#2e9b57", ha="left" if lowx else "right", va="top" if hib else "bottom", fontstyle="italic")
+        ar.text(tail[0], tail[1], " better", transform=ar.transAxes, fontsize=mf.T(6.0), color="#2e9b57", ha="left" if lowx else "right", va="top" if hib else "bottom", fontstyle="italic")
     xlab = a.xlabel or labels.get(a.x, a.x) + (", log scale" if a.logx else "")
-    if gap: fig.supxlabel(xlab, fontsize=7.5, y=0.045)
+    if gap or enc == "panel": fig.supxlabel(xlab, fontsize=mf.T(7.5), y=0.045)
     else: axs[0].set_xlabel(xlab)
-    axs[0].set_ylabel(a.ylabel or (labels.get(a.y, a.y) if a.y_norm == "none" else f"Δ {labels.get(a.y, a.y)} vs. {ref_note}"))
-    if a.title: fig.suptitle(a.title, fontsize=7.5, fontweight="bold", y=0.995)
-    # one legend: markers | bubble sizes in the first column, fill colours in the second
+    ylab = a.ylabel or (labels.get(a.y, a.y) if a.y_norm == "none" else f"Δ {labels.get(a.y, a.y)} vs. {ref_note}")
+    axs[0].set_ylabel(ylab)
+    if a.title: fig.suptitle(a.title, fontsize=mf.T(7.5), fontweight="bold", y=0.995)
+    # one legend: markers | bubble sizes in the first column, dataset markers / fills in the second; opaque, in the first free corner (never on a point or a front)
     hd = lambda t: (Line2D([], [], ls="", marker=""), t, True)
     c1, c2 = [], []
-    if a.color and ours_set: c1 += [hd("Marker"), (Line2D([], [], ls="", marker=mark, ms=7, mfc="#9a9a9a", mec="#333333", mew=0.5), "Ours", False), (Line2D([], [], ls="", marker="o", ms=5, mfc="#9a9a9a", mec="white"), "Prior methods", False)]
+    if a.color and ours_set_any(sty, methods): c1 += [hd("Method"), (Line2D([], [], ls="", marker="o", ms=7, mfc="#9a9a9a", mec="#333333", mew=0.5), "Ours (large, outlined)", False), (Line2D([], [], ls="", marker="o", ms=5, mfc="#9a9a9a", mec="white"), "Prior methods", False)]
     if a.bubble_legend and a.size:
         try: refs = [float(t) for t in a.bubble_legend.split(",")]
         except ValueError: fail("--bubble-legend wants numbers, e.g. 8,100,786")
         c1 += [hd(f"Bubble area = {labels.get(a.size, a.size)}")] + [(Line2D([], [], ls="", marker="o", ms=math.sqrt(area(v)), mfc="#c9ced4", mec="#8a8f98", mew=0.4), f"{v:g}", False) for v in sorted(refs, reverse=True)]
-    if a.color: c2 += [hd(f"{labels.get(a.color, a.color)} (fill colour)")] + [(Line2D([], [], ls="", marker="o", ms=5, mfc=cmap[c], mec="white"), c, False) for c in cats]
+    if a.color and enc in ("marker", "fill"):
+        c2 += [hd(f"{labels.get(a.color, a.color)} ({'fill' if enc == 'fill' else 'marker'})")] + [(Line2D([], [], ls="", marker=dlook[c][0], ms=5, mfc="#9a9a9a" if dlook[c][1] == "full" else "none", mec="#555555", mew=0.7), sty.text(c), False) for c in cats]
     if a.size and not a.bubble_legend: (c1 if c1 or not c2 else c2).append((Line2D([], [], ls="", marker="o", ms=5, mfc="#c9ced4", mec="#8a8f98", mew=0.4), f"Marker area ~ {labels.get(a.size, a.size)}", False))   # in the legend, not as loose text that the legend could cover
     has_front = (not a.no_front) and sum(1 for _ in front) > 1
     if has_front: (c1 if c1 or not c2 else c2).append((Line2D([], [], ls="--", lw=0.8, color="#9a9a9a"), "Pareto front" if not a.color else "Pareto front per " + a.color, False))
     ents = c1 + c2 if not (c1 and c2) else c1 + [(Line2D([], [], ls="", marker=""), "", False)] * max(0, len(c2) - len(c1)) + c2 + [(Line2D([], [], ls="", marker=""), "", False)] * max(0, len(c1) - len(c2))
     if ents:
-        legax = axs[0] if len(axs) == 1 or wr[0] >= wr[1] else axs[1]; fig.canvas.draw()
-        disp = [legax.transData.transform((p[0], p[1])) for p in pts.values()]
-        leg = _legend_auto(fig, legax, [e[0] for e in ents], [e[1] for e in ents], disp, fontsize=5.8, ncol=2 if c1 and c2 else 1, handlelength=1.6, labelspacing=0.35, columnspacing=1.0, borderpad=0.4, frameon=True, framealpha=0.9, edgecolor="#cccccc", fancybox=False)
+        legax = axs[0] if len(axs) == 1 or (wr is not None and wr[0] >= wr[1]) else (axs[1] if wr is not None else axs[-1])
+        leg = mf.place_legend(fig, legax, [e[0] for e in ents], [e[1] for e in ents], fontsize=mf.T(5.8), ncol=2 if c1 and c2 else 1, handlelength=1.6, labelspacing=0.35, columnspacing=1.0, borderpad=0.4)
         for t, e in zip(leg.get_texts(), ents):
             if e[2]: t.set_fontweight("bold")
         leg.get_frame().set_linewidth(0.4)
@@ -488,14 +545,24 @@ def tradeoff(a):
         else: print(f"[WARN] tradeoff: ours ({nm(k)}) is dominated by {[nm(o) for o in peers(k) if dominates(pts[o], pts[k])]}; the caption must not claim the best trade-off")
     src = [[k[0], p[0], raw_y[k], p[2] if p[2] is not None else "", p[3], k in front, k[1], placed.get(k, "skipped")] + ([p[1]] if a.y_norm != "none" else []) for k, p in pts.items()]
     n_on = sum(1 for k in pts if is_ours(k) and k in front); n_o = sum(1 for k in pts if is_ours(k))
-    finish(fig, a, src, ["label", a.x, a.y, a.size or "size", "n", "on_front", a.color or "color", "placed_label"] + (["y_norm"] if a.y_norm != "none" else []), root,
-           f"{labels.get(a.y, a.y)}{(' as the gain over ' + ref_note) if a.y_norm != 'none' else ''} vs. {labels.get(a.x, a.x)}" + (f"; fill colour = {labels.get(a.color, a.color)}" if a.color else "") + ("" if a.no_front else f"; dashed = Pareto front{' per ' + a.color if a.color else ' (' + ', '.join(fxn) + ')'}")
+    for m in methods:                                                                # what a method was drawn with: its colour; the marker is the dataset's when --color is given
+        if m in sty.drawn: sty.drawn[m]["marker"] = "" if a.color else (mark if sty.is_ours(m) else "o"); sty.drawn[m]["line"] = ""
+    cap = (f"{labels.get(a.y, a.y)}{(' as the gain over ' + ref_note) if a.y_norm != 'none' else ''} vs. {labels.get(a.x, a.x)}" + (f"; marker = {labels.get(a.color, a.color)}, colour = method" if a.color else "") + ("" if a.no_front else f"; dashed = Pareto front{' per ' + a.color if a.color else ' (' + ', '.join(fxn) + ')'}")
            + (f"; ours on the front in {n_on}/{n_o} points" if n_o and not a.no_front else "") + (f"; x axis broken between {gap[0]:g} and {gap[1]:g}" if gap else "") + ".")
+    meta = sty.meta_base(methods, x_label=labels.get(a.x, a.x), y_label=ylab, x_direction="higher" if a.higher_x else "lower", y_direction="higher" if hib else "lower", front=not a.no_front,
+                         datasets=[c for c in cats] or None, dataset_encoding=(enc if cats else None), leader_lines=bool(n_leaders), y_norm=("per-color" if a.y_norm != "none" else None), logx=bool(a.logx))
+    mf.set_meta(a, "tradeoff", meta)
+    name_col = a.label if a.label not in ("label", "color", "line", "marker") else "method"                   # the first column is the input's name column (method); `label` is the display label of the style columns
+    src, hdr = mf.with_style(src, [name_col, a.x, a.y, a.size or "size", "n", "on_front", a.color or "dataset", "placed_label"] + (["y_norm"] if a.y_norm != "none" else []), 0, sty)
+    finish(fig, a, src, hdr, root, cap)
 
+
+def ours_set_any(sty, methods):
+    return bool(sty.ours_names(methods))
 
 # ------------------------------------------------------------------ radar
 def radar(a):
-    root = os.path.abspath(a.project)
+    root = os.path.abspath(a.project); sty = mf.Sty(a, root)
     vals = collections.OrderedDict()                    # series -> axis -> [values]
     if a.csv:
         rows = _rows(root, a.csv, [a.axis, a.series, a.value])
@@ -531,9 +598,14 @@ def radar(a):
     if len(axes) < 3: fail(f"雷达图至少要 3 根轴，现在只有 {len(axes)} 根（{axes}）：两根轴用 make_figure.py main 画分组柱")
     incomplete = [s for s, d in series.items() if any(k not in d for k in axes)]
     if incomplete: fail(f"这些系列缺某些轴的值，雷达多边形会断：{incomplete}；补齐或用 --axes 只取共有的轴")
+    if not a.ours:                                                           # no --ours: the registry's ours applies
+        reg = sty.ours_names(list(series))
+        if reg: a.ours = reg[0]
     ours = a.ours if a.ours in series else None
     if a.ours and not ours: fail(f"--ours {a.ours} 不在系列里：{list(series)}")
-    labels = _parse_kv(a.labels)
+    sty.cli_ours = [ours] if ours else []
+    labels = _parse_kv(a.labels); sty.set_labels(labels)
+    sty.check([s for s in series if s not in groups], "series"); sty.warn_no_ours(list(series))
     import metric_direction as mdir
     lower = {k for k in axes if k in set(a.lower.split(",")) or (not a.csv and mdir.lower_is_better(k, res))}
     lohi = {}
@@ -559,33 +631,40 @@ def radar(a):
         return ("left" if c > 0.2 else "right" if c < -0.2 else "center"), ("bottom" if s_ > 0.2 else "top" if s_ < -0.2 else "center")
     for t, k in zip(th, axes):
         for rr in (0.5, 0.75):     # inner rings only: the outer ring is where ours' values go
-            ax.text(t + 0.13, rr, f"{unrad(k, rr):.3g}", fontsize=5.4, color="#9a9a9a", ha="center", va="center", zorder=2)
+            ax.text(t + 0.13, rr, f"{unrad(k, rr):.3g}", fontsize=mf.T(5.4), color="#9a9a9a", ha="center", va="center", zorder=2)
         ha, va = align(t)
-        ax.text(t, 1.3, labels.get(k, k) + (" ↓" if k in lower else ""), fontsize=6.6, fontweight="bold", ha=ha, va=va)
-    others = [s for s in series if s != ours]; src = []
+        ax.text(t, 1.3, labels.get(k, k) + (" ↓" if k in lower else ""), fontsize=mf.T(6.6), fontweight="bold", ha=ha, va=va)
+    others = sty.order([s for s in series if s != ours]); src = []
     for i, s in enumerate(others):
-        r = [rad(k, series[s][k]) for k in axes]
-        ax.plot(thc, r + r[:1], color=OTHERS[i % len(OTHERS)], lw=0.9, ls=DASHES[i % len(DASHES)], marker="o", ms=1.8, label=s, zorder=3)
+        r = [rad(k, series[s][k]) for k in axes]; d = sty.style(s, i)
+        ax.plot(thc, r + r[:1], color=d["color"], lw=0.9, ls=d["line"], marker=d["marker"], ms=1.8, label=d["label"], zorder=3)
     if ours:
-        r = [rad(k, series[ours][k]) for k in axes]
-        ax.plot(thc, r + r[:1], color=mf.ACCENT, lw=1.5, marker="D", ms=2.4, label=labels.get(ours, ours), zorder=5)
-        ax.fill(thc, r + r[:1], color=mf.ACCENT, alpha=0.07, zorder=4)
+        r = [rad(k, series[ours][k]) for k in axes]; d = sty.style(ours, len(others)); oc = d["color"]
+        ax.plot(thc, r + r[:1], color=oc, lw=1.5, marker="D", ms=2.4, label=d["label"], zorder=5)
+        ax.fill(thc, r + r[:1], color=oc, alpha=0.07, zorder=4)
         for t, k, rr in zip(th, axes, r):
             ha, va = align(t)
-            ax.text(t, rr + 0.08, f"{series[ours][k]:.1f}", fontsize=6.0, color=mf.ACCENT, fontweight="bold", ha=ha, va=va, zorder=6)
+            ax.text(t, rr + 0.08, f"{series[ours][k]:.1f}", fontsize=mf.T(6.0), color=oc, fontweight="bold", ha=ha, va=va, zorder=6)
     best_n = 0
     for k in axes:
         pick = (min if k in lower else max)(series, key=lambda s: series[s][k])
         for s in series: src.append([s, k, series[s][k], lohi[k][0], lohi[k][1], k in lower, s == pick])
         best_n += int(pick == ours)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=2, fontsize=5.8, handlelength=2.2, columnspacing=1.0)   # follows the axes when fit_width shrinks it
+    hs, ls_ = ax.get_legend_handles_labels()
+    if ours and len(hs) > 1: hs, ls_ = [hs[-1]] + hs[:-1], [ls_[-1]] + ls_[:-1]                                 # ours first in the legend
+    ax.legend(hs, ls_, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=2, fontsize=mf.T(5.8), handlelength=2.2, columnspacing=1.0)   # follows the axes when fit_width shrinks it
     fit_width(fig, [ax], w_in, keep_aspect=True, what="radar")
     if ours:
         notbest = [k for k in axes if (min if k in lower else max)(series, key=lambda s: series[s][k]) != ours]
         print(f"ours ({ours}) is best on {best_n}/{K} axes" + (f"; not best on {notbest} — the caption must not call it an envelope" if notbest else ""))
     cap = "Radar over benchmarks; every axis is scaled independently between the printed values, outward = better"
     if lower: cap += f" (axes marked ↓ are lower-is-better and flipped: {sorted(lower)})"
-    finish(fig, a, src, ["series", "axis", "value", "axis_lo", "axis_hi", "lower_is_better", "best"], root, cap + ".")
+    facts = (f"Radar over {K} benchmarks ({', '.join(sty.text(k) for k in axes)}); every axis is scaled independently between the printed values and outward is better"
+             + (f" (axes marked ↓ are lower-is-better and flipped: {', '.join(sty.text(k) for k in sorted(lower))})" if lower else "") + "."
+             + (f" {sty.label(ours)} is drawn in {sty.ours_color} with its values printed." if ours else ""))
+    mf.set_meta(a, "radar", {"series": list(series), "ours": ours, "axes": axes, "lower_is_better": sorted(lower), "facts": facts, "styles": {k: dict(v) for k, v in sty.drawn.items()}})
+    src, hdr = mf.with_style(src, ["series", "axis", "value", "axis_lo", "axis_hi", "lower_is_better", "best"], 0, sty)
+    finish(fig, a, src, hdr, root, cap + ".")
 
 
 # ------------------------------------------------------------------ schematic and strip
@@ -608,7 +687,7 @@ def _tile(pattern, seed, n=8):
 
 
 def draw_spec(spec, root):
-    W, H = (float(v) for v in spec.get("size_mm", [100, 60])); fs = float(spec.get("font_pt", 6.5))
+    W, H = (float(v) for v in spec.get("size_mm", [100, 60])); fs = mf.T(float(spec.get("font_pt", 6.5)))             # figures.style.font_pt (when set) wins over the spec
     fig = plt.figure(figsize=(W / 25.4, H / 25.4)); ax = fig.add_axes([0, 0, 1, 1]); ax.set_xlim(0, W); ax.set_ylim(0, H); ax.axis("off")
     box = {}; src = []; warns = []; illustrative = False
     for p in spec.get("panels", []) or []:
@@ -697,15 +776,18 @@ def schematic(a):
     root = os.path.abspath(a.project); sp = os.path.join(root, a.spec)
     if not os.path.exists(sp): fail(f"{a.spec} 不存在（模板：templates/motivation_scheme.yaml）")
     spec = yaml.safe_load(io.open(sp, encoding="utf-8")) or {}
+    sty = mf.Sty(a, root); COLORS["ours"] = sty.ours_color                                  # the schematic's "ours" colour is the registry's, like in every plot
     fig, src, illustrative, W = draw_spec(spec, root)
     a.width_mm = W
     cap = f"Schematic drawn from {a.spec}"
     if illustrative: cap += "; tiles are illustrations, not measured feature maps — say so in the caption"
-    finish(fig, a, src, ["kind", "id", "x_mm", "y_mm", "w_mm", "h_mm", "text_or_src"], root, cap + ".")
+    facts = f"Schematic of the method drawn from a block-diagram spec ({len(spec.get('nodes') or [])} nodes, {len(spec.get('edges') or [])} edges)." + (" Tiles are illustrations, not measured feature maps." if illustrative else "")
+    mf.set_meta(a, "schematic", {"nodes": len(spec.get("nodes") or []), "edges": len(spec.get("edges") or []), "illustrative_tiles": bool(illustrative), "facts": facts, "styles": {}})
+    finish(fig, a, [r + ["", "", "", ""] for r in src], ["kind", "id", "x_mm", "y_mm", "w_mm", "h_mm", "text_or_src", "label", "color", "line", "marker"], root, cap + ".")
 
 
 def strip(a):
-    root = os.path.abspath(a.project)
+    root = os.path.abspath(a.project); mf.Sty(a, root)
     items = []
     for it in a.item:
         parts = [p.strip() for p in it.split("|")]
@@ -721,7 +803,8 @@ def strip(a):
         nodes.append({"kind": "text", "text": parts[0], "xy": [W / 2, y - ih / 2 - 1.9], "wh": [W, 2.6], "size": a.font_pt, "bold": False, "color": "neutral"})
     if a.title: nodes.append({"kind": "text", "text": a.title, "xy": [W / 2, H - 1.8], "wh": [W, 3], "size": a.font_pt + 0.6, "bold": True, "italic": True, "color": "bad"})
     fig, src, _, _ = draw_spec({"size_mm": [W, H], "font_pt": a.font_pt, "nodes": nodes}, root)
-    finish(fig, a, src, ["kind", "id", "x_mm", "y_mm", "w_mm", "h_mm", "text_or_src"], root, f"Dataset strip: {len(items)} benchmarks, paired modalities side by side.")
+    mf.set_meta(a, "strip", {"n_items": len(items), "items": [p_[0] for p_ in items], "facts": f"Dataset strip: {len(items)} benchmarks ({', '.join(p_[0] for p_ in items)}), paired modalities side by side.", "styles": {}})
+    finish(fig, a, [r + ["", "", "", ""] for r in src], ["kind", "id", "x_mm", "y_mm", "w_mm", "h_mm", "text_or_src", "label", "color", "line", "marker"], root, f"Dataset strip: {len(items)} benchmarks, paired modalities side by side.")
 
 
 def main():
@@ -732,7 +815,7 @@ def main():
     c.add_argument("--among", default="", help="series that compete for the lead (default: all but --ours)")
     c.add_argument("--gap", action="append", help="'A,B' or 'A,B@x': arrow and Δ between two series (largest |Δ| when @x is omitted)")
     c.add_argument("--regions", default="", help="'Night:0:0.3,Day:0.7:1' shaded regimes"); c.add_argument("--lower", action="store_true", help="lower metric is better")
-    c.add_argument("--logx", action="store_true"); c.add_argument("--legend", default="below", help="'below' (default, never covers data) or a matplotlib loc")
+    c.add_argument("--logx", action="store_true"); c.add_argument("--legend", default="below", help="'below' (default, never covers data), 'auto' (the first corner that touches no line or band) or a matplotlib loc")
     p = sub.add_parser("paired", help="same items under two settings: slope chart or sorted Δ bars")
     p.add_argument("--csv", required=True); p.add_argument("--item", required=True, help="column(s) naming an item, comma list")
     p.add_argument("--from", dest="from_", required=True, help="column(s) of the reference setting; several = the better of them")
@@ -743,7 +826,8 @@ def main():
     t.add_argument("--csv", required=True); t.add_argument("--x", required=True, help="cost column (params, GFLOPs, latency, labels used …)"); t.add_argument("--y", required=True)
     t.add_argument("--label", default="method", help="column naming each point; its value is the text label"); t.add_argument("--size", default=""); t.add_argument("--ours", default="", help="label value(s) of ours, comma list")
     t.add_argument("--logx", action="store_true"); t.add_argument("--lower", action="store_true", help="lower y is better"); t.add_argument("--higher-x", action="store_true", help="higher x is better")
-    t.add_argument("--color", default="", help="categorical column (dataset): one fill colour per value, legend of the fills; the Pareto front is then per value")
+    t.add_argument("--color", default="", help="categorical column (dataset): encoded by marker shape (default), fill or one panel per value, NEVER by hue (the hue is the method's); the Pareto front is then per value")
+    t.add_argument("--dataset-encoding", choices=["marker", "fill", "panel"], default="marker", help="how --color shows the dataset: marker shape (registry datasets.<k>.marker), full / open fill (<= 2 datasets) or one panel per dataset")
     t.add_argument("--marker-ours", choices=list(STAR), default="star", help="marker of the --ours points (others stay circles)")
     t.add_argument("--label-each", action="store_true", help="with --color: name every point, not once per method (ours is always named at every point)")
     t.add_argument("--broken-x", default="", help="'65,110': hide this x interval, two axes with break marks (not with --logx)")
@@ -767,6 +851,7 @@ def main():
         q.add_argument("--labels", default="", help="'col=display name,…'")
         q.add_argument("--synthetic", action="store_true", help="simulated / demo data: SYNTHETIC DEMO watermark (provenance rule of make_figure.py)")
         q.add_argument("--no-watermark-check", action="store_true", dest="no_watermark_check", help="skip the data-provenance check")
+        q.add_argument("--allow-code-labels", action="store_true", dest="allow_code_labels", help="draw series / axis names that look like code (chgate, F6R, value) as they are instead of failing; the fix is figures.style (figure_style.py init)")
         if name != "schematic": q.add_argument("--width-mm", type=float, default=0.0 if name in ("condition", "paired", "tradeoff") else widths[name], help="print width; default for condition / paired / tradeoff = the venue's column width (CVPR 82.5 mm), else 88 mm" if name in ("condition", "paired", "tradeoff") else None)
         if name in ("condition", "paired", "tradeoff"):
             q.add_argument("--height-in", type=float, default=2.1); q.add_argument("--xlabel", default=""); q.add_argument("--ylabel", default="")

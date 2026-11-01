@@ -194,8 +194,12 @@ def test_paired_slope_averages_rows_per_item(research):
     _table1(research)
     r = run("make_motivation.py", "paired", "--csv", "results/table1.csv", "--item", "dataset", "--from", "RGB,IR", "--to", "Naive",
             "--out", "figures/fig_p.png", cwd=research)
+    assert r.returncode == 1 and not r.crashed and "[FAIL] style" in r.out and "'value'" in r.out, r.out        # no --value / --ylabel: the axis would read the placeholder "value"
+    r = run("make_motivation.py", "paired", "--csv", "results/table1.csv", "--item", "dataset", "--from", "RGB,IR", "--to", "Naive",
+            "--ylabel", "AP (%)", "--out", "figures/fig_p.png", cwd=research)
     assert r.returncode == 0 and "/3 worse" in r.out, r.out                # 3 datasets, 7 detectors averaged into each
     assert "(slope chart)" in read(research / "figures.csv")
+    assert (research / "figures" / "fig_p.meta.json").exists() and "<takeaway" in read(research / "figures" / "fig_p.caption.md")
 
 
 def test_paired_missing_column_fails_cleanly(research):

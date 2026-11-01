@@ -20,7 +20,11 @@ joined by tensor identity. The author may move or merge nodes in the .tex, but n
 
   python make_architecture.py render --spec figures/arch/model.yaml --out figures/fig_arch.pdf [--engine tikz|dot] [--rankdir LR]
                                      [--hide BatchNorm2d,ReLU,Identity,Dropout,output:out1.feats_0] [--merge "backbone.*=Backbone"] [--images "input:rgb=figures/src/rgb.png,output:out0=figures/src/det.png"]
-                                     [--width-mm 178] [--font-pt 7] [--show-params] [--shapes edge|node|none] [--project .]
+                                     [--width-mm 178] [--font-pt 7] [--show-params] [--shapes edge|node|none] [--ours-modules REGEX] [--project .]
+      Style (figure_style.py, figures.style in research-state.yaml): stage names come from `stages` (raw stage -> name; unregistered stages keep the traced name, generic ones
+      like "layers" are a WARN), modules of our method get the ours colour (`ours` keys match a node id / label / class or a dotted prefix of the id, or --ours-modules REGEX)
+      and every other module is light grey, input / output nodes read "RGB image" / "IR image" / "Output 2" (registry label if registered), never `out0`; font size = font_pt
+      unless --font-pt is given. Writes <out>.meta.json + <out>.caption.md (caption_draft.py) next to the figure.
       Layout = graphviz dot (clusters per stage, LR). --engine tikz (default when pdflatex is on PATH): dot -Tplain coordinates -> a standalone .tex
       (kept next to the .pdf for hand polishing: move / merge, never add) compiled with pdflatex; --engine dot: dot -Tpdf scaled to --width-mm.
       --hide removes node classes (or exact node ids) and re-routes their edges; --merge "regex=Label" (repeatable, or ';' separated) collapses a whole subtree into one box;
@@ -41,6 +45,10 @@ concept figure (cvpr2027_medical Fig 1 b/c) was a cartoon not derived from the m
 import argparse, ast, collections, contextlib, csv, datetime, glob, hashlib, importlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path: sys.path.insert(0, HERE)
+import figure_style as fs, caption_draft as cd      # figures.style of research-state.yaml: stage names, ours colour, input / output words; <out>.meta.json + <out>.caption.md
 
 # palette: hex values copied from make_motivation.COLORS (not imported, so this script does not need matplotlib)
 COLORS = {"rgb": "#e8833a", "x": "#2f6eb5", "shared": "#9aa0a6", "ours": "#d1495b", "good": "#2e9b57", "bad": "#c0392b",
@@ -552,7 +560,55 @@ def human(n):
 
 
 class Style:
-    def __init__(self, font): self.font = font; self.cw = 0.5 * font; self.pad = 5.0; self.show_params = False; self.shapes = "edge"
+    def __init__(self, font):
+        self.font = font; self.cw = 0.5 * font; self.pad = 5.0; self.show_params = False; self.shapes = "edge"
+        self.ours_ids = set(); self.ours_color = fs.ACCENT          # node ids of our method's modules (filled with the ours colour; everything else light grey)
+
+    def fill(self, n, colr):
+        """fill colour of a node: ours = a tint of the ours colour, the other modules light grey once ours is marked, else the stage tint"""
+        if n["kind"] != "module": return COLORS["light"] if n["kind"] != "op" else "#ffffff"
+        if n["id"] in self.ours_ids: return tint(self.ours_color, 0.45)
+        return COLORS["light"] if self.ours_ids else tint(colr.get(n["stage"], COLORS["light"]), 0.16)
+
+
+MODALITY = {"rgb": "RGB image", "ir": "IR image", "nir": "NIR image", "fir": "FIR image", "thermal": "Thermal image", "ct": "CT image", "mri": "MRI image", "mr": "MR image", "pet": "PET image",
+            "depth": "Depth map", "lidar": "LiDAR points", "img": "Image", "image": "Image", "images": "Images", "text": "Text", "audio": "Audio"}
+OUT_WORD = {"out": "Output", "output": "Output", "outputs": "Output", "outs": "Output", "result": "Output", "results": "Output", "pred": "Predictions", "preds": "Predictions",
+            "prediction": "Predictions", "predictions": "Predictions", "logit": "Logits", "logits": "Logits", "det": "Detections", "dets": "Detections", "detection": "Detections",
+            "detections": "Detections", "boxes": "Detections"}
+OUT_RE = re.compile(r"^([A-Za-z]+?)(\d*)(?:[._](.*))?$")
+
+
+def io_label(n, style):
+    """label of an input / output node for the figure: the registry label when registered, else plain words ("RGB image", "IR image", "Output 2 (Feats 0)"), never out0 / value"""
+    name = n["label"]
+    if style.key(name): return style.label(name)
+    if n["kind"] == "input":
+        return MODALITY.get(name.lower()) or (fs.humanise(name) + " input")
+    m = OUT_RE.match(name)
+    if m and m.group(1).lower() in OUT_WORD:
+        w = OUT_WORD[m.group(1).lower()]; idx = f" {int(m.group(2)) + 1}" if m.group(2) else ""
+        rest = f" ({fs.humanise(m.group(3))})" if m.group(3) else ""
+        return w + idx + rest
+    return fs.humanise(name)
+
+
+def stage_display(raw, style):
+    """the registry's name for a traced stage (figures.style.stages: raw name, case / space / underscore-insensitive), else the traced name unchanged"""
+    if raw in style.stages: return style.stages[raw]
+    for k, v in style.stages.items():
+        if fs._norm(k) == fs._norm(raw): return v
+    return raw
+
+
+def ours_node_ids(nodes, style, rx):
+    """module nodes of our method: --ours-modules regex on id / label / class, or a figures.style.ours key / alias / label that equals the id, the label, the class or a dotted prefix of the id"""
+    out = set()
+    for n in nodes:
+        if n["kind"] != "module": continue
+        parts = n["id"].split("."); cand = [n["id"], n["label"], n["cls"]] + [".".join(parts[:i]) for i in range(1, len(parts))]
+        if (rx and any(rx.search(c) for c in cand)) or (style.ours and any(style.is_ours(c) for c in cand)): out.add(n["id"])
+    return out
 
 
 def node_text(n, st):
@@ -597,7 +653,7 @@ def layout(nodes, edges, st, rankdir, imgs, mode, size_in=None, pdf_out=None, pa
     for n in nodes:
         if n["stage"] and n["kind"] in ("module", "op"): members[n["stage"]].append(n)
     framed = [s for s in stages if len(members[s]) >= 2]
-    colr = {s: COLORS[STAGE_KEYS[i % len(STAGE_KEYS)]] for i, s in enumerate(stages)}
+    colr = {s: (COLORS["shared"] if st.ours_ids else COLORS[STAGE_KEYS[i % len(STAGE_KEYS)]]) for i, s in enumerate(stages)}      # ours marked: neutral frames, the colour belongs to our modules
     L = ["digraph G {", f'rankdir={rankdir}; nodesep=0.1; ranksep=0.13; newrank=true; margin=0; pad=0.02;',
          f'node [fontname="Times-Roman", fontsize={ft:g}, color="#444444", penwidth=0.6];',
          f'edge [fontname="Times-Roman", fontsize={ft * 0.85:g}, color="#555555", penwidth=0.6, arrowsize=0.5{", arrowhead=none" if mode == "plain" else ""}];']
@@ -611,14 +667,14 @@ def layout(nodes, edges, st, rankdir, imgs, mode, size_in=None, pdf_out=None, pa
         if n["kind"] == "op":
             circ = len(GLYPH.get(n["cls"], n["label"])) <= 3
             return f'{base}, shape={"circle" if circ else "box"}, label="{txt}", fillcolor="white", style="{"filled" if circ else "rounded,filled"}"];'
-        fill = tint(colr.get(n["stage"], COLORS["light"]), 0.16) if n["kind"] == "module" else COLORS["light"]
+        fill = st.fill(n, colr); own = f', color="{st.ours_color}", penwidth=1.2' if n["id"] in st.ours_ids else ""
         im = imgs.get(n["id"])
         if im and mode == "pdf":
             p = im["path"].replace("\\", "/")
             lab = (f'<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD FIXEDSIZE="TRUE" WIDTH="{im["w"]:.1f}" HEIGHT="{im["h"]:.1f}">'
                    f'<IMG SRC="{p}" SCALE="TRUE"/></TD></TR><TR><TD>{txt}</TD></TR></TABLE>>')
             return f'{base}, shape=box, margin=0, color="#444444", style="rounded", label={lab}];'
-        return f'{base}, shape=box, style="rounded,filled", fillcolor="{fill}", label="{txt}"];'
+        return f'{base}, shape=box, style="rounded,filled", fillcolor="{fill}"{own}, label="{txt}"];'
     done = set()
     for s in framed:
         L.append(f'subgraph cluster_{stages.index(s)} {{ label="{s}"; labeljust=l; labelloc=t; fontsize={ft:g}; fontname="Times-Bold"; style="rounded"; color="{tint(colr[s], 0.6)}"; margin=9; penwidth=0.6;')
@@ -663,6 +719,7 @@ def tex_source(nodes, edges, L, st, s, imgs, img_rel, show_params, total_params,
     for i, stg in enumerate(L["stages"]):
         o.append(f"\\definecolor{{st{i}}}{{HTML}}{{{tint(L['colr'][stg], 0.16)[1:].upper()}}}")
         o.append(f"\\definecolor{{sb{i}}}{{HTML}}{{{tint(L['colr'][stg], 0.6)[1:].upper()}}}")
+    if st.ours_ids: o += [f"\\definecolor{{oursfill}}{{HTML}}{{{tint(st.ours_color, 0.45)[1:].upper()}}}", f"\\definecolor{{oursdraw}}{{HTML}}{{{st.ours_color[1:].upper()}}}"]
     o += [f"\\definecolor{{lightgrey}}{{HTML}}{{{COLORS['light'][1:].upper()}}}", r"\definecolor{ink}{HTML}{444444}", r"\definecolor{edgegrey}{HTML}{555555}",
           r"\begin{document}", r"\begin{tikzpicture}[x=1pt,y=1pt,line width=%.2fpt,>={Latex[length=%.2fpt,width=%.2fpt]},"
           % (0.5 * s, 3.2 * s, 2.4 * s)]
@@ -688,7 +745,8 @@ def tex_source(nodes, edges, L, st, s, imgs, img_rel, show_params, total_params,
             o.append(f"  \\node[{sty},minimum size={P(min(w, h))}pt] (n{i}) at ({P(x)},{P(y)}) {{{txt}}};"
                      if sty == "opn" else f"  \\node[{sty},minimum width={P(w)}pt,minimum height={P(h)}pt] (n{i}) at ({P(x)},{P(y)}) {{{txt}}};")
             continue
-        fill = f"st{L['stages'].index(n['stage'])}" if (n["kind"] == "module" and n["stage"] in L["stages"]) else "lightgrey"
+        fill = f"st{L['stages'].index(n['stage'])}" if (n["kind"] == "module" and n["stage"] in L["stages"] and not st.ours_ids) else "lightgrey"
+        if n["id"] in st.ours_ids: fill = f"oursfill,draw=oursdraw,line width={1.0 * s:.2f}pt"          # our method's module: the ours colour; every other module stays light grey
         txt = "\\\\".join(esc_tex(l) for l in lines)
         im = imgs.get(n["id"])
         if im:
@@ -755,7 +813,20 @@ def cmd_render(a):
     if engine == "tikz" and not shutil.which("pdflatex"): die("render", "--engine tikz 需要 pdflatex 在 PATH 上（或用 --engine dot）")
     out = os.path.join(root, a.out); odir = os.path.dirname(out); os.makedirs(odir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(out))[0]
+    ST = fs.load(root)                                                      # figures.style: stage names, ours colour, input / output words, font size
+    if a.font_pt is None: a.font_pt = ST.font_pt
+    for n in nodes:
+        if n["kind"] in ("input", "output"): n["label"] = io_label(n, ST)           # "RGB image" / "Output 2", never out0 (the id keeps the traced name for --images / --hide)
+        if n.get("stage"): n["stage"] = stage_display(n["stage"], ST)
+    try: ours_rx = re.compile(a.ours_modules) if a.ours_modules else None
+    except re.error as ex: die("render", f"--ours-modules 正则 {a.ours_modules!r} 无效: {ex}")
     st = Style(a.font_pt); st.show_params = a.show_params; st.shapes = a.shapes
+    st.ours_ids = ours_node_ids(nodes, ST, ours_rx); st.ours_color = ST.ours_color
+    if (ours_rx or ST.ours) and not st.ours_ids: say("WARN", "render", f"ours modules: {a.ours_modules or ST.ours} matches no module node (id / label / class): nothing is filled in the ours colour")
+    elif not (ours_rx or ST.ours) and not ST.empty(): say("WARN", "render", "no ours modules (figures.style.ours is empty and no --ours-modules): modules keep the stage tints, none is singled out")
+    for stg in stages_in_order(nodes):
+        if stg.lower().replace(" ", "") in GENERIC_STAGES: say("WARN", "render", f"stage name {stg!r} is a generic code name that groups unrelated parts: name the stage in figures.style.stages (or trace with --stages)")
+        elif fs.looks_like_code(stg.lower()) and stg not in ST.stages.values(): say("WARN", "render", f"stage name {stg!r} reads like code: name it in figures.style.stages")
     imgs = {}; img_rel = {}; assets = os.path.join(odir, stem + "_assets")
     for k, p in parse_kv(a.images).items():
         if k not in ids: say("WARN", "render", f"--images {k}: 没有这个节点（可用: {', '.join(sorted(ids)[:6])}…）"); continue
@@ -797,16 +868,26 @@ def cmd_render(a):
     page_mm = round(page_mm, 1)
     csvp = os.path.splitext(out)[0] + ".source.csv"
     with open(csvp, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f); w.writerow(["id", "label", "cls", "shape_in", "shape_out", "params", "stage", "repeat"])
+        w = csv.writer(f); w.writerow(["id", "label", "cls", "shape_in", "shape_out", "params", "stage", "repeat", "color", "ours"])      # color = the fill drawn (figure_style.py check reads the style columns)
         for n in sorted(nodes, key=lambda n: n["order"]):
             w.writerow([n["id"], n["label"], n["cls"], " | ".join("x".join(map(str, s_)) for s_ in n["shape_in"]), " | ".join("x".join(map(str, s_)) for s_ in n["shape_out"]),
-                        n["params"], n["stage"], n.get("repeat", 1)])
+                        n["params"], n["stage"], n.get("repeat", 1), st.fill(n, L["colr"]), "yes" if n["id"] in st.ours_ids else "no"])
     stage_names = [x for x in stages_in_order(nodes) if len(L["members"][x]) >= 2 or any(n["stage"] == x and n["kind"] == "module" for n in nodes)]
     allowed = [lab for lab in merge_labels] + [n["label"] for n in nodes] + [n["cls"] for n in nodes] + stage_names + [k.split(":", 1)[-1] for k in imgs]
     rj = {"spec": rel(sp, root), "spec_sha256": spec_sha, "engine": engine, "width_mm": a.width_mm, "page_mm": page_mm, "font_pt": a.font_pt, "scale": round(s, 3),
           "min_font_pt": round(min_pt, 2) if min_pt else None, "nodes": len(nodes), "edges": len(edges), "hide": a.hide or "", "merge": rules, "merge_labels": merge_labels,
           "show_params": bool(a.show_params), "stage_names": stage_names, "allowed": sorted(set(allowed)), "tex": rel(texp, root) if texp else "", "pdf": rel(out, root)}
+    rj["ours_modules"] = sorted(st.ours_ids)
     json.dump(rj, io.open(os.path.splitext(out)[0] + ".render.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    # what was drawn -> <out>.meta.json + <out>.caption.md (caption_draft.py); the author replaces the takeaway sentence
+    inp = [fmt_shape(it["shape"]) for it in parse_inputs(meta.get("input", ""))] if meta.get("input") else []
+    cmeta = {"model": str(meta.get("model", "")).split(":")[-1] or None, "stages": stage_names, "ours_modules": [n["label"] for n in sorted(nodes, key=lambda n: n["order"]) if n["id"] in st.ours_ids],
+             "n_params": meta.get("params_total"), "shapes": a.shapes != "none", "input_shape": " / ".join(inp) if inp else None, "engine": engine,
+             "roles": {"ours_fill": tint(st.ours_color, 0.45)} if st.ours_ids else {}}
+    try:
+        _mp, _cp = cd.write_files(os.path.splitext(out)[0], "architecture", cmeta, ST)
+        print(f"[INFO] render: caption draft {rel(_cp, root)} (replace the <takeaway> sentence), what was drawn {rel(_mp, root)}")
+    except Exception as ex: say("WARN", "render", f"could not write the meta / caption draft ({type(ex).__name__}: {ex})")
     register_figure(root, out, page_mm, csvp, f"Architecture traced from {meta.get('model', '?')} (depth {meta.get('depth', '?')}, {len(nodes)} nodes, {len(edges)} edges); shapes C×H×W, batch dropped.")
     say("PASS", "render", f"{rel(out, root)}: {engine}, 页宽 {page_mm:g} mm，节点 {len(nodes)} / 边 {len(edges)}，印刷最小字号 {min_pt:.1f} pt；预览 {rel(png, root)}；figures.csv 已登记（inspected=no → 看图后改 yes）")
     if min_pt is not None and min_pt < 5: say("WARN", "render", f"印刷最小字号 {min_pt:.1f} pt < 5 pt：G5 会 FAIL，按上面的办法减节点")
@@ -988,7 +1069,8 @@ def main():
     p = sub.add_parser("render"); p.add_argument("--project", default="."); p.add_argument("--spec", required=True); p.add_argument("--out", required=True)
     p.add_argument("--engine", choices=["tikz", "dot"], default=""); p.add_argument("--rankdir", default="LR"); p.add_argument("--hide", default="")
     p.add_argument("--merge", action="append", default=[]); p.add_argument("--images", default=""); p.add_argument("--width-mm", type=float, default=178)
-    p.add_argument("--font-pt", type=float, default=7); p.add_argument("--show-params", action="store_true")
+    p.add_argument("--font-pt", type=float, default=None, help="default = figures.style.font_pt (7)"); p.add_argument("--show-params", action="store_true")
+    p.add_argument("--ours-modules", default="", help="regex on node id / label / class: our method's modules, filled in the ours colour (default: the figures.style.ours keys); every other module is light grey")
     p.add_argument("--shapes", choices=["edge", "node", "none"], default="edge", help="where tensor shapes go: on the edges where they change (default), as a second line in each node (about 40 %% narrower), or nowhere")
     p = sub.add_parser("check"); p.add_argument("--project", default="."); p.add_argument("--spec", default=""); p.add_argument("--figure", default="")
     p.add_argument("--tex", default=""); p.add_argument("--allow", default="")

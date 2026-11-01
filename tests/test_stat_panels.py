@@ -107,7 +107,7 @@ def test_curves_without_new_options_keep_the_old_source_columns(tmp_path):
     _curves(tmp_path / "curves.csv")
     r = run("make_figure.py", "curves", "--csv", "curves.csv", "--x", "epoch", "--y", "AP50", "--series", "method", "--out", "figures/fig_old.png", cwd=tmp_path)
     assert r.returncode == 0, r.out
-    assert list(csv.reader(io.open(tmp_path / "figures" / "fig_old.source.csv", encoding="utf-8")))[0] == ["panel", "series", "epoch", "AP50_mean", "AP50_sd", "n"]
+    assert list(csv.reader(io.open(tmp_path / "figures" / "fig_old.source.csv", encoding="utf-8")))[0] == ["panel", "series", "epoch", "AP50_mean", "AP50_sd", "n", "label", "color", "line", "marker"]   # + the style columns every figure carries
 
 
 def test_curves_annotate_needs_ours_and_a_baseline_series(tmp_path):
@@ -217,13 +217,14 @@ def test_tradeoff_colour_marker_label_and_source_columns(tmp_path):
                                                      "--title", "Frontier", "--no-front", "--width-mm", "150", "--height-in", "3", "--out", out), cwd=tmp_path)
     assert r.returncode == 0 and not r.crashed, r.out
     src = _outputs(tmp_path, out)
-    assert {"label", "params", "AP", "GFLOPs", "n", "on_front", "dataset", "placed_label"} <= set(src[0])
+    assert {"method", "params", "AP", "GFLOPs", "n", "on_front", "dataset", "placed_label", "label", "color", "line", "marker"} <= set(src[0])     # the first column is the input's name column; label / color / ... are the style columns
     assert {s["dataset"] for s in src} == {"M3FD", "LLVIP", "SUN"} and len(src) == 3 * 10
     assert {s["placed_label"] for s in src} <= {"yes", "no", "skipped"}
-    ours = [s for s in src if s["label"] in ("ACSR", "ACSR-S")]
+    ours = [s for s in src if s["method"] in ("ACSR", "ACSR-S")]
     assert len(ours) == 6 and all(s["placed_label"] in ("yes", "no") for s in ours)    # ours is named at every point
-    prior = [s for s in src if s["label"].startswith("prior")]
-    assert sum(1 for s in prior if s["placed_label"] != "skipped") <= len({s["label"] for s in prior})   # each prior method is named at most once
+    prior = [s for s in src if s["method"].startswith("prior")]
+    assert sum(1 for s in prior if s["placed_label"] != "skipped") <= len({s["method"] for s in prior})   # each prior method is named at most once
+    assert len({s["color"] for s in src if s["method"] == "ACSR"}) == 1 and len({s["color"] for s in src}) >= 5     # one colour per method (the dataset is a marker, not a hue)
     assert "Pareto front" not in read(tmp_path / "figures.csv")
     assert "ours (ACSR [M3FD]) is on the Pareto front" in r.out                       # the front is per benchmark
 
@@ -232,7 +233,7 @@ def test_tradeoff_front_is_per_colour_group(tmp_path):
     _table(tmp_path / "fr.csv", ["method", "dataset", "params", "AP"], [["a", "D1", 1, 50], ["b", "D1", 2, 40], ["a", "D2", 1, 20], ["b", "D2", 2, 45]])
     r = run("make_motivation.py", "tradeoff", *_args("--color", "dataset", "--ours", "b", "--out", "figures/fig_g.png"), cwd=tmp_path)
     assert r.returncode == 0, r.out
-    src = {(s["label"], s["dataset"]): s["on_front"] for s in _outputs(tmp_path, "figures/fig_g.png")}
+    src = {(s["method"], s["dataset"]): s["on_front"] for s in _outputs(tmp_path, "figures/fig_g.png")}
     assert src == {("a", "D1"): "True", ("b", "D1"): "False", ("a", "D2"): "True", ("b", "D2"): "True"}   # (a, D1) would dominate (b, D2) in a pooled front
     assert "[WARN] tradeoff: ours (b [D1]) is dominated by ['a [D1]']" in r.out
 
@@ -274,7 +275,7 @@ def test_tradeoff_crowded_labels_are_dropped_and_listed(tmp_path):
     _table(tmp_path / "fr.csv", ["method", "params", "AP"], rows)
     r = run("make_motivation.py", "tradeoff", *_args("--out", "figures/fig_d.png"), cwd=tmp_path)
     assert r.returncode == 0 and not r.crashed, r.out
-    src = {s["label"]: s["placed_label"] for s in _outputs(tmp_path, "figures/fig_d.png")}
+    src = {s["method"]: s["placed_label"] for s in _outputs(tmp_path, "figures/fig_d.png")}
     dropped = [k for k, v in src.items() if v == "no"]
     assert dropped and "label(s) dropped" in r.out and all(k in r.out for k in dropped), r.out
     assert src["far"] == "yes" and src["method0"] == "yes"

@@ -59,7 +59,7 @@ def _dense_loss(path, n_pts=100, with_outlier=True):
 
 
 def _curves(tmp_path, csvname, *extra, out="figures/c.png", cwd=None):
-    return run("make_figure.py", "curves", "--project", ".", "--csv", csvname, "--out", out, "--x", "epoch", "--y", "value", "--series", "method", *extra, cwd=cwd or tmp_path)
+    return run("make_figure.py", "curves", "--project", ".", "--csv", csvname, "--out", out, "--x", "epoch", "--y", "value", "--ylabel", "Loss", "--series", "method", *extra, cwd=cwd or tmp_path)
 
 
 def _curves_in_process(monkeypatch, tmp_path, argv):
@@ -178,7 +178,7 @@ def test_bug04_units_none_keeps_values_and_records_none(tmp_path):
 # ------------------------------------------------------------------ 5 / 6: inset and palette / legend (in process, on the figure)
 def test_bug05_inset_is_refused_when_it_would_be_the_whole_curve(tmp_path, monkeypatch):
     _sparse_curves(tmp_path / "results" / "c.csv")
-    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/c.csv", "--x", "epoch", "--y", "value", "--series", "method", "--ours", "ours", "--baseline", "base",
+    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/c.csv", "--x", "epoch", "--y", "value", "--ylabel", "Loss", "--series", "method", "--ours", "ours", "--baseline", "base",
                                                                "--ema", "0.12", "--inset", "last:30", "--annotate", "last", "--out", "figures/c.png"])
     assert all(not ax.child_axes for ax in fig.axes)
     assert "inset and grey rectangle" not in cap
@@ -186,7 +186,7 @@ def test_bug05_inset_is_refused_when_it_would_be_the_whole_curve(tmp_path, monke
 
 def test_bug05_inset_has_three_ticks_readable_labels_and_connectors_and_keeps_off_the_data(tmp_path, monkeypatch):
     _dense_loss(tmp_path / "results" / "l.csv")
-    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/l.csv", "--x", "epoch", "--y", "value", "--series", "method", "--ours", "ours", "--baseline", "base",
+    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/l.csv", "--x", "epoch", "--y", "value", "--ylabel", "Loss", "--series", "method", "--ours", "ours", "--baseline", "base",
                                                                "--ema", "0.12", "--inset", "last:30", "--annotate", "last", "--width-mm", "174.6", "--out", "figures/l.png"])
     ax = fig.axes[0]; ins = ax.child_axes[0]
     assert len(ins.get_xticks()) >= 3 and len(ins.get_yticks()) >= 3
@@ -203,17 +203,19 @@ def test_bug06_palette_hierarchy_one_row_legend_and_no_collision_with_the_end_la
             for e in range(40):
                 rows.append([m, sd, e, round(2.0 + 0.2 * i + 3 * np.exp(-e / 10) + 0.01 * sd, 4)])
     _table(tmp_path / "results" / "l.csv", ["method", "seed", "epoch", "value"], rows)
-    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/l.csv", "--x", "epoch", "--y", "value", "--series", "method", "--ours", "ours", "--baseline", "F6 SMM",
+    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/l.csv", "--x", "epoch", "--y", "value", "--ylabel", "Loss", "--series", "method", "--ours", "ours", "--baseline", "F6 SMM",
+                                                               "--allow-code-labels",                      # "F2 Concat" / "F6R +aug" are family codes: the registry would name them, this test draws them as they are
                                                                "--ema", "0.12", "--annotate", "last", "--width-mm", "174.6", "--out", "figures/l.png"])
     ax = fig.axes[0]; leg = fig.legends[0] if fig.legends else ax.get_legend()
     hs = leg.legend_handles; labels = [t.get_text() for t in leg.get_texts()]
     assert not any("n=" in t for t in labels), labels                                          # n goes to the caption
     cols = {t: h.get_color() for t, h in zip(labels, hs)}
-    assert cols["ours"] == mf.ACCENT and hs[labels.index("ours")].get_linewidth() >= 1.7
+    assert cols["Ours"] == mf.ACCENT and hs[labels.index("Ours")].get_linewidth() >= 1.7        # an unregistered name is humanised ("ours" -> "Ours")
+    assert labels[0] == "Ours"                                                                  # ours is first in the legend
     base = hs[labels.index("F6 SMM")]; assert base.get_linestyle() == "--" and base.get_linewidth() <= 1.0
     others = [cols[n] for n in names if n not in ("ours", "F6 SMM")]
-    hues = [colorsys.rgb_to_hsv(*matplotlib_rgb(c))[0] for c in others]
-    assert len(set(others)) == 4 and all(abs(a - b) > 0.04 and abs(abs(a - b) - 1) > 0.04 for i, a in enumerate(hues) for b in hues[i + 1:]), others   # distinct hues, not shades of blue
+    from figure_style import delta_e
+    assert len(set(others)) == 4 and all(delta_e(a, b) >= 15 for i, a in enumerate(others) for b in others[i + 1:]) and all(delta_e(c, mf.ACCENT) >= 25 for c in others), others   # four clearly different colours, none near the accent
     if fig.legends: assert leg._ncols == len(labels)                                            # above the panels: one row (<= 6 series)
     fig.canvas.draw(); rend = fig.canvas.get_renderer(); lb = leg.get_window_extent(rend)
     for t in [t for t in ax.texts if t.get_gid() == "end-label"]:
@@ -228,7 +230,7 @@ def matplotlib_rgb(c):
 
 def test_curves_raw_records_are_one_neutral_grey_and_x_starts_at_the_first_epoch(tmp_path, monkeypatch):
     _dense_loss(tmp_path / "results" / "l.csv")
-    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/l.csv", "--x", "epoch", "--y", "value", "--series", "method", "--ours", "ours", "--baseline", "base",
+    fig, src, cap = _curves_in_process(monkeypatch, tmp_path, ["--csv", "results/l.csv", "--x", "epoch", "--y", "value", "--ylabel", "Loss", "--series", "method", "--ours", "ours", "--baseline", "base",
                                                                "--ema", "0.12", "--annotate", "last", "--out", "figures/l.png"])
     ax = fig.axes[0]
     raw = [ln for ln in ax.lines if ln.get_alpha() is not None and ln.get_alpha() < 0.3]
@@ -269,9 +271,9 @@ def test_bug08_tradeoff_y_norm_per_color_puts_datasets_with_different_ranges_on_
     r = run(*base, "--y-norm", "per-color", "--y-ref", "A", "--out", "figures/t1.png", cwd=tmp_path)
     assert r.returncode == 0 and "disjoint" not in r.out, r.out
     src = _dicts(tmp_path / "figures" / "t1.source.csv")
-    ref = [s for s in src if s["label"] == "A"]
+    ref = [s for s in src if s["method"] == "A"]
     assert {float(s["y_norm"]) for s in ref} == {0.0}                                             # the reference method is 0 in every group
-    ours = {s["dataset"]: (float(s["AP"]), float(s["y_norm"])) for s in src if s["label"] == "ours"}
+    ours = {s["dataset"]: (float(s["AP"]), float(s["y_norm"])) for s in src if s["method"] == "ours"}
     assert ours["M3FD"] == (37.7, pytest.approx(6.7)) and ours["LLVIP"][1] == pytest.approx(10.6)   # raw AP kept next to the normalised one
     assert "gain over" in read(tmp_path / "figures.csv")
     assert "is on the front by construction" in r.out                                              # ours is the costliest model: say so
@@ -293,7 +295,7 @@ def test_bug09_grid_box_status_counts_tp_fp_fn_and_draws_a_legend(tmp_path):
     assert r.returncode == 0 and not r.crashed, r.out
     assert "box status (IoU >= 0.5, class-aware; per method TP/FP/FN): base 1/1/1" in r.out, r.out
     cap = read(tmp_path / "figures.csv")
-    assert "green solid = true positive" in cap and "red dashed = false positive" in cap and "grey dotted = missed" in cap
+    assert "green solid = true positive" in cap and "dashed = false positive" in cap and "dotted = missed" in cap     # the colour of the false-positive boxes is the style registry's (orange), not "red" any more
     spans, _ = _pdf_spans(tmp_path / "figures" / "g.pdf"); text = " ".join(sp["text"] for sp in spans)
     assert "TP (IoU >= 0.5)" in text and "FN (missed ground truth)" in text                        # legend strip in the vector layer
 

@@ -96,6 +96,11 @@
 为什么：G5 查的是形式（字号 ≥ 5 pt、dpi、字体、灰度、数量、类型），不查图好不好；画图的会话也评不了自己的图——cvpr2027_med2 的图改了四版（v2–v5），每次的审美判断都是会话即兴的，直到用户说「太难看 / 质量太低」。独立审稿沿用 G7 的机制（子代理只看渲染图、范文缩略图和量表；packet 登记；复审必须在改后的对象上做），量表把「好看」拆成七项有锚点的分数，意见必须带具体改法。
 漏法：量表是一个模型的品味，accept 不等于用户觉得好看，最后一道审稿人仍是用户（定稿前给他看 crop 与范文缩略图）；渲染用 PyMuPDF 按题注 `Figure N` 找页、用 `figure_plan.figure_region` 找图区，题注不是「Figure N: / Fig. N.」开头的版式或图区找不准时退到 true_scale（图本身按印刷宽度画在白页上，看不到排版）；只改 LaTeX 宽度 / 位置、源文件不变的修改，`rereview` 靠渲染 sha 放行，但 check 的「改过未复审」只比源文件。
 
+**图风格登记与图注（2.15 新增，`figure_style.py check` + `caption_draft.py check`；G5 里自动跑，详情写成 `style F/W，captions F/W`）**：
+判据：① `figures.style` 不存在而已有图 → WARN「no figure style registry (figure_style.py init)」，旧项目不受影响；② FAIL：figures/*.source.csv 的 label 列或图 PDF 文本层里有仍像代码的标签（下划线、`F6R`、`out0`、`chgate / recv` 这类无元音缩写、`value / y` 当轴名）；同一方法在不同 source.csv 里有两个 label 或两种颜色；非 ours 方法用了 ours 色，或 roles 的 gt / tp / fp / fn 与 ours 同色；数据集条目带色相；cmap 是 jet 而没有 `roles.allow_jet`；WARN：source.csv 没有 label / color / line / marker 列（在登记前画的）、`TODO: author name` 还没确认、颜色在色觉缺陷下近乎相同；③ `caption_draft.py check` 把 LaTeX 图注与 `<out>.meta.json` 对：图注提到 inset / zoom 而图里没有、颜色词与 roles 矛盾（「绿 = GT」而 gt 是黄）FAIL；图有 inset 或带 / 误差棒 / EMA / 归一化 / 显示 gamma / 帧选法而图注没说、Δ 标注缺指标方向、图注仍含 `<takeaway` WARN。
+为什么：第三轮独立审稿（8 张真实图）的 10 条一致性 major 同一个根因——名字、颜色、「ours」由每个生成器各自决定，图注手写后与图矛盾；G5 以前只查形式，查不到「同一方法在两张图里换了颜色」。
+漏法：登记表由作者确认，`figure_style.py` 只能查到像代码的标签，查不到一个读得懂却错的名字；图注检查靠颜色词 / 关键词匹配，措辞绕开关键词就看不见；`select_samples.py` 的打分规则是我们的约定，不是文献里的标准，帧选法必须写进图注让读者自己判断。
+
 ## G6 正文六项
 ### refs
 bib 解析支持嵌套花括号与无尾逗号；DOI 从 doi/url 字段抽，arXiv 编号从 note/url/journal 字段抽（很多 bib 把 arXiv 写在 note 里）。CrossRef `works/{doi}` 取 title，与 bib title 做序列比率，<0.85 判 FAIL。PubMed 走 efetch 时限定 `PubmedData` 下的 ArticleId，否则会取到该文参考文献的 DOI。

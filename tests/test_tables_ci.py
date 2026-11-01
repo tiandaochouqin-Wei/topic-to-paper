@@ -158,7 +158,7 @@ def test_delta_row_per_dataset_in_multi(tmp_path):
 
 # ------------------------------------------------------------------ width fitting
 WIDE_HEAD = "method," + ",".join(f"M{i}" for i in range(8)) + "\n"
-WIDE_ROWS = "".join(f"A_long_method_name_{k}," + ",".join("0.123" for _ in range(8)) + "\n" for k in range(3))
+WIDE_ROWS = "".join(f"A long method name {k}," + ",".join("0.123" for _ in range(8)) + "\n" for k in range(3))
 
 
 def _wide(tmp_path, *extra, **kw):
@@ -228,7 +228,7 @@ def test_resizebox_without_graphicx_warns(tmp_path):
 
 
 def test_seeds_table_is_fitted_too(tmp_path):
-    write(tmp_path / "s.csv", "setting,seed,nll\n" + "".join(f"a_rather_long_setting_name_{k},{s},0.5\n" for k in range(2) for s in range(1, 9)))
+    write(tmp_path / "s.csv", "setting,seed,nll\n" + "".join(f"a rather long setting name {k},{s},0.5\n" for k in range(2) for s in range(1, 9)))
     r = run("make_comparison.py", "seeds", "--csv", tmp_path / "s.csv", "--out", tmp_path / "t.tex", "--metrics", "nll", "--lower", "nll", "--width-mm", "70", cwd=tmp_path)
     assert "\\resizebox" in read(tmp_path / "t.tex") or r.fails == 1, r.out
 
@@ -288,3 +288,71 @@ def test_overfull_stale_log_is_not_trusted(research):
 def test_no_log_means_no_overfull_line(research):
     r = run("latex_check.py", "check", cwd=research)
     assert "Overfull" not in r.out and r.fails == 0, r.out
+
+
+# ------------------------------------------------------------------ method names through the figure style registry (figure_style.py)
+REG = """figures:
+  style:
+    ours: [relroute_l]
+    methods:
+      relroute_l: {label: "RelRoute (ours)", color: "#c94a5e", line: "-", marker: "o"}
+      smm: {label: "SMM", color: "#4a4a4a", line: "--", marker: "s"}
+      cat: {label: "Concat", color: "#3d6a94", line: "-.", marker: "^"}
+"""
+REG_ROWS = "method,AP50,AP50_sd\nsmm,0.612,0.010\ncat,0.630,0.011\nrelroute_l,0.700,0.007\n"
+
+
+def _reg_sota(tmp_path, *extra, text=REG_ROWS):
+    write(tmp_path / "research-state.yaml", REG)
+    return run("make_comparison.py", "sota", "--csv", _csv(tmp_path, text), "--out", tmp_path / "t.tex", "--md", "--metrics", "AP50", "--higher", "AP50", "--project", ".", *extra, cwd=tmp_path)
+
+
+def test_registry_labels_replace_method_keys_and_ours_rows_are_bold_without_ours_flag(tmp_path):
+    r = _reg_sota(tmp_path)
+    assert r.returncode == 0 and r.fails == 0, r.out
+    tex, md = read(tmp_path / "t.tex"), read(tmp_path / "t.md")
+    assert r"\textbf{RelRoute (ours)}" in tex and "SMM &" in tex and "Concat &" in tex and "relroute" not in tex and "smm" not in tex     # labels in the table, keys nowhere
+    assert "**RelRoute (ours)**" in md
+    assert "relroute_l" in read(tmp_path / "t.source.csv")                                                                              # the numbers.csv selector keeps the key the csv holds
+    assert tex.index("SMM") < tex.index("Concat") < tex.index(r"\midrule", tex.index("Concat")) < tex.index("RelRoute")                 # ours last, after its own rule, as before
+
+
+def test_registered_aliases_resolve_to_one_label(tmp_path):
+    write(tmp_path / "research-state.yaml", REG.replace("      cat:", "      cat0:").rstrip("\n") + "\n    aliases: {\"F2 Concat\": cat0}\n")
+    r = run("make_comparison.py", "sota", "--csv", _csv(tmp_path, "method,AP50\nF2 Concat,0.6\nrelroute_l,0.7\n"), "--out", tmp_path / "t.tex", "--metrics", "AP50", "--higher", "AP50", "--project", ".", cwd=tmp_path)
+    assert r.returncode == 0 and r.fails == 0 and "Concat &" in read(tmp_path / "t.tex") and "F2" not in read(tmp_path / "t.tex"), r.out
+
+
+def test_code_like_method_names_fail_and_the_override_keeps_them(tmp_path):
+    r = _reg_sota(tmp_path, text="method,AP50\nchgate,0.6\nF6R,0.65\nrelroute_l,0.7\n")
+    assert r.fails == 2 and r.returncode == 2 and "chgate" in r.out and "F6R" in r.out and "figure_style.py init" in r.out, r.out
+    assert (tmp_path / "t.tex").exists()                                                          # the files are still written, like every other FAIL of this script
+    r2 = _reg_sota(tmp_path, "--allow-code-labels", text="method,AP50\nchgate,0.6\nF6R,0.65\nrelroute_l,0.7\n")
+    assert r2.returncode == 0 and r2.fails == 0 and "[WARN] method name 'chgate' reads like code" in r2.out, r2.out
+
+
+def test_unregistered_name_is_a_warn_when_a_registry_exists_and_silent_without_one(tmp_path):
+    r = _reg_sota(tmp_path, text="method,AP50\nResNet-50,0.6\nrelroute_l,0.7\n")
+    assert r.returncode == 0 and "[WARN] method name 'ResNet-50' is not registered" in r.out, r.out
+    (tmp_path / "research-state.yaml").unlink()
+    r2 = run("make_comparison.py", "sota", "--csv", _csv(tmp_path, "method,AP50\nResNet-50,0.6\nOurs,0.7\n"), "--out", tmp_path / "u.tex", "--metrics", "AP50", "--higher", "AP50", "--ours", "Ours", cwd=tmp_path)
+    assert r2.returncode == 0 and "not registered" not in r2.out, r2.out
+
+
+def test_ablation_components_and_seed_settings_go_through_the_registry(tmp_path):
+    write(tmp_path / "research-state.yaml", REG.replace("      cat:", "      sga: {label: \"SGA module\"}\n      cat:"))
+    write(tmp_path / "abl.csv", "SGA,DINOv3,AP50\n0,0,0.5\n1,1,0.7\n")
+    r = run("make_comparison.py", "ablation", "--csv", tmp_path / "abl.csv", "--out", tmp_path / "a.tex", "--components", "SGA,DINOv3", "--metrics", "AP50", "--higher", "AP50", "--project", ".", cwd=tmp_path)
+    assert r.returncode == 0 and r.fails == 0 and "SGA module" in read(tmp_path / "a.tex"), r.out
+    write(tmp_path / "seeds.csv", "setting,seed,AP50\nsmm,0,0.60\nsmm,1,0.62\nrelroute_l,0,0.70\nrelroute_l,1,0.72\n")
+    r = run("make_comparison.py", "seeds", "--csv", tmp_path / "seeds.csv", "--out", tmp_path / "s.tex", "--metrics", "AP50", "--higher", "AP50", "--project", ".", cwd=tmp_path)
+    tex = read(tmp_path / "s.tex")
+    assert r.returncode == 0 and r"\textbf{RelRoute (ours)}" in tex and "SMM &" in tex and "relroute_l" not in tex, r.out
+
+
+def test_registered_dataset_label_heads_the_multi_table(tmp_path):
+    write(tmp_path / "research-state.yaml", REG + "    datasets: {m3fd: {label: \"M3FD\", marker: \"o\", fill: \"full\"}, llvip: {label: \"LLVIP\", marker: \"s\", fill: \"none\"}}\n")
+    write(tmp_path / "m.csv", "method,dataset,AP50\nsmm,m3fd,0.6\nsmm,llvip,0.5\nrelroute_l,m3fd,0.7\nrelroute_l,llvip,0.6\n")
+    r = run("make_comparison.py", "multi", "--csv", tmp_path / "m.csv", "--out", tmp_path / "t.tex", "--md", "--metrics", "AP50", "--higher", "AP50", "--datasets", "m3fd,llvip", "--project", ".", cwd=tmp_path)
+    assert r.returncode == 0 and r.fails == 0, r.out
+    assert r"\textbf{M3FD}" in read(tmp_path / "t.tex") and r"\textbf{LLVIP}" in read(tmp_path / "t.tex") and "m3fd" not in read(tmp_path / "t.tex")

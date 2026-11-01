@@ -17,6 +17,8 @@ def test_esc_leaves_inline_math_alone(tmp_path):
 def test_plain_identifiers_are_still_escaped(tmp_path):
     write(tmp_path / "m.csv", "method,task,worst\nrec_quantile,prostate_t1,0.1\nother_method,prostate_t1,0.2\n")
     r = run("make_comparison.py", "sota", "--csv", tmp_path / "m.csv", "--out", tmp_path / "t.tex", "--metrics", "worst", "--lower", "worst", cwd=tmp_path)
+    assert r.fails == 2 and "rec_quantile" in r.out and "--allow-code-labels" in r.out, r.out      # code names are a FAIL since the style registry (figure_style.py); the override keeps the escaped identifier
+    r = run("make_comparison.py", "sota", "--csv", tmp_path / "m.csv", "--out", tmp_path / "t.tex", "--metrics", "worst", "--lower", "worst", "--allow-code-labels", cwd=tmp_path)
     assert r.returncode == 0, r.out
     assert "rec\\_quantile" in read(tmp_path / "t.tex")
 

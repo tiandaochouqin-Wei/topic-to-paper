@@ -54,7 +54,16 @@
 
 Reads state.results (main_table, ablation_table, group_key, reference_method, metric columns = all numeric columns unless --metrics).
 Writes <out>.png (400 dpi at --width-mm), <out>.pdf, <out>.source.csv, and appends/updates a row in figures.csv (path, print width, source).
-Style: serif 7.5 pt, no top/right spines, NMI-pastel blues + one red accent (same family as the validated demo_comparison figure).
+Style: serif 7.5 pt, no top/right spines, one accent colour for ours (same family as the validated demo_comparison figure).
+
+Style registry (figure_style.py; research-state.yaml figures.style): every subcommand (here and in make_motivation.py) reads it. Series names go through
+the registry (label, colour, line, marker, ours first in legends, ours = --ours else figures.style.ours; no ours at all: WARN "every series drawn with equal
+weight"); an unregistered name is humanised with a WARN, a name that still looks like code (chgate, F6R, recv) or an axis that would read "value" FAILS
+before anything is drawn (register it with figure_style.py init, name the axis with --ylabel, or --allow-code-labels). figures.style.font_pt is the one text
+size when set. Datasets are never a hue (marker / fill / panel). Every source.csv ends in label, color, line, marker; every figure also writes
+<out>.meta.json (what was drawn) and <out>.caption.md (caption_draft.py draft: replace the "<takeaway" sentence, keep the factual rest).
+Legends are opaque and sit in the first corner that touches no line, bar, marker or label (else outside the axes); end labels of --annotate live in the
+right margin and name the metric and the direction ("Δ Loss −0.09 vs SMM (lower is better)").
 """
 import argparse, csv, io, os, re, sys, statistics, collections
 import numpy as np
@@ -63,14 +72,204 @@ for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, w
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import figure_style as fstyle                  # the project-wide style registry (research-state.yaml figures.style): names, colours, lines, markers, ours, roles, cmap, font
+import caption_draft as cdraft                 # <out>.meta.json + <out>.caption.md from what was drawn
+import metric_direction as mdir
 
 plt.rcParams.update({"font.size": 7.5, "font.family": "serif", "font.serif": ["Times New Roman", "DejaVu Serif"], "mathtext.fontset": "stix",
                      "axes.linewidth": 0.6, "xtick.major.width": 0.6, "ytick.major.width": 0.6, "xtick.major.size": 2.5, "ytick.major.size": 2.5,
-                     "legend.frameon": False, "axes.spines.top": False, "axes.spines.right": False,
+                     "legend.frameon": True, "legend.facecolor": "white", "legend.edgecolor": "#cccccc", "legend.framealpha": 1.0, "legend.fancybox": False,   # opaque: a legend never shows a line through its text
+                     "axes.spines.top": False, "axes.spines.right": False,
                      "pdf.fonttype": 42, "ps.fonttype": 42, "axes.unicode_minus": False})   # 42 = TrueType outlines; Type 3 (the default) is rejected by IEEE / Elsevier production
 CAT = ["#3d6a94", "#e8833a", "#6c8e7a", "#5fb3b3", "#8c7aa9", "#b8873a", "#7a7a7a", "#a0c4e0", "#2b4c6f", "#c8a2c8", "#8fbf6a", "#a35f4a"]   # categorical fills (datasets, families); no red, which is the accent
 MARKS = ["o", "s", "^", "v", "D", "P", "X", "h"]
 PALETTE = ["#9aa5b1", "#b8c4d0", "#7fa7c9", "#5b8bb5", "#3d6a94", "#2b4c6f", "#8c7aa9", "#6c8e7a"]; ACCENT = "#d1495b"
+NEUTRAL_FILL = "#9a9a9a"                       # boxes / bars that carry no method identity: never a hue (blue meant a dataset in one figure and a method in the next)
+fstyle._ACR.update({"auroc": "AUROC", "auprc": "AUPRC", "rmse": "RMSE", "ece": "ECE", "nll": "NLL", "mae": "MAE", "mse": "MSE", "tpr": "TPR", "fpr": "FPR", "miou": "mIoU"})
+
+NL = chr(10)
+_FONT = [None]                                 # figures.style.font_pt when the registry sets it (one size for every text role); None = the legacy per-role sizes
+def T(legacy):
+    """font size of a text role: the registry's font_pt when set, else the role's legacy size"""
+    return _FONT[0] if _FONT[0] else legacy
+
+_PLACEHOLDER_AXIS = {"value", "values", "val", "y", "x"}
+_UNIT_TEXT = {"percent": "%", "pct": "%", "%": "%"}
+
+
+class Sty:
+    """One run's view of figures.style: names, colours, lines, markers, ours, roles, cmap, font. Every subcommand builds one (Sty(a)), asks it for every label and
+    colour it draws, and gets the style columns for source.csv and the meta for the caption draft back from it. CLI flags override the registry."""
+    def __init__(self, a, root=None):
+        self.root = os.path.abspath(root or getattr(a, "project", ".") or "."); self.st = fstyle.load(self.root); a._sty = self
+        self.allow = bool(getattr(a, "allow_code_labels", False)); self.registry = not self.st.empty()
+        self.cli_ours = [s for s in (getattr(a, "ours", "") or "").split(",") if s]; self.default_ours = []
+        self.overrides = {}; self.drawn = collections.OrderedDict(); self._warned = set(); self.leaders = False
+        fp = self.st.raw.get("font_pt")
+        try: _FONT[0] = float(fp) if fp else None
+        except (TypeError, ValueError): _FONT[0] = None
+        plt.rcParams["font.size"] = _FONT[0] or 7.5
+        if self.st.error: print(f"[WARN] style: research-state.yaml could not be read for figures.style ({self.st.error}); the fallback palette is used")
+        if not self.registry: self._warn("registry", "style: no figure style registry (figures.style in research-state.yaml): names are humanised and colours come from the fallback palette; run figure_style.py init")
+        for sev, msg in self.st.validate():
+            if sev == "FAIL": print(f"[FAIL] style: {msg}"); sys.exit(1)
+
+    def _warn(self, key, msg):
+        if key not in self._warned: self._warned.add(key); print(f"[WARN] {msg}")
+
+    @property
+    def font(self): return _FONT[0] or plt.rcParams["font.size"]
+
+    # ---- ours
+    def ours_names(self, names):
+        names = list(names)
+        if self.cli_ours: return [n for n in names if n in self.cli_ours]
+        reg = [n for n in names if self.st.is_ours(n)]
+        return reg or [n for n in names if n in self.default_ours]
+
+    def is_ours(self, name):
+        if self.cli_ours: return name in self.cli_ours
+        return self.st.is_ours(name) or name in self.default_ours
+
+    def warn_no_ours(self, names):
+        if len([n for n in names if n]) >= 2 and not self.ours_names(names):
+            self._warn("noours", "style: no ours: every series drawn with equal weight (name it with --ours or figures.style.ours)")
+
+    @property
+    def ours_color(self): return self.st.ours_color
+
+    # ---- names
+    def set_labels(self, d): self.overrides = dict(d or {})
+
+    def label(self, name):
+        name = "" if name is None else str(name)
+        if name in self.overrides: return self.overrides[name]
+        return self.st.label(name) if name else ""
+
+    def text(self, name):
+        """a free text name (axis, item, class, dataset): an override, a registered dataset / method label, else the name itself (snake_case humanised)"""
+        name = "" if name is None else str(name)
+        if name in self.overrides: return self.overrides[name]
+        if name in self.st.datasets or any(fstyle._norm(name) in (fstyle._norm(k), fstyle._norm(v.get("label", ""))) for k, v in self.st.datasets.items()): return self.st.dataset(name)["label"]
+        if self.st.key(name) is not None: return self.st.label(name)
+        return fstyle.humanise(name) if "_" in name else name
+
+    def check(self, names, what="series"):
+        """WARN for names that are not registered, FAIL for names whose final label is a code name (unless --allow-code-labels)"""
+        names = [n for n in dict.fromkeys(str(x) for x in names) if n and n not in self.overrides]
+        bad = []
+        for n in names:
+            lab = self.st.label(n); reg = self.st.key(n) is not None
+            if self.registry and not reg and n not in self.st.ours: self._warn("un:" + n, f"style: {what} {n!r} is not in figures.style; shown as {lab!r} (register it: figure_style.py init)")
+            spaced = " ".join(fstyle._ACR.get(t.lower(), t) if t.islower() else t for t in n.replace("_", " ").split())      # snake_case is a separator, a known acronym (rgb) is a word
+            code = fstyle.looks_like_code(lab) or (not reg and fstyle.looks_like_code(spaced))
+            if code: bad.append(n)
+        if bad and not self.allow:
+            print(f"[FAIL] style: {what} name(s) {bad} look like code, not like names a reader knows; register them in figures.style (figure_style.py init, then confirm the labels) or pass --allow-code-labels")
+            sys.exit(1)
+        if bad: print(f"[WARN] style: code-like {what} name(s) {bad} drawn as they are (--allow-code-labels)")
+
+    # ---- looks
+    def color(self, name, i=None):
+        k = self.st.key(name)
+        if k is not None and self.st.methods[k].get("color"): return self.st.color(name, i)
+        if self.is_ours(name): return self.st.ours_color
+        return self.st.color(name, i)
+
+    def line(self, name, i=None):
+        k = self.st.key(name)
+        if k is not None and fstyle._parse_line(self.st.methods[k].get("line")) is not None: return self.st.line(name, i)
+        return "-" if self.is_ours(name) else self.st.line(name, i)
+
+    def marker(self, name, i=None):
+        k = self.st.key(name)
+        if k is not None and self.st.methods[k].get("marker"): return self.st.marker(name, i)
+        return "o" if self.is_ours(name) else self.st.marker(name, i)
+
+    def lw(self, name, base=1.0): return 1.8 if self.is_ours(name) else base
+
+    def style(self, name, i=None, **over):
+        """what is drawn for one series (recorded for source.csv and the caption meta): {label, color, line, marker}; keyword overrides (CLI baseline look) are recorded too"""
+        d = {"label": self.label(name), "color": self.color(name, i), "line": self.line(name, i), "marker": self.marker(name, i)}
+        d.update({k: v for k, v in over.items() if v is not None})
+        self.drawn[str(name)] = {"label": d["label"], "color": d["color"], "line": fstyle.line_text(d["line"]), "marker": d["marker"]}
+        return d
+
+    def role(self, r): return self.st.role(r)
+
+    def record(self, name, label, color="", line="", marker=""):
+        """note what a row-like series (an item, a group, a class) was drawn with; only for source.csv columns"""
+        self.drawn[str(name)] = {"label": label, "color": color, "line": line, "marker": marker}
+
+    def dataset_look(self, name, i=0):
+        """marker / fill of a dataset or condition: the registry's when it is registered, else the i-th marker shape, filled for even i and open for odd i (never a hue)"""
+        if self.dataset_registered(name): return self.st.dataset(name)
+        return {"label": self.text(name), "marker": MARKS[i % len(MARKS)], "fill": "full" if i % 2 == 0 else "none"}
+
+    def dataset_registered(self, name):
+        return any(fstyle._norm(name) in (fstyle._norm(k), fstyle._norm(v.get("label", ""))) for k, v in self.st.datasets.items())
+
+    def cols_for(self, name):
+        """[label, color, line, marker] cells of a source.csv row whose series is `name`; blanks for a row that is no series"""
+        d = self.drawn.get(str(name))
+        return [d["label"], d["color"], d["line"], d["marker"]] if d else [self.label(name) if name else "", "", "", ""]
+
+    def order(self, names):
+        """ours first (the --ours flag, else the registry), then the registry's order, then the rest in the order given"""
+        names = list(names); ours = [n for n in names if self.is_ours(n)]
+        return ours + self.st.order([n for n in names if n not in ours])
+
+    def meta_base(self, names, **kw):
+        names = [str(n) for n in names if str(n) != ""]
+        m = {"series": names, "styles": {n: dict(self.drawn[n]) for n in names if n in self.drawn}}
+        o = self.ours_names(names)
+        if o: m["ours"] = o[0]
+        m.update({k: v for k, v in kw.items() if v is not None}); return m
+
+    # ---- axis text
+    def axis(self, col, explicit="", rows=None, labels=None):
+        """the text of an axis: --xlabel/--ylabel, a --labels entry, the metric a log_adapters.py table names (its `metric` and `units_out` columns), else the humanised column name;
+        a bare placeholder (value, val, y) is refused unless --allow-code-labels"""
+        if explicit: return explicit
+        if labels and col in labels: return labels[col]
+        if col in self.overrides: return self.overrides[col]
+        if rows and "metric" in rows[0] and str(col).lower() in _PLACEHOLDER_AXIS:
+            ms = list(dict.fromkeys((r.get("metric") or "").strip() for r in rows if (r.get("metric") or "").strip()))
+            if len(ms) == 1:
+                nm = ms[0].replace("\\", "/").split("/")[-1]; nm = fstyle.humanise(nm) if "_" in nm else nm
+                u = _UNIT_TEXT.get(((rows[0].get("units_out") or "").strip().lower()))
+                return f"{nm} ({u})" if u else nm
+        if str(col).strip().lower() in _PLACEHOLDER_AXIS and not self.allow:
+            print(f"[FAIL] style: an axis would read {col!r}, a column name and not a quantity: give --ylabel / --xlabel (or --labels {col}=...), or feed the figure a log_adapters.py table (its metric and units_out columns name the axis); --allow-code-labels draws it as it is")
+            sys.exit(1)
+        return fstyle.humanise(col)
+
+
+def state_results(root):
+    try:
+        import yaml
+        return (yaml.safe_load(io.open(os.path.join(root, "research-state.yaml"), encoding="utf-8-sig")) or {}).get("results") or {}
+    except Exception:
+        return {}
+
+def direction_of(root, *metrics):
+    """'higher' | 'lower' | None for the first metric name metric_direction.py can place (state.results overrides the name regex)"""
+    res = state_results(root)
+    for m in metrics:
+        if m:
+            try: d = mdir.direction(str(m), res)
+            except ValueError: d = None
+            if d: return d
+    return None
+
+def with_style(src, hdr, idx, sty):
+    """append the style columns (label, color, line, marker) to every source row; `idx` = the column holding the series name (figure_style.py check compares them across figures)"""
+    return [list(r) + sty.cols_for(r[idx]) for r in src], list(hdr) + ["label", "color", "line", "marker"]
+
+def set_meta(a, kind, meta):
+    """what finish() writes to <out>.meta.json and <out>.caption.md (caption_draft.py): the generator states only what it drew"""
+    a._meta = (kind, meta)
 
 def load(a):
     import yaml
@@ -209,6 +408,23 @@ def pdf_width_mm(path):
     except Exception:
         return None
 
+def write_meta(a, out, synthetic=False, text=None):
+    """<out>.meta.json + <out>.caption.md from what the generator recorded with set_meta() (caption_draft.py); `text` = a ready caption body for kinds caption_draft has no builder for"""
+    mt = getattr(a, "_meta", None)
+    if not mt: return
+    kind, meta = mt; meta = dict(meta); sty = getattr(a, "_sty", None); base = os.path.splitext(out)[0]
+    if synthetic: meta["synthetic"] = True
+    if sty is not None and "styles" not in meta: meta["styles"] = {k: dict(v) for k, v in sty.drawn.items()}
+    try:
+        if kind in cdraft.KINDS or kind in cdraft.ALIASES: cdraft.write_files(base, kind, meta, sty.st if sty is not None else fstyle.Style(None))
+        else:
+            import json
+            meta["kind"] = kind
+            with io.open(base + ".meta.json", "w", encoding="utf-8", newline=NL) as f: json.dump(meta, f, ensure_ascii=False, indent=1, default=str)
+            with io.open(base + ".caption.md", "w", encoding="utf-8", newline=NL) as f: f.write(cdraft.TAKEAWAY + " " + (text or meta.get("facts") or "") + NL)
+    except Exception as e:                                                      # a caption draft must never cost a figure
+        print(f"[WARN] caption: <out>.meta.json / .caption.md not written ({type(e).__name__}: {e})")
+
 def finish(fig, a, src_rows, src_hdr, root, caption):
     out = os.path.join(root, a.out); os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     issues = audit_layout(fig)
@@ -221,6 +437,7 @@ def finish(fig, a, src_rows, src_hdr, root, caption):
     if os.path.splitext(out)[1].lower() not in (".png", ".pdf"): fig.savefig(out, dpi=400, bbox_inches="tight")
     from PIL import Image
     Image.open(png).convert("L").save(os.path.splitext(out)[0] + "_gray.png")   # grayscale preview: the colour-vision / print-in-B&W check
+    write_meta(a, out, mark)
     wm = pdf_width_mm(os.path.splitext(out)[0] + ".pdf")            # bbox_inches="tight" grows the page: register the width the PDF really has
     if wm and abs(wm - a.width_mm) > 0.05:
         print(f"[INFO] width: the saved PDF is {wm:.1f} mm wide (requested {a.width_mm:g} mm, bbox-tight adds the label margins); figures.csv registers {wm:.1f} mm, so print sizes are measured on the real page. For a page that is exactly {a.width_mm:g} mm re-run with --width-mm {2 * a.width_mm - wm:.1f}")
@@ -256,23 +473,38 @@ def _mark_best(src, metrics, a, res=None):
         pick = min(rows, key=lambda r: r[2]) if (mt in lower or mdir.lower_is_better(mt, res)) else max(rows, key=lambda r: r[2])
         for r in rows: r.append(r is pick)
 
+def _metric_direction_for(root, metrics, a, res=None):
+    """direction of the figure's metric: --lower wins, else state.results / the name regex (several metrics: the common direction, else the primary metric's)"""
+    lower = set(a.lower.split(",")) if getattr(a, "lower", "") else set()
+    if metrics and all(m in lower for m in metrics): return "lower"
+    ds = {("lower" if m in lower else direction_of(root, m)) for m in metrics}
+    if len(ds) == 1: return next(iter(ds))
+    return direction_of(root, (res or {}).get("primary_metric"))
+
 def fig_main(a):
     root, res, main, abl, gk, ref, metrics, labels = load(a)
-    data = by_method(main, gk, metrics); methods = [m for m in data if m != ref] + ([ref] if ref in data else [])
+    sty = Sty(a, root); sty.set_labels(labels)
+    data = by_method(main, gk, metrics)
+    if ref in data and not sty.cli_ours and not any(sty.st.is_ours(m) for m in data): sty.default_ours = [ref]
+    sty.check(list(data), "method"); sty.warn_no_ours(list(data))
+    methods = sty.order(list(data))
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); x = np.arange(len(metrics)); w = 0.8 / len(methods); src = []
     for i, m in enumerate(methods):
-        arr = data[m]; mean = np.nanmean(arr, 0); sd = np.nanstd(arr, 0, ddof=1) if arr.shape[0] > 1 else np.zeros(len(metrics))
-        col = ACCENT if m == ref or m == a.ours else PALETTE[i % len(PALETTE)]
+        arr = data[m]; mean = np.nanmean(arr, 0); sd = np.nanstd(arr, 0, ddof=1) if arr.shape[0] > 1 else np.zeros(len(metrics)); d = sty.style(m, i)
         xx = x + (i - (len(methods) - 1) / 2) * w
-        ax.bar(xx, mean, w, color=col, label=f"{m} (n={arr.shape[0]})" if arr.shape[0] > 1 else m, edgecolor="none", zorder=3, yerr=sd if arr.shape[0] > 1 else None, error_kw=dict(elinewidth=0.6, capsize=1.5, ecolor="#333"))
+        ax.bar(xx, mean, w, color=d["color"], label=f"{d['label']} (n={arr.shape[0]})" if arr.shape[0] > 1 else d["label"], edgecolor="none", zorder=3, yerr=sd if arr.shape[0] > 1 else None, error_kw=dict(elinewidth=0.6, capsize=1.5, ecolor="#333"))
         if arr.shape[0] > 1:
             for j in range(len(metrics)): ax.scatter(np.full(arr.shape[0], xx[j]), arr[:, j], s=4, color="#222", alpha=0.5, zorder=4, linewidths=0)
         for j, mt in enumerate(metrics): src.append([m, mt, mean[j], sd[j], arr.shape[0]])
     _mark_best(src, metrics, a, res)
     if a.logy: ax.set_yscale("log")
-    ax.set_xticks(x); ax.set_xticklabels([labels.get(m, m) for m in metrics], fontsize=6.8); ax.set_ylabel(a.ylabel or res.get("primary_metric", "")); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
-    ax.legend(ncol=min(3, len(methods)), fontsize=6.3, loc="upper left", handlelength=1.0, columnspacing=0.8)
-    finish(fig, a, src, ["method", "metric", "mean", "sd", "n", "best"], root, "Main comparison: mean ± s.d. over seeds where n>1; dots = individual seeds.")
+    ylab = sty.axis(res.get("primary_metric", ""), a.ylabel, labels=labels)
+    ax.set_xticks(x); ax.set_xticklabels([sty.text(m) for m in metrics], fontsize=T(6.8)); ax.set_ylabel(ylab); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
+    hs, ls = ax.get_legend_handles_labels(); place_legend(fig, ax, hs, ls, ncol=min(3, len(methods)), handlelength=1.0, columnspacing=0.8)
+    ns = {m: int(data[m].shape[0]) for m in methods}; multi = max(ns.values()) > 1
+    set_meta(a, "bars", sty.meta_base(methods, y_label=ylab, x_label="metric", direction=_metric_direction_for(root, metrics, a, res), n=ns, n_seeds=max(ns.values()), error_bars="sd" if multi else None, dots=bool(multi), logy=bool(a.logy)))
+    src, hdr = with_style(src, ["method", "metric", "mean", "sd", "n", "best"], 0, sty)
+    finish(fig, a, src, hdr, root, "Main comparison: mean ± s.d. over seeds where n>1; dots = individual seeds.")
 
 def fig_ablation(a):
     root, res, main, abl, gk, ref, metrics, labels = load(a)
@@ -293,43 +525,57 @@ def fig_ablation(a):
             row = next(r for r in abl if (r.get("ablation") or r.get(gk)) == n)
             try: ns.append(max(1, int(float(row.get("n_seeds") or 1))))
             except ValueError: ns.append(1)
+    sty = Sty(a, root); sty.set_labels(labels); sty.check(names, "ablation"); ref_lab = sty.label(ref) if ref else ref
     bands = [2 * sig * (np.sqrt(2) if k <= 1 else np.sqrt(1.0 / k + 1.0 / n_ref)) for k in ns]
     single = all(k <= 1 for k in ns)
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); x = np.arange(len(metrics)); w = 0.8 / len(names); src = []
     if single:
         ax.bar(x, 2 * bands[0], 0.86, bottom=-bands[0], color="#f0f0f0", edgecolor="none", zorder=0, label="±2σ_ref√2 seed noise")
     for i, n in enumerate(names):
-        band = bands[i]; d = vals[i] - ref_m; resolv = np.abs(d) >= band
+        band = bands[i]; d = vals[i] - ref_m; resolv = np.abs(d) >= band; sty.style(n, i)
         xx = x + (i - (len(names) - 1) / 2) * w
         if not single:
             ax.bar(xx, 2 * band, w * 0.98, bottom=-band, color="#f0f0f0", edgecolor="none", zorder=0)
-        ax.bar(xx, d, w, color=[ACCENT if r else "#c9c9c9" for r in resolv], edgecolor="none", zorder=3)
+        ax.bar(xx, d, w, color=[sty.ours_color if r else "#c9c9c9" for r in resolv], edgecolor="none", zorder=3)     # status colour: resolvable (the ours colour) versus within seed noise (grey)
         for j in range(len(metrics)):
-            ax.text(xx[j], -0.02, str(i + 1), ha="center", va="top", fontsize=5.2, color="#444", transform=ax.get_xaxis_transform(), clip_on=False)   # index row just below the axis
+            ax.text(xx[j], -0.02, str(i + 1), ha="center", va="top", fontsize=T(5.2), color="#444", transform=ax.get_xaxis_transform(), clip_on=False)   # index row just below the axis
             src.append([n, metrics[j], d[j], band[j], bool(resolv[j]), ns[i]])
-    ax.axhline(0, lw=0.6, color="#333"); ax.set_xticks(x); ax.set_xticklabels([labels.get(m, m) for m in metrics], fontsize=6.8)
-    ax.set_ylabel(a.ylabel or f"Δ {labels.get(res.get('primary_metric',''), res.get('primary_metric',''))} vs. {ref}"); ax.tick_params(axis="x", pad=9); ax.text(0.01, 0.98, "\n".join(f"{i+1}: {n}" for i, n in enumerate(names)), transform=ax.transAxes, fontsize=5.6, va="top", color="#333")
-    ax.text(0.99, 0.02, "grey bar: within seed noise\n(not resolvable" + (", single run)" if single else ")"), transform=ax.transAxes, fontsize=5.6, ha="right", va="bottom", color="#555")
+    pm = res.get("primary_metric", ""); pm_lab = sty.axis(pm, "", labels=labels) if pm else ""
+    ylab = a.ylabel or f"Δ {pm_lab} vs. {ref_lab}"
+    ax.axhline(0, lw=0.6, color="#333"); ax.set_xticks(x); ax.set_xticklabels([sty.text(m) for m in metrics], fontsize=T(6.8))
+    ax.set_ylabel(ylab); ax.tick_params(axis="x", pad=9); ax.text(0.01, 0.98, "\n".join(f"{i+1}: {sty.label(n)}" for i, n in enumerate(names)), transform=ax.transAxes, fontsize=T(5.6), va="top", color="#333")
+    ax.text(0.99, 0.02, "grey bar: within seed noise\n(not resolvable" + (", single run)" if single else ")"), transform=ax.transAxes, fontsize=T(5.6), ha="right", va="bottom", color="#555")
     cap = (f"Ablation Δ vs. {ref}; grey band = ±2σ√2 seed noise of the reference (single runs); grey bars not resolvable." if single else
            f"Ablation Δ vs. {ref}; bars are means over n seeds per ablation ({', '.join(f'{nm}: n={k}' for nm, k in zip(names, ns))}), reference n={n_ref}; "
            f"grey band per bar = ±2σ_ref·√(1/n+1/n_ref) (±2σ√2 for single runs); grey bars not resolvable.")
-    finish(fig, a, src, ["ablation", "metric", "delta", "band", "resolvable", "n_seeds"], root, cap)
+    n_res = sum(1 for r in src if r[4])
+    set_meta(a, "ablation", sty.meta_base(names, reference=ref, y_label=ylab, metric=pm, direction=direction_of(root, pm), n_seeds=n_ref, band_sigma="±2σ", resolvable_n=n_res, n_ablations=len(src)))
+    src, hdr = with_style(src, ["ablation", "metric", "delta", "band", "resolvable", "n_seeds"], 0, sty)
+    finish(fig, a, src, hdr, root, cap)
 
 def fig_seeds(a):
     root, res, main, abl, gk, ref, metrics, labels = load(a)
+    sty = Sty(a, root); sty.set_labels(labels)
     data = by_method(main, gk, metrics); methods = [m for m in (a.methods.split(",") if a.methods else [ref]) if m in data]
-    fig, ax = plt.subplots(figsize=(a.width_mm / 25.4 * 0.5, a.height_in)); x = np.arange(len(metrics)); src = []
+    if ref in data and not sty.cli_ours and not any(sty.st.is_ours(m) for m in data): sty.default_ours = [ref]
+    sty.check(methods, "method"); methods = sty.order(methods)
+    fig, ax = plt.subplots(figsize=(a.width_mm / 25.4 * 0.5, a.height_in)); x = np.arange(len(metrics)); src = []; pts = []
     for i, m in enumerate(methods):
         arr = data[m]; mean = np.nanmean(arr, 0); sd = np.nanstd(arr, 0, ddof=1) if arr.shape[0] > 1 else np.zeros(len(metrics)); off = (i - (len(methods) - 1) / 2) * 0.3
-        col = ACCENT if m == ref else PALETTE[3 + i % 3]
-        ax.errorbar(x + off, mean, yerr=sd, fmt="o", ms=3, color=col, ecolor=col, elinewidth=0.8, capsize=2, label=f"{m} (n={arr.shape[0]})", zorder=3)
+        d = sty.style(m, i); col = d["color"]
+        ax.errorbar(x + off, mean, yerr=sd, fmt=d["marker"], ms=3, color=col, ecolor=col, elinewidth=0.8, capsize=2, label=f"{d['label']} (n={arr.shape[0]})", zorder=3)
+        pts += [(xv, yv, None) for xv, yv in zip(x + off, mean)]
         for j in range(len(metrics)): ax.scatter(np.full(arr.shape[0], x[j] + off), arr[:, j], s=5, color=col, alpha=0.45, zorder=2, linewidths=0); src.append([m, metrics[j], mean[j], sd[j], arr.shape[0]])
     _mark_best(src, metrics, a, res)
     if a.logy: ax.set_yscale("log")
-    ax.set_xticks(x); ax.set_xticklabels([labels.get(m, m) for m in metrics], fontsize=6.8); ax.set_ylabel(a.ylabel or f"{res.get('primary_metric','')}, mean ± s.d."); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0); ax.legend(fontsize=6.3, loc="upper left", handlelength=1.0)
+    pm = res.get("primary_metric", ""); ylab = a.ylabel or f"{sty.axis(pm, '', labels=labels) if pm else ''}, mean ± s.d."
+    ax.set_xticks(x); ax.set_xticklabels([sty.text(m) for m in metrics], fontsize=T(6.8)); ax.set_ylabel(ylab); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
+    fit_markers(fig, [ax], {ax: pts}, radius_pt=2.5)                                                                # no marker half-clipped by the axes
+    hs, ls = ax.get_legend_handles_labels(); place_legend(fig, ax, hs, ls, handlelength=1.0)
     a.width_mm = a.width_mm * 0.5
-    finish(fig, a, src, ["method", "metric", "mean", "sd", "n", "best"], root, "Seed stability: mean ± s.d., dots = seeds.")
-
+    set_meta(a, "seeds", sty.meta_base(methods, y_label=ylab.replace(", mean ± s.d.", ""), direction=_metric_direction_for(root, metrics, a, res), n_seeds=max(int(data[m].shape[0]) for m in methods)))
+    src, hdr = with_style(src, ["method", "metric", "mean", "sd", "n", "best"], 0, sty)
+    finish(fig, a, src, hdr, root, "Seed stability: mean ± s.d., dots = seeds.")
 
 OFFS8 = [((4, 3), "left", "bottom"), ((4, -3), "left", "top"), ((-4, 3), "right", "bottom"), ((-4, -3), "right", "top"),
          ((0, 6), "center", "bottom"), ((0, -6), "center", "top"), ((7, 0), "left", "center"), ((-7, 0), "right", "center")]
@@ -340,17 +586,19 @@ def marker_bbox(fig, ax, x, y, s, lw_pt=0.5):
     cx, cy = ax.transData.transform((x, y)); r = (np.sqrt(s) / 2 + lw_pt) * fig.dpi / 72
     return Bbox([[cx - r, cy - r], [cx + r, cy + r]])
 
-def place_labels(fig, ax, items, offsets=OFFS8, fontsize=5.8, obstacles=(), pad_px=1.0, markers=()):
+def place_labels(fig, ax, items, offsets=OFFS8, fontsize=5.8, obstacles=(), pad_px=1.0, markers=(), leader_mm=None, leaders=None):
     """text labels without label-on-label overlap, greedy in priority order. items = (x, y, text, colour, bold[, offsets[, own]]) in data
     coordinates of `ax`; every item tries its offsets (8 around the point by default) and keeps the first whose box stays inside
     the axes and hits neither an earlier label, an `obstacles` box (display px) nor a marker. `markers` = [(x, y, area_pt2), ...]
     in data coordinates: a candidate that touches any marker other than the item's own (`own` = index into `markers`; default: the
     marker at the item's own x, y) is rejected. If no offset fits the label is dropped.
+    `leader_mm`: a label whose box ends up farther than this from its marker edge gets a thin leader line to the marker (a displaced label is
+    otherwise ambiguous); `leaders` (a list) receives the indices of the items that got one.
     Returns one entry per item, in order: the display-space Bbox of the placed label, or None when dropped."""
     fig.canvas.draw(); rend = fig.canvas.get_renderer(); box = ax.get_window_extent(rend); taken = list(obstacles); out = []
     mk = [marker_bbox(fig, ax, mx, my, ms) for mx, my, ms in markers]
     def hit(a_, b_, pad=pad_px): return a_.x0 < b_.x1 + pad and b_.x0 < a_.x1 + pad and a_.y0 < b_.y1 + pad and b_.y0 < a_.y1 + pad
-    for it in items:
+    for n_it, it in enumerate(items):
         x, y, txt, c, bold = it[:5]; offs = it[5] if len(it) > 5 and it[5] else offsets; got = None
         own = it[6] if len(it) > 6 and it[6] is not None else next((k for k, m in enumerate(markers) if m[0] == x and m[1] == y), None)
         others = [b for k, b in enumerate(mk) if k != own]
@@ -358,10 +606,92 @@ def place_labels(fig, ax, items, offsets=OFFS8, fontsize=5.8, obstacles=(), pad_
             t = ax.annotate(txt, (x, y), xytext=(dx, dy), textcoords="offset points", ha=ha, va=va, fontsize=fontsize, color=c, fontweight="bold" if bold else "normal", zorder=7, annotation_clip=False)
             bb = t.get_window_extent(rend)
             if box.x0 <= bb.x0 and bb.x1 <= box.x1 and box.y0 <= bb.y0 and bb.y1 <= box.y1 and not any(hit(bb, p) for p in taken) and not any(hit(bb, m, 0.0) for m in others):
-                taken.append(bb); got = bb; break
+                taken.append(bb); got = bb
+                if leader_mm is not None:
+                    px, py = ax.transData.transform((x, y)); r_px = (np.sqrt(markers[own][2]) / 2 + 0.5) * fig.dpi / 72 if own is not None else 0.0
+                    dist = np.hypot(max(bb.x0 - px, 0, px - bb.x1), max(bb.y0 - py, 0, py - bb.y1)) - r_px            # gap between the marker edge and the label box
+                    if dist > leader_mm / 25.4 * fig.dpi:
+                        ax.annotate("", (x, y), xytext=(dx, dy), textcoords="offset points", annotation_clip=False, zorder=6,
+                                    arrowprops=dict(arrowstyle="-", lw=0.4, color="#777777", shrinkA=0, shrinkB=r_px * 72 / fig.dpi, relpos=(0.5, 0.5)))
+                        if leaders is not None: leaders.append(n_it)
+                break
             t.remove()
         out.append(got)
     return out
+
+
+def _occupied(fig, ax, rend):
+    """what a legend must not sit on: (dense line samples in display px, boxes of bars / scatter markers / filled bands in display px)"""
+    from matplotlib.patches import Rectangle
+    boxes = []
+    for p in ax.patches:
+        if isinstance(p, Rectangle) and p.get_visible() and p.get_alpha() != 0:
+            bb = p.get_window_extent(rend)
+            if bb.width > 0 and bb.height > 0 and p.get_facecolor()[3] > 0: boxes.append((bb.x0, bb.y0, bb.x1, bb.y1))
+    for c in ax.collections:
+        if c.__class__.__name__ in ("PolyCollection", "FillBetweenPolyCollection"):
+            try:
+                for pth in c.get_paths():
+                    v = ax.transData.transform(pth.vertices)
+                    if len(v): boxes.append((v[:, 0].min(), v[:, 1].min(), v[:, 0].max(), v[:, 1].max()))
+            except Exception: pass
+            continue
+        if c.__class__.__name__ == "LineCollection":                                  # stems, error bars: each segment is a thin box
+            try:
+                for seg in c.get_segments():
+                    v = ax.transData.transform(np.asarray(seg, float))
+                    if len(v) and np.isfinite(v).all(): boxes.append((v[:, 0].min() - 1, v[:, 1].min() - 1, v[:, 0].max() + 1, v[:, 1].max() + 1))
+            except Exception: pass
+            continue
+        if not hasattr(c, "get_sizes"): continue
+        try: off = np.asarray(c.get_offsets(), float)
+        except Exception: continue
+        if off.ndim != 2 or not len(off) or not np.isfinite(off).all(): continue
+        sz = np.atleast_1d(c.get_sizes()); r = (np.sqrt(float(sz.max() if len(sz) else 20.0)) / 2 + 1.0) * fig.dpi / 72
+        try: d = c.get_offset_transform().transform(off)
+        except Exception: d = ax.transData.transform(off)
+        boxes += [(x - r, y - r, x + r, y + r) for x, y in d]
+    import matplotlib.text as _mt
+    for t in ax.texts:                                                                   # direct labels (method names, end labels) are data too
+        if t.get_visible() and t.get_text().strip():
+            bb = _mt.Text.get_window_extent(t, rend)
+            if bb.width > 0: boxes.append((bb.x0, bb.y0, bb.x1, bb.y1))
+    return _line_samples(ax), boxes
+
+def place_legend(fig, ax, handles, labels, **kw):
+    """an opaque legend in the first corner / edge of `ax` where it touches no line, no marker, no bar and no band; when nothing is free, one row above the axes
+    (outside the data; bbox-tight saving keeps it). Returns the legend."""
+    kw.setdefault("fontsize", T(6.3)); kw.setdefault("handlelength", 1.4); kw.setdefault("labelspacing", 0.3)
+    fig.canvas.draw(); rend = fig.canvas.get_renderer(); P, boxes = _occupied(fig, ax, rend); best = None
+    for loc in ("upper right", "upper left", "lower right", "lower left", "upper center", "lower center", "center right", "center left"):
+        lg = ax.legend(handles, labels, loc=loc, borderaxespad=0.3, **kw); fig.canvas.draw(); bb = lg.get_window_extent(rend); lg.remove()
+        n_line = int(((P[:, 0] >= bb.x0) & (P[:, 0] <= bb.x1) & (P[:, 1] >= bb.y0) & (P[:, 1] <= bb.y1)).sum()) if len(P) else 0
+        n_box = sum(1 for b in boxes if b[0] < bb.x1 and bb.x0 < b[2] and b[1] < bb.y1 and bb.y0 < b[3])
+        score = n_line + 40 * n_box
+        if best is None or score < best[0]: best = (score, loc)
+        if score == 0: break
+    if best[0] == 0: return ax.legend(handles, labels, loc=best[1], borderaxespad=0.3, **kw)
+    if len(labels) > 4:                                                                  # a long legend goes to the right margin, one column; a short one above the axes in one row
+        kw["ncol"] = 1
+        return ax.legend(handles, labels, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, **kw)
+    kw["ncol"] = max(1, min(len(labels), 3))
+    return ax.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0), borderaxespad=0.2, **kw)
+
+def fit_markers(fig, axes, pts_by_ax, radius_pt=3.0, pad_px=1.5):
+    """widen x / y limits so every marker (radius in pt around its centre) lies inside its axes: no half-clipped stars at the edge.
+    pts_by_ax = {ax: [(x, y, radius_pt or None)]}"""
+    fig.canvas.draw()
+    for ax in axes:
+        pts = pts_by_ax.get(ax) or []
+        if not pts: continue
+        for _ in range(3):
+            bb = ax.get_window_extent(fig.canvas.get_renderer()); inv = ax.transData.inverted(); tr = ax.transData
+            D = np.array([tr.transform((x, y)) for x, y, _ in pts]); R = np.array([(r if r else radius_pt) * fig.dpi / 72 + pad_px for _, _, r in pts])
+            over = [max(0.0, bb.x0 - float((D[:, 0] - R).min())), max(0.0, float((D[:, 0] + R).max()) - bb.x1), max(0.0, bb.y0 - float((D[:, 1] - R).min())), max(0.0, float((D[:, 1] + R).max()) - bb.y1)]
+            if not any(over): break
+            (xl, yl), (xr, yt) = inv.transform((bb.x0 - over[0], bb.y0 - over[2])), inv.transform((bb.x1 + over[1], bb.y1 + over[3]))
+            x0, x1 = ax.get_xlim(); y0, y1 = ax.get_ylim()
+            ax.set_xlim((xl, xr) if x0 <= x1 else (xr, xl)); ax.set_ylim((yl, yt) if y0 <= y1 else (yt, yl)); fig.canvas.draw()
 
 def ema(values, alpha):
     """exponential moving average, s_0 = x_0, s_t = alpha * x_t + (1 - alpha) * s_(t-1); alpha = 1 returns the input, small alpha = heavy smoothing"""
@@ -397,7 +727,6 @@ def _line_samples(ax, n=200):
         gx = np.linspace(d[0, 0], d[-1, 0], n); out.append(np.column_stack([gx, np.interp(gx, d[:, 0], d[:, 1])]))
     return np.vstack(out) if out else np.zeros((0, 2))
 
-CURVE_HUES = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#6a3d9a", "#8c564b", "#999933", "#332288"]   # Okabe-Ito style hues for the series that are neither ours nor the baseline: no red (accent), no shades of one blue
 BASE_GREY = "#4b4f55"; RAW_GREY = "#808080"
 EMA_MIN_POINTS = 20          # below this the EMA lags the data by ~1/alpha points and its end values are wrong: not drawn, markers instead
 _CORNERS = [(True, False), (True, True), (False, False), (False, True)]       # (right, upper): lower right first
@@ -438,14 +767,19 @@ def _frac_points(ax, rend):
 
 def fig_curves(a):
     """long CSV -> one line per series, seeds averaged with a band, optional small-multiple panels (+ Fig-6 options: EMA, inset, annotation)."""
-    FS = plt.rcParams["font.size"]            # ONE size for axes labels, ticks, legend, end labels and inset ticks (the house size)
     root = os.path.abspath(a.project); rows = _csv_rows(root, a.csv, [a.x, a.y])
     labels = dict(kv.split("=", 1) for kv in a.labels.split(",") if "=" in kv) if a.labels else {}
+    sty = Sty(a, root); sty.set_labels(labels)
+    FS = plt.rcParams["font.size"]            # ONE size for axes labels, ticks, legend, end labels and inset ticks (the house size; figures.style.font_pt when the registry sets it)
     panels = sorted({r[a.panel] for r in rows}, key=str) if a.panel and a.panel in rows[0] else [None]
     series_all = []
     for r in rows:
         sname = r.get(a.series, "") if a.series else ""
         if sname not in series_all: series_all.append(sname)
+    if not a.ours:                                                           # no --ours: the registry's ours applies
+        reg_o = sty.ours_names(series_all)
+        if reg_o: a.ours = reg_o[0]
+    sty.check(series_all, "series"); sty.warn_no_ours(series_all)
     new = a.ema > 0 or bool(a.inset) or bool(a.annotate)
     if a.ema and not 0 < a.ema <= 1: print("[FAIL] --ema must be in (0, 1]"); sys.exit(1)
     paired = bool(a.ours and (a.baseline or a.annotate)); base = ""
@@ -455,6 +789,8 @@ def fig_curves(a):
         base = a.baseline or next((s_ for s_ in series_all if s_ != a.ours), "")
         if base not in series_all or base == a.ours: print(f"[FAIL] baseline {base!r} must be a series other than ours: {series_all}"); sys.exit(1)
     legend = a.legend or ("auto" if new else "best")
+    ylab = sty.axis(a.y, a.ylabel, rows, labels); xlab = sty.axis(a.x, a.xlabel, labels=labels)
+    lab = sty.label
 
     def collect(sname, pn):
         pts = collections.defaultdict(list)
@@ -474,12 +810,15 @@ def fig_curves(a):
     fig, axes = plt.subplots(nrows, ncols, figsize=(a.width_mm / 25.4, a.height_in), sharey=(not a.logy and not a.free_y), squeeze=False); src = []; summ = []; info = []
     flat = [ax for r_ in axes for ax in r_]
     for ax in flat[len(panels):]: ax.set_visible(False)
-    styles = {}; k_cat = 0
-    for sname in series_all:
-        if sname and sname == a.ours: styles[sname] = dict(color=ACCENT, ls="-", lw=1.8, mk="o", z=5)
-        elif paired and sname == base: styles[sname] = dict(color=BASE_GREY, ls="--", lw=0.9, mk="s", z=4)
+    styles = {}
+    for k, sname in enumerate(series_all):
+        if sname and (sname == a.ours or sty.is_ours(sname)):
+            d = sty.style(sname, k); styles[sname] = dict(color=d["color"], ls=d["line"], lw=1.8, mk=d["marker"], z=5)
+        elif paired and sname == base:                                        # the CLI baseline: the registry look when it is registered, else the thin dark-grey dashed one
+            d = sty.style(sname, k, **({} if sty.st.key(sname) is not None else dict(color=BASE_GREY, line="--", marker="s")))
+            styles[sname] = dict(color=d["color"], ls=d["line"], lw=0.9, mk=d["marker"], z=4)
         else:
-            styles[sname] = dict(color=CURVE_HUES[k_cat % len(CURVE_HUES)], ls="-", lw=1.1 if not a.ours else 0.9, mk=MARKS[(k_cat + 2) % len(MARKS)], z=3); k_cat += 1
+            d = sty.style(sname, k); styles[sname] = dict(color=d["color"], ls=d["line"], lw=1.1 if not a.ours else 0.9, mk=d["marker"], z=3)
     n_by = {}
     def draw_line(ax, xs, ys, st, idx, label=None, lw=None):
         sparse = len(xs) < EMA_MIN_POINTS; step = 1 if sparse else max(2, len(xs) // 7)
@@ -497,21 +836,23 @@ def fig_curves(a):
             cur[sname] = dict(xs=xs, ys=ys, sm=sm, n=n)
             st = styles[sname]
             if use_ema: ax.plot(xs, ys, lw=0.5, color=RAW_GREY, alpha=0.15, zorder=1.5)       # raw records: one neutral light grey for every series
-            draw_line(ax, xs, sm, st, i, label=(labels.get(sname, sname) if sname else None) if legend == "best" else None)
+            draw_line(ax, xs, sm, st, i, label=None)
             if n > 1 and a.band != "none": ax.fill_between(xs, lo_s, hi_s, color=st["color"], alpha=0.16, lw=0, zorder=2)
             for x, y, y2 in zip(xs, ys, sm):
                 row = [pn if pn is not None else "", sname, x, y, np.std(pts[x], ddof=1) if len(pts[x]) > 1 else 0.0, len(pts[x])]
                 src.append(row + ([float(y2), "point", "", "", "", ""] if new else []))
         if a.logx: ax.set_xscale("log")
         if a.logy: ax.set_yscale("log")
-        ax.set_xlabel(a.xlabel or labels.get(a.x, a.x), fontsize=FS); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0); ax.tick_params(labelsize=FS)
+        ax.set_xlabel(xlab, fontsize=FS); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0); ax.tick_params(labelsize=FS)
         if pn is not None:
-            ttl = labels.get(pn, pn)
+            ttl = sty.text(pn)
             if a.letters: ax.set_title(f"({chr(97 + pi)}) {ttl}", fontsize=FS, loc="left", fontweight="bold")
             else: ax.set_title(ttl, fontsize=FS)
-        if pi % ncols == 0: ax.set_ylabel(a.ylabel or labels.get(a.y, a.y), fontsize=FS)
+        if pi % ncols == 0: ax.set_ylabel(ylab, fontsize=FS)
         if not cur: continue
-        allx = sorted({x for c in cur.values() for x in c["xs"]}); ax.set_xlim(allx[0], allx[-1]); ax.margins(x=0)     # x starts at the first epoch, no negative padding
+        allx = sorted({x for c in cur.values() for x in c["xs"]})
+        pad = 0.015 * (allx[-1] - allx[0]) if (len(allx) > 1 and not a.logx) else 0.0       # half a marker of room at the right end, never more than 3 % (the end labels live in the margin, not in the axes)
+        ax.set_xlim(allx[0], allx[-1] + pad); ax.margins(x=0)                                  # x starts at the first epoch, no negative padding
         ann = None; inset = None
         if a.annotate and not (a.ours in cur and base in cur): notes.append(f"panel {pn}: ours or baseline has no data, no annotation")
         elif a.annotate:
@@ -520,8 +861,9 @@ def fig_curves(a):
             else:
                 xc = common[-1]; vo = float(co["ys"][list(co["xs"]).index(xc)]); vb = float(cb["ys"][list(cb["xs"]).index(xc)]); d = vo - vb      # RAW seed means: the EMA is for drawing only
                 ann = (xc, vo, vb, d)
-                ax.scatter([xc], [vo], s=16, color=ACCENT, edgecolors="white", linewidths=0.4, zorder=6, clip_on=False)
-                ax.scatter([xc], [vb], s=16, facecolors="white", edgecolors=BASE_GREY, linewidths=0.8, zorder=6, clip_on=False)
+                ax.scatter([xc], [vo], s=16, color=styles[a.ours]["color"], edgecolors="white", linewidths=0.4, zorder=6, clip_on=False)
+                ax.scatter([xc], [vb], s=16, facecolors="white", edgecolors=styles[base]["color"], linewidths=0.8, zorder=6, clip_on=False)
+                sty.overrides.setdefault(f"{a.ours} vs {base}", f"{lab(a.ours)} vs {lab(base)}")
                 src.append([pn if pn is not None else "", f"{a.ours} vs {base}", xc, "", "", "", "", "summary", vo, vb, d, "raw seed mean"]); summ.append((pn, xc, vo, vb, d))
         if a.inset:
             try:
@@ -539,8 +881,28 @@ def fig_curves(a):
     def handle(s_):
         st = styles[s_]; sparse = min_pts < EMA_MIN_POINTS
         return Line2D([], [], color=st["color"], ls=st["ls"], lw=st["lw"], marker=st["mk"], ms=2.8 if sparse else 2.4, markeredgewidth=0)
-    hs = [handle(s_) for s_ in series_all] if a.series else []; ls_ = [labels.get(s_, s_) for s_ in series_all] if a.series else []      # no "(n=3)": n goes into the caption
+    leg_order = sty.order(series_all) if a.series else []                                      # ours first in every legend
+    hs = [handle(s_) for s_ in leg_order]; ls_ = [lab(s_) for s_ in leg_order]                 # no "(n=3)": n goes into the caption
     if use_ema and hs: hs.append(Line2D([], [], color=RAW_GREY, lw=0.8, alpha=0.4)); ls_.append("Raw seed means")
+    # ---- the end labels live in the right margin of each panel: say what they will read, measure them, and reserve that width before the layout
+    metric_name = ylab.split(" (")[0]; dir_ = direction_of(root, a.y, metric_name, ylab) if a.annotate else None
+    def end_texts(vo, vb, d):
+        unit = f" {a.delta_unit}" if a.delta_unit else ""; dn = f"{d:+.2f}".replace("-", "−")
+        return {a.ours: f"{lab(a.ours)} {vo:.2f}", base: f"{lab(base)} {vb:.2f}",
+                "__delta__": f"Δ {metric_name} {dn}{unit}\nvs {lab(base)}" + (f"\n({'lower' if dir_ == 'lower' else 'higher'} is better)" if dir_ else "")}
+    reserve_in = 0.0
+    if a.annotate and any(r_["ann"] for r_ in info):
+        rend0 = fig.canvas.get_renderer(); wmax0 = 0.0
+        for rec in info:
+            if not rec["ann"]: continue
+            for nm_, t_ in end_texts(*rec["ann"][1:]).items():
+                tt = fig.text(0, 0, t_, fontsize=FS, fontweight="bold" if nm_ == a.ours else "normal", linespacing=1.15); wmax0 = max(wmax0, tt.get_window_extent(rend0).width); tt.remove()
+        reserve_in = (wmax0 + 9 * fig.dpi / 72) / fig.dpi
+    def do_layout(top=1.0):
+        wpad = reserve_in * 72 / FS if (reserve_in and ncols > 1) else None
+        kw = dict(pad=0.3, rect=(0, 0, 1 - (reserve_in / fig.get_figwidth() if reserve_in else 0.0), top))
+        if wpad: kw["w_pad"] = wpad
+        fig.tight_layout(**kw)
     # ---- layout, then the overlays that need the final geometry: end labels, insets, legend
     above = legend == "above" and bool(hs)
     def legend_above():
@@ -557,35 +919,28 @@ def fig_curves(a):
     lg_above = None
     if above:
         lg_above = legend_above(); h_fig = lg_above.get_window_extent().height / fig.bbox.height
-        fig.tight_layout(pad=0.3, rect=(0, 0, 1, 1 - h_fig - 0.012))
-    else: fig.tight_layout(pad=0.3)
+        do_layout(1 - h_fig - 0.012)
+    else: do_layout()
     fig.canvas.draw(); rend = fig.canvas.get_renderer()
     label_arts = {}
     def place_end_labels():
         for rec in info:
             if not rec["ann"]: continue
-            ax = rec["ax"]; xc, vo, vb, d = rec["ann"]; axbb = ax.get_window_extent(rend); unit = f" {a.delta_unit}" if a.delta_unit else ""
-            txt = {a.ours: f"{labels.get(a.ours, a.ours)} {vo:.2f}", base: f"{labels.get(base, base)} {vb:.2f}", "__delta__": f"Δ {d:+.2f}{unit}".replace("-", "−")}
+            ax = rec["ax"]; xc, vo, vb, d = rec["ann"]; axbb = ax.get_window_extent(rend); txt = end_texts(vo, vb, d)
             if id(ax) not in label_arts:
                 label_arts[id(ax)] = {}
-                for nm, (v, c) in ((a.ours, (vo, ACCENT)), (base, (vb, BASE_GREY)), ("__delta__", (min(vo, vb), "#333333"))):
+                for nm, (v, c) in ((a.ours, (vo, styles[a.ours]["color"])), (base, (vb, styles[base]["color"])), ("__delta__", (min(vo, vb), "#333333"))):
                     t = ax.annotate(txt[nm], (xc, v), xytext=(5, 0), textcoords="offset points", ha="left", va="center", fontsize=FS, color=c, fontweight="bold" if nm == a.ours else "normal",
                                     linespacing=1.15, zorder=7, annotation_clip=False, gid="end-label",
                                     arrowprops=dict(arrowstyle="-", lw=0.4, color=c, shrinkA=0.5, shrinkB=1.5, relpos=(0, 0.5)))
-                    t.arrow_patch.set_visible(False); label_arts[id(ax)][nm] = (t, v)
-                # widen the x range so the labels sit inside the axes, to the right of the LAST x of the panel (the markers may be earlier)
-                wmax = max(_text_bb(t, rend).width for t, _ in label_arts[id(ax)].values()) + 7 * fig.dpi / 72
-                f = np.log10 if a.logx else (lambda z: z); x0 = rec["allx"][0]; xmax = rec["allx"][-1]
-                if f(xmax) > f(x0):
-                    need = f(x0) + (f(xmax) - f(x0)) * axbb.width / max(axbb.width - wmax, 0.3 * axbb.width)
-                    ax.set_xlim(x0, 10 ** need if a.logx else need)
+                    t.arrow_patch.set_visible(False); t.set_in_layout(False); t.arrow_patch.set_in_layout(False); label_arts[id(ax)][nm] = (t, v)     # the margin they need is reserved by hand (reserve_in), not by tight_layout
         fig.canvas.draw()
-        for rec in info:                                                                 # vertical de-collision of the two labels (display px, top to bottom)
+        for rec in info:                                                                 # vertical de-collision of the labels (display px, top to bottom)
             if not rec["ann"] or id(rec["ax"]) not in label_arts: continue
             ax = rec["ax"]; axbb = ax.get_window_extent(rend); xc = rec["ann"][0]; items = []
-            dx_pt = (ax.transData.transform((rec["allx"][-1], 0))[0] - ax.transData.transform((xc, 0))[0]) * 72 / fig.dpi + 5
+            dx_pt = (ax.transData.transform((ax.get_xlim()[1], 0))[0] - ax.transData.transform((xc, 0))[0]) * 72 / fig.dpi + 4          # the labels start right of the axes, in the margin
             for nm, (t, v) in label_arts[id(ax)].items():
-                y = ax.transData.transform((xc, v))[1]; h = _text_bb(t, rend).height; items.append([y - (0.01 if nm == "__delta__" else 0.0), h, t])       # the Δ line always sits below the two value labels
+                y = ax.transData.transform((xc, v))[1]; h = _text_bb(t, rend).height; items.append([y - (0.01 if nm == "__delta__" else 0.0), h, t])       # the Δ block always sits below the two value labels
             items.sort(key=lambda z: -z[0])
             for it in items: it.append(it[0])
             for _pass in range(3):                       # push down from the top, clamp into the axes, push back up from the bottom
@@ -597,7 +952,7 @@ def fig_curves(a):
         fig.canvas.draw()
     place_end_labels()
     # insets: the corner with the fewest plotted samples, clear of the end labels
-    ins_pad = {}
+    ins_pad = {}; ins_drawn = []
     for rec in info:
         if not rec["inset"]: continue
         ax = rec["ax"]; P, axbb = _frac_points(ax, rend)
@@ -607,7 +962,7 @@ def fig_curves(a):
             sc, box, padded, _ = _best_corner(P, w_, h_, obs, left_room=0.19, bottom_room=0.19)
             if sc <= 0.06: got = (box, padded); break
         if got is None: notes.append(f"panel {rec['pn']}: no free corner for the inset (best one would still cover {sc:.0%} of the plotted samples), no inset"); continue
-        x0, x1, ylo, yhi = rec["inset"]; box, padded = got; ins_pad[id(ax)] = padded
+        x0, x1, ylo, yhi = rec["inset"]; box, padded = got; ins_pad[id(ax)] = padded; ins_drawn.append((x0, x1))
         ins = ax.inset_axes([box[0], box[1], box[2] - box[0], box[3] - box[1]]); ins.set_zorder(8)
         for i, (sname, c) in enumerate(rec["cur"].items()):
             m = (c["xs"] >= x0) & (c["xs"] <= x1); st = styles[sname]; ins.plot(c["xs"][m], c["sm"][m], lw=st["lw"] * 0.9, color=st["color"], ls=st["ls"], marker=st["mk"], ms=2.2, markeredgewidth=0)
@@ -618,7 +973,7 @@ def fig_curves(a):
         for sp_ in ins.spines.values(): sp_.set_visible(True); sp_.set_linewidth(0.5); sp_.set_color("#555")
         ind = ax.indicate_inset_zoom(ins, edgecolor="#555555", linewidth=0.6); ind.set_zorder(6)
         for cn in getattr(ind, "connectors", ()) or (): cn.set_linewidth(0.5); cn.set_color("#555555")
-    # legend inside the axes when a free corner exists (occupancy test), else one row above the panels
+    # legend inside the axes when a free corner exists (occupancy test), else one row above the panels; never on a line, a band or an end label
     if legend == "auto" and hs:
         best = None
         for rec in info:
@@ -632,21 +987,35 @@ def fig_curves(a):
             sc, ax, box = best; ax.legend(hs, ls_, fontsize=FS, loc="lower left", bbox_to_anchor=(box[0], box[1]), bbox_transform=ax.transAxes, borderaxespad=0, handlelength=1.4, labelspacing=0.3)
         else:
             lg_above = legend_above(); h_fig = lg_above.get_window_extent().height / fig.bbox.height
-            fig.tight_layout(pad=0.3, rect=(0, 0, 1, 1 - h_fig - 0.012)); fig.canvas.draw(); place_end_labels()
-    elif legend == "best" and a.series: flat[len(panels) - 1].legend(fontsize=FS, loc="best", handlelength=1.2)
+            do_layout(1 - h_fig - 0.012); fig.canvas.draw(); place_end_labels()
+    elif legend == "best" and hs: place_legend(fig, flat[len(panels) - 1], hs, ls_, fontsize=FS, handlelength=1.2)
     for n_ in notes: print(f"[WARN] curves: {n_}")
     for pn, xc, vo, vb, d in summ: print(f"annotated {pn if pn is not None else 'panel'}: Δ{a.y} @ {a.x} {_fx(xc)} = {d:+.2f} ({a.ours} {vo:.2f}, {base} {vb:.2f}; raw seed means)")
     nmax = max(n_by.values()) if n_by else 1
     band_txt = {"sd": "shaded band = ± s.d. over seeds", "minmax": "shaded band = min–max over seeds", "none": ("no band drawn" if nmax > 1 else "single run per series")}[a.band]
     cap = f"Curves of {a.y} vs. {a.x}; {band_txt}"
-    if nmax > 1: cap += f"; n = {nmax} seeds per series" if len(set(n_by.values())) == 1 else "; seeds per series: " + ", ".join(f"{labels.get(k, k)} {v}" for k, v in n_by.items())
+    if nmax > 1: cap += f"; n = {nmax} seeds per series" if len(set(n_by.values())) == 1 else "; seeds per series: " + ", ".join(f"{lab(k)} {v}" for k, v in n_by.items())
     if use_ema: cap += f"; solid lines = EMA smoothing (α = {a.ema:g}, s_0 = first value) of the seed mean, faint grey lines = raw seed means"
     elif a.ema: cap += f"; --ema {a.ema:g} not applied ({min_pts} points per series < {EMA_MIN_POINTS}), lines are the raw seed means"
     if a.inset and any(r_["inset"] for r_ in info): cap += f"; inset and grey rectangle zoom on {a.inset}"
     if a.annotate: cap += f"; circles mark the last {a.x} both series share; end labels and Δ = {a.ours} − {base} are the RAW seed means at that {a.x} (the EMA is for drawing only)"
     hdr = ["panel", "series", a.x, f"{a.y}_mean", f"{a.y}_sd", "n"] + ([f"{a.y}_smooth", "kind", "ours", "baseline", "delta", "basis"] if new else [])
+    for arts in label_arts.values():                                           # the saved page must contain the margin labels (bbox-tight skips artists that are out of the layout)
+        for t_, _v in arts.values(): t_.set_in_layout(True); t_.arrow_patch.set_in_layout(True)
+    # ---- what was drawn, for <out>.meta.json / <out>.caption.md
+    real = [s_ for s_ in series_all if s_]
+    meta = sty.meta_base(real, y_label=ylab, x_label=xlab, x_name=a.x, metric=a.y, direction=dir_ or direction_of(root, a.y, metric_name, ylab), n=dict(n_by) if nmax > 1 else None, n_seeds=nmax if nmax > 1 else None,
+                         band=(a.band if nmax > 1 else "none"), logx=bool(a.logx), logy=bool(a.logy), baseline=base or None,
+                         panels=([sty.text(p_) for p_ in panels] if panels != [None] else None), panel_label=(sty.text(a.panel) if panels != [None] else None))
+    if a.ours: meta["ours"] = a.ours
+    if use_ema:
+        meta["ema"] = {"alpha": a.ema, "init": "first", "raw_line": True}
+        if summ: meta["end_x"] = summ[0][1]; meta["end_labels"] = "raw"
+    if ins_drawn: meta["inset"] = {"x0": _fx(ins_drawn[0][0]), "x1": _fx(ins_drawn[0][1]), "x_name": a.x}
+    if summ: meta["annotate"] = {"x": summ[0][1], "ours": a.ours, "baseline": base, "delta": summ[0][4], "unit": a.delta_unit or "", "metric": a.y, "label": metric_name, "direction": dir_ or ""}
+    set_meta(a, "curves", {k: v for k, v in meta.items() if v not in (None, "")})
+    src, hdr = with_style(src, hdr, 1, sty)
     finish(fig, a, src, hdr, root, cap + ".")
-
 
 def _stats_group(rows, gcol, vcol):
     vals = collections.OrderedDict()
@@ -661,6 +1030,7 @@ def fig_stems(a):
     """paired baseline (x) vs ours (y) per item: y = x diagonal, stems from the diagonal, gain labels."""
     root = os.path.abspath(a.project); labels = dict(kv.split("=", 1) for kv in a.labels.split(",") if "=" in kv) if a.labels else {}
     rows = _csv_rows(root, a.csv, [a.item, a.x, a.y, a.group])
+    sty = Sty(a, root); sty.set_labels(labels)
     items = collections.OrderedDict()
     for r in rows:
         try: items.setdefault(r[a.item], []).append((float(r[a.x]), float(r[a.y]), r[a.group] if a.group else r[a.item]))
@@ -668,73 +1038,84 @@ def fig_stems(a):
     if not items: print(f"[FAIL] no numeric rows in {a.csv}"); sys.exit(1)
     names = list(items); X = np.array([np.mean([p[0] for p in items[k]]) for k in names]); Y = np.array([np.mean([p[1] for p in items[k]]) for k in names]); G = [items[k][0][2] for k in names]
     gain = Y - X; groups = list(dict.fromkeys(G))
-    if len(groups) > len(CAT): print(f"[WARN] stems: {len(groups)} groups, colours repeat after {len(CAT)}")
-    cm = {g: CAT[i % len(CAT)] for i, g in enumerate(groups)}; mk = {g: MARKS[i % len(MARKS)] for i, g in enumerate(groups)}
+    cm = {g: sty.color(g, i) for i, g in enumerate(groups)}; mk = {g: sty.marker(g, i) for i, g in enumerate(groups)}      # families get the registry / fallback look, never the ours colour
+    for k, g in zip(names, G): sty.record(k, sty.text(k), cm[g], "", mk[g])
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); fig.subplots_adjust(left=0.14, right=0.97, bottom=0.17, top=0.96)
     xs_ = max(X.max() - X.min(), 1e-9); lo = min(X.min(), Y.min()); hi = max(X.max(), Y.max()); ys_ = max(hi - lo, 1e-9)
     ax.set_xlim(X.min() - 0.08 * xs_ - 0.02 * ys_, X.max() + 0.08 * xs_ + 0.02 * ys_); ax.set_ylim(lo - 0.06 * ys_, hi + 0.16 * ys_)
-    ax.axline((lo, lo), slope=1, ls="--", lw=0.7, color="#8a8a8a", zorder=1, label="y = x")
+    ax.axline((lo, lo), slope=1, ls="--", lw=0.7, color=sty.role("baseline_line"), zorder=1, label="y = x")
     ax.vlines(X, X, Y, colors=[cm[g] for g in G], lw=0.8, zorder=2)
     for g in groups:
-        m = [i for i, gg in enumerate(G) if gg == g]; ax.scatter(X[m], Y[m], s=22, marker=mk[g], color=cm[g], edgecolors="white", linewidths=0.4, zorder=4, label=labels.get(g, g))
+        m = [i for i, gg in enumerate(G) if gg == g]; ax.scatter(X[m], Y[m], s=22, marker=mk[g], color=cm[g], edgecolors="white", linewidths=0.4, zorder=4, label=sty.text(g))
+    fit_markers(fig, [ax], {ax: [(x, y, None) for x, y in zip(X, Y)]}, radius_pt=3.0)                                 # a marker at the edge is never half-clipped
     up = [((0, 4), "center", "bottom"), ((0, 10), "center", "bottom"), ((-7, 6), "right", "bottom"), ((7, 6), "left", "bottom"), ((0, 16), "center", "bottom"), ((-7, 13), "right", "bottom"), ((7, 13), "left", "bottom")]
     dn = [((0, -4), "center", "top"), ((0, -10), "center", "top"), ((-7, -6), "right", "top"), ((7, -6), "left", "top"), ((0, -16), "center", "top")]
-    placed = place_labels(fig, ax, [(x, y, f"{d:+.2f}".replace("-", "−"), cm[g], False, up if d >= 0 else dn) for x, y, d, g in zip(X, Y, gain, G)], fontsize=5.8)
+    placed = place_labels(fig, ax, [(x, y, f"{d:+.2f}".replace("-", "−"), cm[g], False, up if d >= 0 else dn) for x, y, d, g in zip(X, Y, gain, G)], fontsize=T(5.8))
     dropped = [k for k, p in zip(names, placed) if p is None]
     if dropped: print(f"[WARN] stems: gain label dropped (no free spot): {dropped}; the value is in the source CSV")
     n_up = int((gain > 0).sum()); n = len(names)
-    ax.set_xlabel(a.xlabel or labels.get(a.x, a.x)); ax.set_ylabel(a.ylabel or labels.get(a.y, a.y)); ax.grid(lw=0.4, color="#ececec", zorder=0)
-    ax.legend(fontsize=5.8, loc="lower right" if n_up * 2 >= n else "upper left", handlelength=1.2, labelspacing=0.3, ncol=1 if len(groups) <= 6 else 2)
+    xl = sty.axis(a.x, a.xlabel, rows, labels); yl = sty.axis(a.y, a.ylabel, rows, labels)
+    ax.set_xlabel(xl); ax.set_ylabel(yl); ax.grid(lw=0.4, color="#ececec", zorder=0)
+    hs, ls = ax.get_legend_handles_labels(); place_legend(fig, ax, hs, ls, fontsize=T(5.8), handlelength=1.2, ncol=1 if len(groups) <= 6 else 2)
     print(f"{n_up}/{n} {a.item}s above y = x (gain {gain.min():+.2f} to {gain.max():+.2f}, mean {gain.mean():+.2f})")
     src = [[k, g, x, y, d, bool(d > 0), p is not None] for k, g, x, y, d, p in zip(names, G, X, Y, gain, placed)]
-    finish(fig, a, src, [a.item, a.group or "group", a.x, a.y, "gain", "above_diagonal", "label_placed"], root,
-           f"{labels.get(a.y, a.y)} vs. {labels.get(a.x, a.x)} for {n} {a.item}s; dashed = y = x, stems = gain ({n_up}/{n} above the diagonal, mean {gain.mean():+.2f}).")
+    set_meta(a, "stems", {"item": a.item, "group": (sty.text(a.group) if a.group else None), "x_label": xl, "y_label": yl, "k_above": n_up, "n_items": n, "direction": direction_of(root, a.y, yl, a.x), "styles": {}})
+    src, hdr = with_style(src, [a.item, a.group or "group", a.x, a.y, "gain", "above_diagonal", "label_placed"], 0, sty)
+    finish(fig, a, src, hdr, root,
+           f"{yl} vs. {xl} for {n} {a.item}s; dashed = y = x, stems = gain ({n_up}/{n} above the diagonal, mean {gain.mean():+.2f}).")
 
 def fig_box(a):
     """horizontal box per group; whiskers at percentiles"""
     root = os.path.abspath(a.project); labels = dict(kv.split("=", 1) for kv in a.labels.split(",") if "=" in kv) if a.labels else {}
-    rows = _csv_rows(root, a.csv, [a.value, a.group]); vals = _stats_group(rows, a.group, a.value)
+    rows = _csv_rows(root, a.csv, [a.value, a.group]); vals = _stats_group(rows, a.group, a.value); sty = Sty(a, root); sty.set_labels(labels)
     try: wl, wh = (float(t) for t in a.whis.split(","))
     except ValueError: print("[FAIL] --whis wants two percentiles, e.g. 5,95"); sys.exit(1)
     names = list(vals); st = []
     for g in names:
         v = np.array(vals[g]); st.append((len(v), *np.percentile(v, [wl, 25, 50, 75, wh])))
+        sty.record(g, sty.text(g), "", "", "")                                    # a group is a dataset / condition: identified by its row label and panel, never by a hue
     h = a.height_in or max(1.3, 0.3 * len(names) + 0.75)
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, h)); fig.subplots_adjust(left=0.2, right=0.96, bottom=0.8 / h, top=0.97)
     for i, (n, lo, q1, md, q3, hi) in enumerate(st):
-        ax.add_patch(plt.Rectangle((q1, i - 0.3), q3 - q1, 0.6, fc="#7fa7c9", ec="#2b4c6f", lw=0.6, zorder=3))
-        ax.plot([md, md], [i - 0.3, i + 0.3], color=ACCENT, lw=1.2, zorder=4, solid_capstyle="butt")
-        ax.plot([lo, q1], [i, i], color="#2b4c6f", lw=0.6, zorder=2); ax.plot([q3, hi], [i, i], color="#2b4c6f", lw=0.6, zorder=2)
-        for e in (lo, hi): ax.plot([e, e], [i - 0.14, i + 0.14], color="#2b4c6f", lw=0.6, zorder=2)
+        ax.add_patch(plt.Rectangle((q1, i - 0.3), q3 - q1, 0.6, fc="#d6d6d6", ec="#4a4a4a", lw=0.6, zorder=3))
+        ax.plot([md, md], [i - 0.3, i + 0.3], color="#1f1f1f", lw=1.2, zorder=4, solid_capstyle="butt")
+        ax.plot([lo, q1], [i, i], color="#4a4a4a", lw=0.6, zorder=2); ax.plot([q3, hi], [i, i], color="#4a4a4a", lw=0.6, zorder=2)
+        for e in (lo, hi): ax.plot([e, e], [i - 0.14, i + 0.14], color="#4a4a4a", lw=0.6, zorder=2)
     few = [g for g, s_ in zip(names, st) if s_[0] < 5]
     if few: print(f"[WARN] box: {few} have fewer than 5 values; quartiles and percentile whiskers are not meaningful there")
-    if a.vline is not None: ax.axvline(a.vline, ls="--", lw=0.6, color="#8a8a8a", zorder=1)
+    if a.vline is not None: ax.axvline(a.vline, ls="--", lw=0.6, color=sty.role("baseline_line"), zorder=1)
     allv = [s_[1] for s_ in st] + [s_[5] for s_ in st] + ([a.vline] if a.vline is not None else []); pad = 0.05 * (max(allv) - min(allv) or 1.0)
-    ax.set_xlim(min(allv) - pad, max(allv) + pad); ax.set_ylim(len(names) - 0.5, -0.5); ax.set_yticks(range(len(names))); ax.set_yticklabels([labels.get(g, g) for g in names])
-    ax.set_xlabel(a.xlabel or labels.get(a.value, a.value)); ax.grid(axis="x", lw=0.4, color="#ececec", zorder=0); ax.tick_params(axis="y", length=0)
+    ax.set_xlim(min(allv) - pad, max(allv) + pad); ax.set_ylim(len(names) - 0.5, -0.5); ax.set_yticks(range(len(names))); ax.set_yticklabels([sty.text(g) for g in names], fontsize=T(7.5))
+    xl = sty.axis(a.value, a.xlabel, rows, labels)
+    ax.set_xlabel(xl); ax.grid(axis="x", lw=0.4, color="#ececec", zorder=0); ax.tick_params(axis="y", length=0)
     if a.ylabel: ax.set_ylabel(a.ylabel)
     src = [[g, *s_] for g, s_ in zip(names, st)]
-    finish(fig, a, src, [a.group, "n", f"whisker_lo_p{wl:g}", "q1", "median", "q3", f"whisker_hi_p{wh:g}"], root,
-           f"{labels.get(a.value, a.value)} per {a.group}: boxes = interquartile range, line = median, whiskers = {wl:g}th–{wh:g}th percentiles.")
+    set_meta(a, "box", {"y_label": xl, "group": sty.text(a.group), "whis": [wl, wh], "vline": a.vline, "direction": direction_of(root, a.value, xl), "n": {sty.text(g): int(s_[0]) for g, s_ in zip(names, st)}, "styles": {}})
+    src, hdr = with_style(src, [a.group, "n", f"whisker_lo_p{wl:g}", "q1", "median", "q3", f"whisker_hi_p{wh:g}"], 0, sty)
+    finish(fig, a, src, hdr, root,
+           f"{xl} per {a.group}: boxes = interquartile range, line = median, whiskers = {wl:g}th–{wh:g}th percentiles.")
 
 def fig_hbar(a):
     """horizontal bars with the value at the bar end; negative values extend left of the zero line"""
     root = os.path.abspath(a.project); labels = dict(kv.split("=", 1) for kv in a.labels.split(",") if "=" in kv) if a.labels else {}
-    rows = _csv_rows(root, a.csv, [a.value, a.group]); vals = _stats_group(rows, a.group, a.value)
+    rows = _csv_rows(root, a.csv, [a.value, a.group]); vals = _stats_group(rows, a.group, a.value); sty = Sty(a, root); sty.set_labels(labels)
     names = list(vals); m = np.array([np.mean(vals[g]) for g in names]); ns = [len(vals[g]) for g in names]
+    for g in names: sty.record(g, sty.text(g), "", "", "")
     h = a.height_in or max(1.3, 0.3 * len(names) + 0.75)
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, h)); fig.subplots_adjust(left=0.2, right=0.96, bottom=0.8 / h, top=0.97)
-    ax.barh(range(len(names)), m, height=0.62, color=PALETTE[3], edgecolor="none", zorder=3)
+    ax.barh(range(len(names)), m, height=0.62, color=NEUTRAL_FILL, edgecolor="none", zorder=3)
     lo, hi = min(0.0, m.min()), max(0.0, m.max()); span = (hi - lo) or 1.0
-    for i, v in enumerate(m): ax.text(v + (0.015 * span if v >= 0 else -0.015 * span), i, a.fmt.format(v).replace("-", "−"), ha="left" if v >= 0 else "right", va="center", fontsize=6.3, color="#222", zorder=5)
+    for i, v in enumerate(m): ax.text(v + (0.015 * span if v >= 0 else -0.015 * span), i, a.fmt.format(v).replace("-", "−"), ha="left" if v >= 0 else "right", va="center", fontsize=T(6.3), color="#222", zorder=5)
     ax.set_xlim(lo - (0.24 * span if m.min() < 0 else 0.02 * span), hi + (0.24 * span if m.max() > 0 else 0.02 * span))
-    ax.axvline(0, lw=0.7, color="#333", zorder=4); ax.set_ylim(len(names) - 0.5, -0.5); ax.set_yticks(range(len(names))); ax.set_yticklabels([labels.get(g, g) for g in names]); ax.tick_params(axis="y", length=0)
-    ax.set_xlabel(a.xlabel or labels.get(a.value, a.value)); ax.grid(axis="x", lw=0.4, color="#ececec", zorder=0)
+    ax.axvline(0, lw=0.7, color="#333", zorder=4); ax.set_ylim(len(names) - 0.5, -0.5); ax.set_yticks(range(len(names))); ax.set_yticklabels([sty.text(g) for g in names], fontsize=T(7.5)); ax.tick_params(axis="y", length=0)
+    xl = sty.axis(a.value, a.xlabel, rows, labels)
+    ax.set_xlabel(xl); ax.grid(axis="x", lw=0.4, color="#e6e6e6", zorder=0)
     if a.ylabel: ax.set_ylabel(a.ylabel)
     best = int(np.argmin(m) if a.lower else np.argmax(m))
     src = [[g, v, n, i == best] for i, (g, v, n) in enumerate(zip(names, m, ns))]
-    finish(fig, a, src, [a.group, a.value, "n", "best"], root, f"{labels.get(a.value, a.value)} per {a.group}" + (" (mean over rows per group)" if max(ns) > 1 else "") + "; bars left of the zero line are negative.")
-
+    set_meta(a, "hbar", {"y_label": xl, "group": sty.text(a.group), "fmt": a.fmt, "direction": "lower" if a.lower else direction_of(root, a.value, xl), "n": max(ns), "styles": {}})
+    src, hdr = with_style(src, [a.group, a.value, "n", "best"], 0, sty)
+    finish(fig, a, src, hdr, root, f"{xl} per {a.group}" + (" (mean over rows per group)" if max(ns) > 1 else "") + "; bars left of the zero line are negative.")
 
 # ------------------------------------------------------------------ classification / agreement panels (roc, pr, confusion, calibration, bland-altman)
 def _to01(v):
@@ -814,37 +1195,45 @@ def _fig_binary(a, kind):
     root = os.path.abspath(a.project); tag = kind; B = _ci_spec(a)
     groups = _binary_groups(root, a, a.y_true, a.score, a.group, tag)
     if a.ours and a.ours not in groups: print(f"[FAIL] {tag}: --ours {a.ours!r} not in groups {list(groups)}"); sys.exit(1)
+    sty = Sty(a, root); gnames = [g or "all" for g in groups]
+    if a.group: sty.check(gnames, "group"); sty.warn_no_ours(gnames)
     rng = np.random.default_rng(a.seed); grid = np.linspace(0, 1, 101); metric = "auc" if kind == "roc" else "ap"; MET = metric.upper()
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); fig.subplots_adjust(left=0.15, right=0.97, bottom=0.14, top=0.97)
-    names = [g for g in groups if not a.ours or g != a.ours] + ([a.ours] if a.ours else []); src = []; summ = []; prevs = []
-    if len(names) > len(CAT): print(f"[WARN] {tag}: {len(names)} groups, colours repeat after {len(CAT)}")
+    names = sty.order(list(groups)) if a.group else list(groups); src = []; summ = []; prevs = []
     for i, g in enumerate(names):
-        y, s = groups[g]; npos = int(y.sum()); nneg = int(len(y) - npos); is_ours = bool(a.ours) and g == a.ours; col = ACCENT if is_ours else CAT[i % len(CAT)]; ls = "-" if is_ours else ["-", "--", "-.", ":"][i % 4]
+        y, s = groups[g]; npos = int(y.sum()); nneg = int(len(y) - npos); nm = g or "all"; d = sty.style(nm, i); is_ours = sty.is_ours(nm) and bool(a.group); col = d["color"]; ls = d["line"]
         if kind == "roc": xs, ys_ = roc_points(y, s); val = _trapz(xs, ys_)
         else: xs, ys_ = pr_points(y, s); val = float(np.sum(np.diff(np.r_[0.0, xs]) * ys_)); xs = np.r_[0.0, xs]; ys_ = np.r_[ys_[0], ys_]; prevs.append(npos / len(y))
-        lo = hi = None; label = f"{g or 'all'}  {MET} {val:.3f}"
+        lo = hi = None; label = f"{d['label']}  {MET} {val:.3f}"
         if B:
             m, cur = _bootstrap(y, s, kind, B, rng, grid); lo, hi = (float(v) for v in np.percentile(m, [2.5, 97.5]))
             blo, bhi = np.percentile(cur, [2.5, 97.5], axis=0); label += f" [{lo:.3f}, {hi:.3f}]"
             ax.fill_between(grid, blo, bhi, color=col, alpha=0.15, lw=0, zorder=2)
-            for gx, l_, h_ in zip(grid, blo, bhi): src.append([g or "all", "band", gx, "", l_, h_, "", "", "", "", ""])
+            for gx, l_, h_ in zip(grid, blo, bhi): src.append([nm, "band", gx, "", l_, h_, "", "", "", "", ""])
         if kind == "roc": ax.plot(xs, ys_, color=col, ls=ls, lw=1.2 if is_ours else 0.9, label=label, zorder=4 if is_ours else 3)
         else: ax.step(xs, ys_, where="pre", color=col, ls=ls, lw=1.2 if is_ours else 0.9, label=label, zorder=4 if is_ours else 3)
-        for x_, y_ in zip(xs, ys_): src.append([g or "all", "curve", x_, y_, "", "", "", "", "", "", ""])
-        src.append([g or "all", "summary", "", "", "", "", val, "" if lo is None else lo, "" if hi is None else hi, npos, nneg]); summ.append((g or "all", val, lo, hi, npos, nneg))
-        print(f"{kind}: {g or 'all'}: {MET} {val:.4f}" + ("" if lo is None else f" [95% CI {lo:.4f}, {hi:.4f}; bootstrap {B}, seed {a.seed}]") + f" (n_pos={npos}, n_neg={nneg})")
+        for x_, y_ in zip(xs, ys_): src.append([nm, "curve", x_, y_, "", "", "", "", "", "", ""])
+        src.append([nm, "summary", "", "", "", "", val, "" if lo is None else lo, "" if hi is None else hi, npos, nneg]); summ.append((nm, val, lo, hi, npos, nneg))
+        print(f"{kind}: {nm}: {MET} {val:.4f}" + ("" if lo is None else f" [95% CI {lo:.4f}, {hi:.4f}; bootstrap {B}, seed {a.seed}]") + f" (n_pos={npos}, n_neg={nneg})")
+    ref_c = sty.role("baseline_line")
     if kind == "roc":
-        ax.plot([0, 1], [0, 1], ls=":", lw=0.7, color="#8a8a8a", zorder=1, label="chance"); ax.set_xlabel(a.xlabel or "False positive rate"); ax.set_ylabel(a.ylabel or "True positive rate"); loc = "lower right"
+        ax.plot([0, 1], [0, 1], ls=":", lw=0.7, color=ref_c, zorder=1, label="chance"); ax.set_xlabel(a.xlabel or "False positive rate"); ax.set_ylabel(a.ylabel or "True positive rate")
         ax.set_aspect("equal", adjustable="box")
     else:
         pv_ = sorted({round(p_, 6) for p_ in prevs})
-        for k, pv in enumerate(pv_): ax.axhline(pv, ls=":", lw=0.7, color="#8a8a8a", zorder=1, label=(f"prevalence {pv:.2f}" if len(pv_) == 1 else f"prevalence {pv_[0]:.2f}–{pv_[-1]:.2f}") if k == 0 else None)
-        ax.set_xlabel(a.xlabel or "Recall"); ax.set_ylabel(a.ylabel or "Precision"); loc = "lower left"
-    ax.set_xlim(-0.01, 1.01); ax.set_ylim(-0.01, 1.01); ax.grid(lw=0.4, color="#ececec", zorder=0); ax.legend(fontsize=5.8, loc=loc, handlelength=1.6, labelspacing=0.3)
+        for k, pv in enumerate(pv_): ax.axhline(pv, ls=":", lw=0.7, color=ref_c, zorder=1, label=(f"prevalence {pv:.2f}" if len(pv_) == 1 else f"prevalence {pv_[0]:.2f}–{pv_[-1]:.2f}") if k == 0 else None)
+        ax.set_xlabel(a.xlabel or "Recall"); ax.set_ylabel(a.ylabel or "Precision")
+    ax.set_xlim(-0.01, 1.01); ax.set_ylim(-0.01, 1.01); ax.grid(lw=0.4, color="#ececec", zorder=0)
+    hs, ls_ = ax.get_legend_handles_labels(); place_legend(fig, ax, hs, ls_, fontsize=T(5.8), handlelength=1.6)
     cap = (f"{'ROC' if kind == 'roc' else 'Precision–recall'} curves; {MET} in the legend" + (f" with a stratified bootstrap 95 % interval ({B} resamples, seed {a.seed}), band = pointwise 95 % interval" if B else "") + "; "
            + "; ".join(f"{g}: n_pos={p_}, n_neg={n_}" for g, _, _, _, p_, n_ in summ) + ".")
     xn, yn = ("fpr", "tpr") if kind == "roc" else ("recall", "precision")
-    finish(fig, a, src, ["group", "kind", xn, yn, f"{yn}_lo", f"{yn}_hi", metric, "ci_lo", "ci_hi", "n_pos", "n_neg"], root, cap)
+    meta = sty.meta_base([n_ for n_ in (g or "all" for g in names)] if a.group else [], ci=(f"bootstrap:{B}" if B else None), auc={n_: v for n_, v, *_ in summ}, n={n_: p_ + q_ for n_, _, _, _, p_, q_ in summ})
+    if kind == "pr": meta["prevalence"] = [round(p_, 4) for p_ in sorted(set(prevs))]
+    if a.ours: meta["ours"] = a.ours
+    set_meta(a, kind, meta)
+    src, hdr = with_style(src, ["group", "kind", xn, yn, f"{yn}_lo", f"{yn}_hi", metric, "ci_lo", "ci_hi", "n_pos", "n_neg"], 0, sty)
+    finish(fig, a, src, hdr, root, cap)
 
 def fig_roc(a): _fig_binary(a, "roc")
 def fig_pr(a): _fig_binary(a, "pr")
@@ -886,27 +1275,30 @@ def _read_confusion(root, a):
 
 def fig_confusion(a):
     """confusion matrix heatmap: count + row-normalised percentage in each cell, per-class recall / precision in the source CSV"""
-    root = os.path.abspath(a.project); labels, M = _read_confusion(root, a); n = len(labels); total = float(M.sum())
+    root = os.path.abspath(a.project); labels, M = _read_confusion(root, a); n = len(labels); total = float(M.sum()); sty = Sty(a, root)
     if total <= 0: print("[FAIL] confusion: the matrix is empty"); sys.exit(1)
+    for l_ in labels: sty.record(l_, sty.text(l_))
     rs = M.sum(1); cs = M.sum(0); tp = np.diag(M)
     with np.errstate(divide="ignore", invalid="ignore"):
         R = np.where(rs[:, None] > 0, M / rs[:, None], np.nan); rec = np.where(rs > 0, tp / rs, np.nan); prec = np.where(cs > 0, tp / cs, np.nan)
     norm = a.normalize == "true"; Z = np.nan_to_num(R, nan=0.0) if norm else M
+    cmap = sty.st.cmap if sty.st.raw.get("cmap") else "Blues"                  # a confusion matrix keeps its sequential Blues unless the registry names a colour map
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in))
-    im = ax.pcolormesh(np.arange(n + 1) - 0.5, np.arange(n + 1) - 0.5, Z, cmap="Blues", vmin=0, vmax=1.0 if norm else max(1.0, M.max()), edgecolors="white", linewidth=0.6)   # a mesh, not imshow: stays vector
+    im = ax.pcolormesh(np.arange(n + 1) - 0.5, np.arange(n + 1) - 0.5, Z, cmap=cmap, vmin=0, vmax=1.0 if norm else max(1.0, M.max()), edgecolors="white", linewidth=0.6)   # a mesh, not imshow: stays vector
     ax.set_xlim(-0.5, n - 0.5); ax.set_ylim(n - 0.5, -0.5); ax.set_aspect("equal")
-    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03); cb.solids.set_rasterized(False); cb.ax.tick_params(labelsize=6, length=2); cb.set_label("Row-normalised share" if norm else "Count", fontsize=6.3)
-    ax.set_xticks(range(n)); ax.set_yticks(range(n)); ax.set_xticklabels(labels, fontsize=6.3, rotation=45 if n > 6 or max(len(l_) for l_ in labels) > 6 else 0, ha="right" if (n > 6 or max(len(l_) for l_ in labels) > 6) else "center")
-    ax.set_yticklabels(labels, fontsize=6.3); ax.set_xlabel(a.xlabel or "Predicted"); ax.set_ylabel(a.ylabel or "True"); ax.tick_params(length=0)
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03); cb.solids.set_rasterized(False); cb.ax.tick_params(labelsize=T(6), length=2); cb.set_label("Row-normalised share" if norm else "Count", fontsize=T(6.3))
+    tl = [sty.text(l_) for l_ in labels]; rot = n > 6 or max(len(l_) for l_ in tl) > 6
+    ax.set_xticks(range(n)); ax.set_yticks(range(n)); ax.set_xticklabels(tl, fontsize=T(6.3), rotation=45 if rot else 0, ha="right" if rot else "center")
+    ax.set_yticklabels(tl, fontsize=T(6.3)); ax.set_xlabel(a.xlabel or "Predicted"); ax.set_ylabel(a.ylabel or "True"); ax.tick_params(length=0)
     for sp_ in ax.spines.values(): sp_.set_visible(False)
     if n > 12: print(f"[WARN] confusion: {n} classes, cell text would fall below 5 pt and is left out; counts and shares are in the source CSV")
     else:
-        fs = 6.3 if n <= 5 else (5.5 if n <= 8 else 5.0)
+        fsz = T(6.3 if n <= 5 else (5.5 if n <= 8 else 5.0))
         for i in range(n):
             for j in range(n):
                 frac = Z[i, j] / (1.0 if norm else max(1.0, M.max())); colr = "white" if frac > 0.55 else "#222"
                 share = "–" if np.isnan(R[i, j]) else f"{100 * R[i, j]:.1f}%"
-                ax.text(j, i, f"{int(round(M[i, j]))}" + (f"\n{share}" if n <= 8 else ""), ha="center", va="center", fontsize=fs, color=colr)
+                ax.text(j, i, f"{int(round(M[i, j]))}" + (f"\n{share}" if n <= 8 else ""), ha="center", va="center", fontsize=fsz, color=colr)
     src = []
     for i in range(n):
         for j in range(n): src.append(["cell", labels[i], labels[j], int(round(M[i, j])), "" if np.isnan(R[i, j]) else 100 * R[i, j], "", "", ""])
@@ -915,9 +1307,10 @@ def fig_confusion(a):
     weak = [labels[i] for i in range(n) if rs[i] > 0 and rec[i] < 0.5]
     print(f"confusion: n={int(round(total))}, accuracy {acc:.4f}; recall " + ", ".join(f"{l_} {('n/a' if np.isnan(r_) else format(r_, '.3f'))}" for l_, r_ in zip(labels, rec)))
     if weak: print(f"[WARN] confusion: recall below 0.5 for {weak}")
-    finish(fig, a, src, ["kind", "true", "pred", "count", "row_pct", "recall", "precision", "support"], root,
+    set_meta(a, "confusion", {"normalize": a.normalize, "classes": tl, "n": int(round(total)), "cmap": cmap, "styles": {}})
+    src, hdr = with_style(src, ["kind", "true", "pred", "count", "row_pct", "recall", "precision", "support"], 1, sty)
+    finish(fig, a, src, hdr, root,
            f"Confusion matrix (rows = true class, columns = predicted); each cell: count and row-normalised percentage; n = {int(round(total))}, accuracy {acc:.3f}.")
-
 
 def calib_bins(p, y, bins, strategy):
     """-> list of (lo, hi, n, mean confidence, observed frequency), empty bins omitted"""
@@ -950,33 +1343,39 @@ def fig_calibration(a):
     if not groups: print(f"[FAIL] calibration: no usable rows in {a.csv}"); sys.exit(1)
     names = list(groups)
     if a.ours and a.ours not in groups: print(f"[FAIL] calibration: --ours {a.ours!r} not in groups {names}"); sys.exit(1)
-    names = [g for g in names if not a.ours or g != a.ours] + ([a.ours] if a.ours else [])
+    sty = Sty(a, root)
+    if a.group: sty.check([g for g in names if g], "group"); sty.warn_no_ours([g for g in names if g])
+    names = sty.order(names) if a.group else names
     from matplotlib.lines import Line2D
     fig, (ax, ax2) = plt.subplots(2, 1, sharex=True, figsize=(a.width_mm / 25.4, a.height_in), gridspec_kw=dict(height_ratios=[3.4, 1]))
     fig.subplots_adjust(left=0.15, right=0.97, bottom=0.12, top=0.97, hspace=0.07)
-    ax.plot([0, 1], [0, 1], ls=":", lw=0.7, color="#8a8a8a", zorder=1); nmax = max(len(groups[g][0]) for g in names); src = []; hollow = False; hb = np.linspace(0, 1, 21)
+    ax.plot([0, 1], [0, 1], ls=":", lw=0.7, color=sty.role("baseline_line"), zorder=1); nmax = max(len(groups[g][0]) for g in names); src = []; hollow = False; hb = np.linspace(0, 1, 21)
     allbins = max(max(b[2] for b in calib_bins(np.array(groups[g][1]), np.array(groups[g][0]), a.bins, a.strategy)) for g in names)
+    eces = {}; briers = {}
     for i, g in enumerate(names):
-        y = np.array(groups[g][0], float); p = np.array(groups[g][1], float); col = ACCENT if (a.ours and g == a.ours) else CAT[i % len(CAT)]
-        bs = calib_bins(p, y, a.bins, a.strategy); ece = ece_score(p, y, a.bins, a.strategy); brier = float(np.mean((p - y) ** 2))
+        y = np.array(groups[g][0], float); p = np.array(groups[g][1], float); nm = g or "all"; d = sty.style(nm, i); col = d["color"]
+        bs = calib_bins(p, y, a.bins, a.strategy); ece = ece_score(p, y, a.bins, a.strategy); brier = float(np.mean((p - y) ** 2)); eces[nm] = ece; briers[nm] = brier
         if a.strategy == "quantile" and len(bs) < a.bins: print(f"[WARN] calibration: group {g or 'all'!r}: {a.bins - len(bs)} quantile bin(s) merged because of tied probabilities")
         if len(p) < 50: print(f"[WARN] calibration: group {g or 'all'!r} has only {len(p)} samples; the reliability diagram is mostly noise")
         cx = [b[3] for b in bs]; cy = [b[4] for b in bs]; ax.plot(cx, cy, color=col, lw=0.7, alpha=0.7, zorder=2)
         for lo, hi, n, conf, acc in bs:
             sz = 6 + 50 * n / allbins; small = n < 5; hollow |= small
             ax.scatter([conf], [acc], s=sz, facecolors="white" if small else col, edgecolors=col, linewidths=0.8, zorder=4)
-            src.append([g or "all", "bin", f"{lo:.6g}", f"{hi:.6g}", n, conf, acc, "", "", ""])
-        ax.plot([], [], color=col, marker="o", ms=3.5, lw=0.7, label=f"{g or 'all'}  ECE {ece:.3f}, Brier {brier:.3f}")
-        ax2.hist(p, bins=hb, histtype="step", color=col, lw=0.9); src.append([g or "all", "summary", "", "", "", "", "", ece, brier, len(p)])
+            src.append([nm, "bin", f"{lo:.6g}", f"{hi:.6g}", n, conf, acc, "", "", ""])
+        ax.plot([], [], color=col, marker="o", ms=3.5, lw=0.7, label=f"{d['label']}  ECE {ece:.3f}, Brier {brier:.3f}")
+        ax2.hist(p, bins=hb, histtype="step", color=col, lw=0.9); src.append([nm, "summary", "", "", "", "", "", ece, brier, len(p)])
         print(f"calibration: {g or 'all'}: ECE {ece:.4f} ({a.bins} {a.strategy} bins), Brier {brier:.4f}, n={len(p)}")
     hs, ls = ax.get_legend_handles_labels()
     if hollow: hs.append(Line2D([], [], marker="o", ls="", mfc="white", mec="#555", ms=3.5)); ls.append("bin with n < 5")
-    ax.legend(hs, ls, fontsize=5.8, loc="upper left", handlelength=1.4, labelspacing=0.3)
     ax.set_xlim(-0.01, 1.01); ax.set_ylim(-0.01, 1.01); ax.set_ylabel(a.ylabel or "Observed frequency"); ax.grid(lw=0.4, color="#ececec", zorder=0); ax.tick_params(labelbottom=False)
-    ax2.set_xlabel(a.xlabel or "Predicted probability"); ax2.set_ylabel("Count", fontsize=6.3); ax2.yaxis.set_major_locator(plt.MaxNLocator(2)); ax2.grid(axis="y", lw=0.4, color="#ececec", zorder=0)
-    finish(fig, a, src, ["group", "kind", "bin_lo", "bin_hi", "n", "mean_conf", "obs_freq", "ece", "brier", "n_total"], root,
+    place_legend(fig, ax, hs, ls, fontsize=T(5.8), handlelength=1.4)
+    ax2.set_xlabel(a.xlabel or "Predicted probability"); ax2.set_ylabel("Count", fontsize=T(6.3)); ax2.yaxis.set_major_locator(plt.MaxNLocator(2)); ax2.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
+    meta = sty.meta_base([g or "all" for g in names] if a.group else [], bins=a.bins, strategy=a.strategy, ece=eces, brier=briers, n=nmax)
+    if a.ours: meta["ours"] = a.ours
+    set_meta(a, "calibration", meta)
+    src, hdr = with_style(src, ["group", "kind", "bin_lo", "bin_hi", "n", "mean_conf", "obs_freq", "ece", "brier", "n_total"], 0, sty)
+    finish(fig, a, src, hdr, root,
            f"Reliability diagram ({a.bins} {a.strategy} bins; marker area ∝ bin count, hollow = fewer than 5 samples); ECE and Brier score in the legend; lower strip = histogram of predicted probabilities (n = {nmax} in the largest group).")
-
 
 def t_crit(df, conf=0.95):
     """two-sided Student t quantile, Cornish–Fisher expansion about the normal quantile (error < 0.5 % from df = 5)"""
@@ -1007,30 +1406,37 @@ def fig_bland_altman(a):
     A = np.array([p[0] for g in pts.values() for p in g]); Bv = np.array([p[1] for g in pts.values() for p in g])
     if len(A) < 3: print(f"[FAIL] bland-altman: {len(A)} paired measurement(s); at least 3 are needed for limits of agreement"); sys.exit(1)
     if len(A) < 30: print(f"[WARN] bland-altman: n={len(A)} < 30; the limits of agreement are imprecise (their own 95 % CI is wide)")
-    st = ba_stats(A, Bv); unit = f" ({a.unit})" if a.unit else ""; u = f" {a.unit}" if a.unit else ""
+    sty = Sty(a, root); st = ba_stats(A, Bv); unit = f" ({a.unit})" if a.unit else ""; u = f" {a.unit}" if a.unit else ""
     fig, ax = plt.subplots(figsize=(a.width_mm / 25.4, a.height_in)); fig.subplots_adjust(left=0.15, right=0.97, bottom=0.15, top=0.97)
-    names = list(pts)
-    if len(names) > len(CAT): print(f"[WARN] bland-altman: {len(names)} groups, colours repeat after {len(CAT)}")
-    src = []
+    names = list(pts); src = []; mk_pts = []
     for i, g in enumerate(names):
         xy = np.array(pts[g]); mm = xy.mean(1); dd = xy[:, 0] - xy[:, 1]
-        ax.scatter(mm, dd, s=7, color=CAT[i % len(CAT)] if a.group else PALETTE[4], alpha=0.75, linewidths=0, zorder=3, label=(g if a.group else None))
+        if a.group:                                                           # groups are datasets / conditions: marker shape and fill, never a hue
+            ds = sty.dataset_look(g, i); sty.record(g, sty.text(g), "", "", ds["marker"])
+            ax.scatter(mm, dd, s=9, marker=ds["marker"], facecolors=("none" if ds["fill"] == "none" else "#555555"), edgecolors="#555555", alpha=0.85, linewidths=0.5, zorder=3, label=sty.text(g))
+        else:
+            sty.record("all", "all"); ax.scatter(mm, dd, s=7, color="#555555", alpha=0.75, linewidths=0, zorder=3)
+        mk_pts += [(m_, d_, None) for m_, d_ in zip(mm, dd)]
         for m_, d_ in zip(mm, dd): src.append([g or "all", "point", m_, d_, "", "", "", "", len(mm), "", "", "", ""])
         if a.group:
             sg = ba_stats(xy[:, 0], xy[:, 1]); src.append([g, "summary", "", "", sg["bias"], sg["sd"], sg["lo"], sg["hi"], sg["n"], sg["slope"], sg["s_lo"], sg["s_hi"], sg["prop"]])
     src.append(["all", "summary", "", "", st["bias"], st["sd"], st["lo"], st["hi"], st["n"], st["slope"], st["s_lo"], st["s_hi"], st["prop"]])
     for v, ls_, nm in ((st["bias"], "-", "bias"), (st["hi"], "--", "+1.96 SD"), (st["lo"], "--", "−1.96 SD")):
-        ax.axhline(v, ls=ls_, lw=0.8, color=ACCENT if nm == "bias" else "#555", zorder=2)
-        ax.annotate(f"{nm} {v:+.2f}{u}".replace("-", "−"), (0.985, v), xycoords=ax.get_yaxis_transform(), xytext=(0, 2.2), textcoords="offset points", ha="right", va="bottom", fontsize=5.8, color="#222", zorder=6, bbox=dict(fc="white", ec="none", alpha=0.7, pad=0.3))
+        ax.axhline(v, ls=ls_, lw=0.8, color="#1f1f1f" if nm == "bias" else "#555", zorder=2)
+        ax.annotate(f"{nm} {v:+.2f}{u}".replace("-", "−"), (0.985, v), xycoords=ax.get_yaxis_transform(), xytext=(0, 2.2), textcoords="offset points", ha="right", va="bottom", fontsize=T(5.8), color="#222", zorder=6, bbox=dict(fc="white", ec="none", alpha=0.7, pad=0.3))
     if st["prop"]:
-        mx = (A + Bv) / 2; xs = np.array([mx.min(), mx.max()], float); ax.plot(xs, st["icpt"] + st["slope"] * xs, ls="-.", lw=0.8, color="#2b4c6f", zorder=4, label=f"slope {st['slope']:+.3f} [{st['s_lo']:+.3f}, {st['s_hi']:+.3f}]".replace("-", "−"))
+        mx = (A + Bv) / 2; xs = np.array([mx.min(), mx.max()], float); ax.plot(xs, st["icpt"] + st["slope"] * xs, ls="-.", lw=0.8, color="#555555", zorder=4, label=f"slope {st['slope']:+.3f} [{st['s_lo']:+.3f}, {st['s_hi']:+.3f}]".replace("-", "−"))
         print(f"[WARN] bland-altman: proportional bias, slope of the difference on the mean {st['slope']:+.4f} (95 % CI {st['s_lo']:+.4f} to {st['s_hi']:+.4f}); constant limits of agreement understate the spread at the ends")
-    if a.group or st["prop"]: ax.legend(fontsize=5.8, loc="upper left", handlelength=1.2, labelspacing=0.3, markerscale=1.2)
-    ax.set_xlabel(a.xlabel or f"Mean of {a.a} and {a.b}{unit}"); ax.set_ylabel(a.ylabel or f"{a.a} − {a.b}{unit}"); ax.grid(lw=0.4, color="#ececec", zorder=0)
+    fit_markers(fig, [ax], {ax: mk_pts}, radius_pt=2.0)
+    if a.group or st["prop"]:
+        hs, ls = ax.get_legend_handles_labels(); place_legend(fig, ax, hs, ls, fontsize=T(5.8), handlelength=1.2, markerscale=1.2)
+    xl = a.xlabel or f"Mean of {sty.text(a.a)} and {sty.text(a.b)}{unit}"; yl = a.ylabel or f"{sty.text(a.a)} − {sty.text(a.b)}{unit}"
+    ax.set_xlabel(xl); ax.set_ylabel(yl); ax.grid(lw=0.4, color="#ececec", zorder=0)
     print(f"bland-altman: n={st['n']}, bias {st['bias']:+.4f}{u}, SD {st['sd']:.4f}, limits {st['lo']:+.4f} to {st['hi']:+.4f}" + (f"; slope {st['slope']:+.4f} [{st['s_lo']:+.4f}, {st['s_hi']:+.4f}]" if not np.isnan(st["slope"]) else ""))
-    finish(fig, a, src, ["group", "kind", "mean", "diff", "bias", "sd", "loa_lo", "loa_hi", "n", "slope", "slope_lo", "slope_hi", "proportional_bias"], root,
+    set_meta(a, "bland_altman", {"unit": a.unit or None, "loa": 1.96, "slope_shown": bool(st["prop"]), "n": st["n"], "x_label": xl, "y_label": yl, "styles": {}})
+    src, hdr = with_style(src, ["group", "kind", "mean", "diff", "bias", "sd", "loa_lo", "loa_hi", "n", "slope", "slope_lo", "slope_hi", "proportional_bias"], 0, sty)
+    finish(fig, a, src, hdr, root,
            f"Bland–Altman plot of {a.a} vs. {a.b}: bias {st['bias']:+.2f}{u} (solid), limits of agreement bias ± 1.96 SD = {st['lo']:+.2f} to {st['hi']:+.2f}{u} (dashed); n = {st['n']}.")
-
 
 _FULL_CMDS = ("main", "ablation", "seeds", "curves")          # full text width (seeds halves it); every other subcommand is a one-column figure
 
@@ -1107,6 +1513,7 @@ def main():
     for p in sub.choices.values():
         p.add_argument("--synthetic", action="store_true", help="simulated / demo data: draw the SYNTHETIC DEMO watermark and tag figures.csv issues")
         p.add_argument("--no-watermark-check", action="store_true", dest="no_watermark_check", help="skip the data-provenance check (data kept outside results/ and runs/)")
+        p.add_argument("--allow-code-labels", action="store_true", dest="allow_code_labels", help="draw series names / axis names that look like code (chgate, F6R, value) as they are instead of failing; the fix is figures.style (figure_style.py init)")
     a = ap.parse_args(); resolve_width(a); {"roc": fig_roc, "pr": fig_pr, "confusion": fig_confusion, "calibration": fig_calibration, "bland-altman": fig_bland_altman, "main": fig_main, "ablation": fig_ablation, "seeds": fig_seeds, "curves": fig_curves, "stems": fig_stems, "box": fig_box, "hbar": fig_hbar}[a.cmd](a)
 
 if __name__ == "__main__":

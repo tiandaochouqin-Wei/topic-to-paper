@@ -182,6 +182,18 @@ experiments:
 figures:
   map: figures.csv
   inspected: []             # - {file, issues_found, fixed}
+  # style:                  # 全项目图风格注册表（scripts/figure_style.py）：名字 / 颜色 / 线型 / 记号 / "ours" 只在这里定，所有生成器读它。先 `figure_style.py init` 起草，作者确认每个 label
+  #   ours: [relroute_l]                    # "ours" 的方法键（强调色、最粗线、图例第一位）
+  #   methods:                              # 键 = 结果文件 / 运行目录 / 列名里用的名字；line 的虚线元组要写成带引号的字符串 "(0, (1, 1))"
+  #     relroute_l: {label: "RelRoute (ours)", color: "#c94a5e", line: "-",  marker: "o"}
+  #     smm:        {label: "SMM", color: "#4a4a4a", line: "--", marker: "s"}
+  #     rgb:        {label: "RGB-only", color: "#7fa7c9", line: "(0, (1, 1))", marker: "v"}
+  #   aliases: {"F6R +aug +L_rel": relroute_l, "ours": relroute_l}   # 文件里出现的其它写法 -> 键
+  #   datasets: {m3fd: {label: "M3FD", marker: "o", fill: "full"}}   # 数据集只用记号 / 填充 / 面板区分，不用色相
+  #   roles: {gt: "#ffd23f", tp: "#2e9b57", fp: "#e08a00", fn: "#d9d9d9", ours_frame: "#1f1f1f", baseline_line: "#8a8a8a"}   # 框状态色；fp 不得与 ours 同色
+  #   cmap: viridis                         # 热力图 / 激活图（jet 需 roles.allow_jet: true）
+  #   stages: {fuse: "RelRoute fusion"}     # 结构图阶段名
+  #   font_pt: 7                            # 图内所有文字同一字号
 
 scope_audit: []             # - {line, phrase, dataset, table, ok}
 
