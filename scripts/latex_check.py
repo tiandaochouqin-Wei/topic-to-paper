@@ -17,6 +17,7 @@ check:  documentclass / style file matches the venue's template (WARN; FAIL when
         a caption with panel letters (a)(b) over a single graphic = pre-composited panels (FAIL);
         dangling \\ref (FAIL); float without \\label (WARN); graphic not in figures.csv or with another print width (WARN);
         bibliography file present (FAIL); paper/manuscript.md older than the .tex sources = gates ran on stale text (FAIL);
+        a table whose lines main.log reports as `Overfull \\hbox (x pt too wide)` (alignment / paragraph at lines a--b inside a table or tabular of the sources): > 2 pt WARN, > 10 pt FAIL, names the table label (provisional thresholds; a log older than the sources is not trusted);
         leftover \\todo / \\fixme / \\hl in any \\input-ed source, or todonotes loaded without [disable] (FAIL);
         algorithm environments (or state.algorithms rows): make_algorithm.py check runs inside and its FAIL/WARN lines are folded in (packages, caption/label/\\ref, source anchor, values vs the reference run, shape);
         raw keys in the reference list: main.blg "didn't find a database entry", main.log "Citation .. undefined", a main.bbl \\bibitem whose body is just the key (FAIL; logs older than the sources are WARN, not trusted).
@@ -179,6 +180,55 @@ def bib_artifacts(tex, files):
         if raw: n_bad += 1; say("FAIL", f"{os.path.basename(p)}: {len(raw)} 条 \\bibitem 正文只有键本身: {raw[:8]}")
     if n_checked and not n_bad: say("PASS", "编译产物（.blg/.log/.bbl）里没有未解析的引用键")
 
+LOG_TOKEN = re.compile(r"\((?:\./)?([^\s()]*)|\)|Overfull \\hbox \(([\d.]+)pt too wide\)(?:\s+in\s+(?:paragraph|alignment)\s+at\s+lines\s+(\d+)--(\d+)|\s+detected\s+at\s+line\s+(\d+))?")
+TABLE_ENV = re.compile(r"\\begin\{(table\*?|tabular\*?|tabularx|longtable)\}")
+
+def table_ranges(files):
+    """-> [(file, first_line, last_line, label)] for every table / tabular / longtable environment of the (comment-stripped, line-preserving) sources.
+    A bare tabular takes the label of the table around it; with none it is named <file>:<line>."""
+    out = []
+    for f in files:
+        text = "\n".join(re.sub(r"(?<!\\)%.*", "", ln) for ln in read(f).split("\n"))
+        line_of = lambda pos: text.count("\n", 0, pos) + 1
+        envs = []
+        for m in TABLE_ENV.finditer(text):
+            e = re.search(r"\\end\{" + re.escape(m.group(1)) + r"\}", text[m.end():])
+            if not e: continue
+            end = m.end() + e.end(); lab = re.search(r"\\label\{([^}]+)\}", text[m.start():end])
+            envs.append([f, line_of(m.start()), line_of(end), lab.group(1) if lab else None, m.group(1), m.start(), end])
+        for e in envs:
+            if e[3] is None and not e[4].startswith("table"):
+                outer = [o for o in envs if o[4].startswith("table") and o[3] and o[5] <= e[5] and e[6] <= o[6]]
+                e[3] = outer[0][3] if outer else None
+            if e[3] is None: e[3] = f"{os.path.basename(f)}:{e[1]}"
+            out.append((e[0], e[1], e[2], e[3]))
+    return out
+
+def table_overfull(tex, files):
+    """G6d: `Overfull \\hbox (x pt too wide)` lines of main.log whose line range lies inside a table / tabular of the .tex sources: > 2 pt WARN, > 10 pt FAIL
+    (names the table label). The current file is tracked through the log's parentheses; when it is not one of the sources, every source's tables are tried.
+    Thresholds are provisional. A log older than the sources is not trusted (WARN)."""
+    log = os.path.splitext(tex)[0] + ".log"
+    if not os.path.exists(log): return
+    if os.path.getmtime(log) + 1 < max(os.path.getmtime(f) for f in files):
+        say("WARN", f"{os.path.basename(log)} 比 .tex 源旧，没有据此检查表格宽度：重编译一遍再 check"); return
+    ranges = table_ranges(files); by_base = {os.path.basename(f): f for f in files}
+    stack = []; worst = {}
+    for m in LOG_TOKEN.finditer(read(log)):
+        tok = m.group(0)
+        if tok.startswith("("): stack.append(os.path.basename(m.group(1) or "")); continue
+        if tok == ")":
+            if stack: stack.pop()
+            continue
+        excess = float(m.group(2)); a = int(m.group(3) or m.group(5)); b = int(m.group(4) or m.group(5))
+        top = next((n for n in reversed(stack) if n), ""); fs = [by_base[top]] if top in by_base else files
+        hit = sorted((r for r in ranges if r[0] in fs and r[1] <= a and b <= r[2]), key=lambda r: r[2] - r[1])
+        if hit: worst[hit[0][3]] = max(worst.get(hit[0][3], 0.0), excess)
+    for lab, x in sorted(worst.items()):
+        if x > 10: say("FAIL", f"表 {lab} 超出版心 {x:.1f} pt（main.log 的 Overfull \\hbox）：缩列 / 拆表 / make_comparison.py --fit auto（> 10 pt 会印出页边）")
+        elif x > 2: say("WARN", f"表 {lab} 超出版心 {x:.1f} pt（main.log 的 Overfull \\hbox）：可能压到页边或相邻栏；缩列 / --fit auto")
+    if not any(x > 2 for x in worst.values()): say("PASS", f"{os.path.basename(log)}: 表格没有 > 2 pt 的 Overfull \\hbox")
+
 def check(a):
     root = os.path.abspath(a.project)
     st = {}
@@ -270,6 +320,7 @@ def check(a):
         bump(ma.run_checks(root, st, text, tex)[0])
     leftover_markers(text, pkgs_raw=re.findall(r"\\usepackage\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}", text))
     bib_artifacts(tex, files)
+    table_overfull(tex, files)
     # --- figures.csv cross-check (registration + print width)
     fp = os.path.join(root, a.figures)
     reg = {}

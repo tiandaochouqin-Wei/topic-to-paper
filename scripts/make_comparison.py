@@ -4,12 +4,14 @@
   python make_comparison.py sota   --csv results/main.csv --out paper/tab_sota.tex [--group-col family] [--ours "SKYDET-T,SKYDET-C"]
                                    [--metrics AP50,AP75,AP50_95] [--higher AP50,AP75,AP50_95] [--lower Params,FLOPs]
                                    [--caption "..."] [--label tab:sota] [--cite-col ref] [--decimals 3] [--md]
+                                   [--ci-style bracket|pm|none] [--sig-test "paired bootstrap, 10k resamples"] [--alpha 0.05]
+                                   [--delta best|<method>] [--fit auto|linewidth|columnwidth|none] [--width-mm 88] [--font-pt 9]
   python make_comparison.py multi  --csv results/main.csv --datasets DOTA,AI-TOD,NWPU --dataset-col dataset ...   (one block per dataset side by side)
   python make_comparison.py ablation --csv results/ablation.csv --components DINOv3,SGA,CFE --metrics AP50,AP75,AP50_95 --out paper/tab_ablation.tex
   python make_comparison.py grid   --root figures/det --methods Origin,YOLOv8,...,SKYDET-C --samples img1,img2 --out figures/fig_det_grid.png
-                                   [--inset x,y,w,h] [--cols 12] [--width-mm 183] [--dpi 400] [--project .]
+                                   [--inset x,y,w,h] [--cols 12] [--width-mm <venue text width, else 183>] [--dpi 400] [--project .]
                                    [--row-labels "M3FD,LLVIP"|none] [--col-labels ...] [--label-pos bottom|top] [--highlight Ours[,..]] [--marks marks.csv]
-                                   [--labels-dir L --label-fmt yolo|coco|voc|xyxy --gt-col GT --class-names a,b --box-lw 0]
+                                   [--labels-dir L --label-fmt yolo|coco|voc|xyxy --gt-col GT --class-names a,b --box-lw 0 --min-score 0.25 --box-status]
                                    [--overlay-dir O --overlay-alpha 0.55 --cmap jet|magma|viridis --colorbar "Low,High"|none]
                                    [--mask-dir M --palette 6 --mask-alpha 0.6]
 
@@ -24,6 +26,29 @@ Conventions (IEEE/TGRS style, matched against SKYDET TGRS 2026 Tables II–V and
     shared colorbar, class-id mask in a fixed palette, accent ellipses (--marks), accent frame round --highlight columns. Photos = one raster at --dpi
     over --width-mm, embedded in the PDF (G5 counts a .pdf as vector and checks the .png row: 400 dpi at --width-mm); labels / frames / boxes are vector.
     A CAM or mask column without its own image sits on the --gt-col image of the same sample. .source.csv: one row per cell (image, overlay, n_boxes, ...)
+    --box-status (with --labels-dir and the --gt-col column among --methods): predicted boxes coloured by match against the --gt-col boxes (IoU >= 0.5,
+    class-aware, greedy): TP green solid, FP accent dashed, missed ground truth grey dotted on the prediction's cell; legend strip at the bottom;
+    per-method TP/FP/FN totals printed. --min-score drops boxes below a confidence (6th column of yolo / xyxy lines, 'score' of coco json).
+    Method directories that differ only by case (ir / IR) are refused: on Windows / macOS they are one folder. --width-mm defaults to the venue's text width.
+  * uncertainty in cells (sota / multi / ablation; seeds already prints Mean ± Std): a `<metric>_lo` + `<metric>_hi` column pair is printed as
+    `x\\,{\\scriptsize[lo, hi]}` (md `x [lo, hi]`), a `<metric>_sd` column as `x\\,{\\scriptsize$\\pm$sd}`; --ci-style pm turns a lo/hi pair into
+    +- half-width, none switches it off. Best / second-best colouring stays on the point estimate. With --numbers the bounds / sd are registered as
+    their own rows (`<metric>_lo`, `_hi`, `_sd`, pm half-width as `_halfwidth` with its formula in the transform column).
+  * significance: a `sig_<metric>` column (0/1/true/yes/y or a p-value, significant when p < --alpha; a bare 0 or 1 is a flag, not a p) puts `$^\\dagger$` on
+    the cell and adds the footnote "dagger significantly different from <first --ours> (<--sig-test text>, alpha = 0.05)". THIS SCRIPT NEVER TESTS ANYTHING:
+    it only renders what the project's analysis wrote into the csv, so significance columns without --sig-test text are a WARN (the footnote would not
+    say which test).
+  * --delta best|<method> (sota / multi): final row "Delta vs best baseline" (or vs the named method) = first --ours row minus the strongest non-ours row
+    per metric and dataset (direction as above), `+x.xx` / `-x.xx` (raw difference ours - reference, so a negative number is an improvement for lower-is-better
+    metrics); tex writes a negative as `$-x.xx$`, md uses ASCII `-` so the numbers gate finds it. Registered with --numbers as `<metric>_delta`
+    (method `delta_vs_best`), the formula `metric[ours] - metric[reference]` goes into the transform column.
+  * width fitting: the tabular's width is estimated (max visible characters per column x 0.52 em at --font-pt (\\small = 9 pt by default; \\scriptsize CI text
+    at 7/9 of it) + 12 pt padding per column) against the target: --width-mm, else the target column of the venue template (state.target via --project:
+    single column for `table` in a two-column class, full width for `table*` or one-column classes), else 88 mm (cs_conf) / 170 mm. --fit auto wraps in
+    \\resizebox{\\linewidth}{!}{...} when the estimate is wider and prints the effective printed font size (< 5 pt: FAIL, no resizebox emitted, split the table;
+    5-6 pt: WARN); linewidth / columnwidth force the wrapper, none never wraps (WARN if too wide). \\resizebox needs graphicx: WARN when main.tex does not load it.
+    The estimate is a heuristic; latex_check.py check (G6d) reads the real Overfull \\hbox warnings from main.log.
+  * exit code = number of [FAIL] lines (the files are still written)
   * writes <out>.source.csv next to every artefact so numbers.csv can point at it (G6 numbers gate)
 """
 import argparse, csv, io, json, os, re, sys, math, collections
@@ -87,6 +112,158 @@ DLABELS = {}   # dataset value -> display label, filled from --dataset-labels "p
 def dlab(d): return DLABELS.get(d, esc(d))
 def dlab_md(d): return DLABELS.get(d, d).replace("$", "")
 
+# ------------------------------------------------------------------ uncertainty, significance, delta row, width fitting (tables only; the grid does not use these)
+FAILS = 0
+TARGET = {}   # research-state.yaml target block, filled from --project (venue / family / latex_dir -> the target width)
+def say(lv, msg):
+    global FAILS
+    if lv == "FAIL": FAILS += 1
+    print(f"[{lv}] {msg}")
+
+def _num(x):
+    try: v = float(x)
+    except Exception: return None
+    return v if v == v else None
+
+_YES = ("1", "true", "yes", "y", "t", "on", "✓"); _NO = ("0", "false", "no", "n", "f", "off", "✗", "", "nan", "na", "none", "-", "--")
+def is_sig(v, alpha):
+    """Flag (0/1/true/yes/...) or a p-value (< alpha). A bare 0 / 1 is a flag. This function only reads what the analysis wrote; nothing is tested here."""
+    s = str(v).strip().lower()
+    if s in _YES: return True
+    if s in _NO: return False
+    p = _num(s)
+    return p is not None and p < alpha
+
+def cell_suffix(rr, m, cols, a, ds, name, src, st):
+    """-> (tex, md) text that follows the point estimate: the dagger mark and the uncertainty. Registers the shown bounds / sd in src."""
+    t = md = ""
+    if rr is None: return t, md
+    if f"sig_{m}" in cols:
+        st["sig_cols"] = True
+        if is_sig(rr.get(f"sig_{m}", ""), a.alpha): t += r"$^\dagger$"; md += "†"; st["sig_used"] = True
+    if a.ci_style == "none": return t, md
+    g = lambda s: _num(rr.get(f"{m}_{s}")) if f"{m}_{s}" in cols else None
+    lo, hi, sd = g("lo"), g("hi"), g("sd"); d = a.decimals
+    if a.ci_style == "bracket" and lo is not None and hi is not None:
+        ls, hs = fnum(lo, d), fnum(hi, d)
+        t += r"\,{\scriptsize[%s, %s]}" % (ls, hs); md += f" [{ls}, {hs}]"
+        src += [[ds or "", name, f"{m}_lo", rr[f"{m}_lo"]], [ds or "", name, f"{m}_hi", rr[f"{m}_hi"]]]
+    elif sd is not None:
+        t += r"\,{\scriptsize$\pm$%s}" % fnum(sd, d); md += f" ± {fnum(sd, d)}"; src.append([ds or "", name, f"{m}_sd", rr[f"{m}_sd"]])
+    elif a.ci_style == "pm" and lo is not None and hi is not None:
+        half = (hi - lo) / 2
+        t += r"\,{\scriptsize$\pm$%s}" % fnum(half, d); md += f" ± {fnum(half, d)}"
+        src.append([ds or "", name, f"{m}_halfwidth", f"{half:.{d}f}", f"({m}_hi - {m}_lo)/2"])
+    return t, md
+
+def sig_footnote(st, a, ours_name):
+    """-> (tex, md) footnote for the dagger, or ("", "")."""
+    if st.get("sig_cols") and not a.sig_test:
+        say("WARN", "sig_<metric> columns present but no --sig-test text: the footnote cannot say which test produced the marks (the script never tests anything itself)")
+    if not st.get("sig_used"): return "", ""
+    who = ours_name or "the proposed method"; a_s = f"{a.alpha:g}"
+    test = (esc(a.sig_test) + ", ") if a.sig_test else ""
+    return (r"$^\dagger$ significantly different from %s (%s$\alpha = %s$)." % (esc(who), test, a_s),
+            f"† significantly different from {who} ({(a.sig_test + ', ') if a.sig_test else ''}α = {a_s}).")
+
+def delta_row(blocks, ours, name_col, metrics, extra, a, src):
+    """Final row 'Delta vs best baseline': first ours row minus the strongest non-ours row (or the named method), per dataset block and metric.
+    -> (tex cells, md cells) or None."""
+    names = [r[name_col] for r in blocks[0][1]]
+    on = next((n for n in names if n in ours), None)
+    if on is None:
+        say("WARN", "--delta needs an --ours row present in the table; no Delta row written"); return None
+    d = a.decimals; label = "best baseline" if a.delta == "best" else a.delta
+    tc = [r"$\Delta$ vs " + esc(label)] + [""] * len(extra); mc = [f"Δ vs {label}"] + [""] * len(extra); refs = []
+    for bi, (ds, brows) in enumerate(blocks):
+        by = {r[name_col]: r for r in brows}; o = by.get(on)
+        for m in metrics:
+            ov = _num(o.get(m)) if o else None; ref = None
+            if a.delta == "best":
+                cand = [(_num(r.get(m)), r[name_col]) for r in brows if r[name_col] not in ours and _num(r.get(m)) is not None]
+                if cand: ref = (max if higher_for(m, a) else min)(cand, key=lambda t: t[0])
+            elif by.get(a.delta) and _num(by[a.delta].get(m)) is not None: ref = (_num(by[a.delta].get(m)), a.delta)
+            if ov is None or ref is None: tc.append("--"); mc.append("--"); continue
+            diff = ov - ref[0]; rd = round(diff, d)
+            s = f"{rd:+.{d}f}" if rd != 0 else f"{0:.{d}f}"
+            tc.append(f"${s}$" if s.startswith("-") else s); mc.append(s)
+            src.append([ds or "", "delta_vs_" + ("best" if a.delta == "best" else a.delta), f"{m}_delta", f"{rd + 0.0:.{d}f}", f"{m}[{on}] - {m}[{ref[1]}]"])
+            refs.append(f"{(ds + ' ') if ds else ''}{m} -> {ref[1]}")
+    say("INFO", f"Delta row: {on} minus " + "; ".join(refs))
+    return tc, mc
+
+# --- width estimate
+CHAR_EM = 0.52; COL_PAD_PT = 12.0; PT_MM = 25.4 / 72.27
+def _vis(t):
+    t = re.sub(r"\\(?:textbf|textit|textcolor\{[^}]*\}|small|scriptsize|footnotesize|cite|multirow\{\d+\}\{\*\})", "", t)
+    return re.sub(r"[{}$^_\\]", "", re.sub(r"\\[A-Za-z]+", "x", t))
+
+def _cell_pt(cell, font_pt):
+    small = 0.0
+    def cut(m):
+        nonlocal small; small += len(_vis(m.group(1))) * CHAR_EM * font_pt * 7 / 9; return ""
+    main = re.sub(r"\{\\scriptsize(.*?)\}", cut, cell)
+    return len(_vis(main)) * CHAR_EM * font_pt + small
+
+def est_width_mm(W, font_pt):
+    """Heuristic tabular width: widest cell per column + 2 x \\tabcolsep (12 pt) per column."""
+    n = max((len(r) for r in W), default=0); tot = 0.0
+    for c in range(n): tot += max((_cell_pt(r[c], font_pt) for r in W if c < len(r)), default=0.0) + COL_PAD_PT
+    return tot * PT_MM
+
+def target_width_mm(a, env):
+    if a.width_mm: return a.width_mm, "--width-mm"
+    try:
+        import latex_check as lc
+        tpl = lc.pick_template(TARGET.get("venue") or "", TARGET.get("family") or "")
+    except Exception: tpl = None
+    if tpl:
+        two = tpl.get("twocolumn", "").lower() == "yes"
+        mm = float(tpl["single_col_mm"]) if (two and env == "table") else float(tpl["full_width_mm"])
+        return mm, f"{tpl['key']} template, {'single column' if (two and env == 'table') else 'full text width'}"
+    if (TARGET.get("family") or "") == "cs_conf" and env == "table": return 88.0, "cs_conf two-column default, single column"
+    return 170.0, "default 170 mm (no venue template: give --project with state.target or --width-mm)"
+
+def _graphicx_state(a):
+    """True / False if a main.tex (or a local .sty / .cls next to it) was found, None if there is no main.tex to look at."""
+    cands = []
+    if a.project: cands.append(os.path.join(a.project, TARGET.get("latex_dir") or "paper/latex", "main.tex"))
+    d = os.path.dirname(os.path.abspath(a.out))
+    for _ in range(3): cands += [os.path.join(d, "main.tex"), os.path.join(d, "latex", "main.tex"), os.path.join(d, "paper", "latex", "main.tex")]; d = os.path.dirname(d)
+    main = next((c for c in cands if os.path.isfile(c)), None)
+    if main is None: return None
+    txt = io.open(main, encoding="utf-8", errors="replace").read()
+    for f in os.listdir(os.path.dirname(main)):
+        if f.endswith((".sty", ".cls")): txt += io.open(os.path.join(os.path.dirname(main), f), encoding="utf-8", errors="replace").read()
+    return bool(re.search(r"graphicx", txt))
+
+def finish_tex(L, W, a, env, foot=""):
+    """Width fitting (--fit) and the significance footnote. L = table lines containing one \\begin{tabular} ... \\end{tabular}."""
+    i = next(k for k, l in enumerate(L) if l.startswith(r"\begin{tabular}")); j = max(k for k, l in enumerate(L) if l == r"\end{tabular}")
+    est = est_width_mm(W, a.font_pt); tgt, why = target_width_mm(a, env); wrap = None
+    if a.fit == "none":
+        if est > tgt: say("WARN", f"table width ~{est:.0f} mm > {tgt:.0f} mm ({why}) and --fit none: expect an Overfull \\hbox (G6d reads main.log)")
+    elif est <= tgt and a.fit == "auto":
+        say("PASS", f"table width ~{est:.0f} mm fits {tgt:.0f} mm ({why}); no \\resizebox")
+    else:
+        scale = tgt / est if est else 1.0; eff = a.font_pt * scale
+        if eff < 5.0:
+            say("FAIL", f"table width ~{est:.0f} mm vs {tgt:.0f} mm ({why}): \\resizebox would print the text at {eff:.1f} pt (< 5 pt); split the table (e.g. multi -> one block per row group, drop --extra columns) - no \\resizebox emitted")
+        else:
+            wrap = r"\resizebox{\columnwidth}{!}{%" if a.fit == "columnwidth" else r"\resizebox{\linewidth}{!}{%"
+            msg = f"table width ~{est:.0f} mm vs {tgt:.0f} mm ({why}): wrapped in {wrap[:-1]}; effective printed font size {eff:.1f} pt"
+            if scale > 1.15: say("WARN", msg + f" (scaled UP x{scale:.2f} by --fit {a.fit})")
+            elif eff < 6.0: say("WARN", msg + " (< 6 pt, hard to read in print; consider splitting the table)")
+            else: say("PASS", msg)
+            gx = _graphicx_state(a)
+            if gx is False: say("WARN", "\\resizebox needs graphicx but main.tex (and the .sty / .cls next to it) do not mention it: add \\usepackage{graphicx} unless the class loads it")
+            elif gx is None: say("INFO", "no main.tex found near --out/--project: graphicx for \\resizebox not checked")
+    out = L[:i] + ([wrap] if wrap else []) + L[i:j] + [r"\end{tabular}}" if wrap else r"\end{tabular}"] + L[j + 1:]
+    if foot:
+        k = max(n for n, l in enumerate(out) if l.startswith(r"\end{table"))
+        out[k:k] = [r"\par\smallskip{\raggedright\footnotesize " + foot + r"\par}"]
+    return out
+
 # ------------------------------------------------------------------ sota / multi
 def sota_table(rows, cols, a, datasets=None):
     metrics = a.metrics.split(",")
@@ -97,6 +274,8 @@ def sota_table(rows, cols, a, datasets=None):
     # column spec
     ncol = 1 + len(extra) + sum(len(metrics) for _ in blocks)
     spec = "l" + "c" * len(extra) + "".join("|" + "c" * len(metrics) for _ in blocks) if datasets else "l" + "c" * (len(extra) + len(metrics))
+    env = "table*" if datasets and len(blocks) > 1 else "table"; st = {}
+    W = [["Model"] + [lab(e) for e in extra] + [lab(m) for _ in blocks for m in metrics]]   # width estimate rows (data + header)
     L = [r"\begin{table" + ("*" if datasets and len(blocks) > 1 else "") + "}[t]", r"\centering", r"\caption{" + a.caption + "}", r"\label{" + a.label + "}", r"\small", r"\begin{tabular}{" + spec + "}", r"\toprule"]
     M = []
     if datasets:
@@ -142,10 +321,17 @@ def sota_table(rows, cols, a, datasets=None):
                 rr = next((r for r in brows if r[name_col] == n), None)
                 for m in metrics:
                     v = fnum(rr.get(m, "") if rr else "", a.decimals); mk = marks.get((bi, n, m))
-                    cells_t.append(tex_cell(v, mk, bold)); cells_m.append(md_cell(v, mk, bold))
                     src.append([d or "", n, m, rr.get(m, "") if rr else ""])
-            L.append(" & ".join(cells_t) + r" \\"); M.append("| " + " | ".join(cells_m) + " |")
+                    sx_t, sx_m = cell_suffix(rr, m, cols, a, d, n, src, st)
+                    cells_t.append(tex_cell(v, mk, bold) + sx_t); cells_m.append(md_cell(v, mk, bold) + sx_m)
+            L.append(" & ".join(cells_t) + r" \\"); M.append("| " + " | ".join(cells_m) + " |"); W.append(cells_t)
+    dr = delta_row(blocks, ours, name_col, metrics, extra, a, src) if getattr(a, "delta", "") else None
+    if dr:
+        L += [r"\midrule", " & ".join(dr[0]) + r" \\"]; M.append("| " + " | ".join(dr[1]) + " |"); W.append(dr[0])
+    ftex, fmd = sig_footnote(st, a, ours[0] if ours else "")
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table" + ("*" if datasets and len(blocks) > 1 else "") + "}"]
+    L = finish_tex(L, W, a, env, ftex)
+    if fmd: M += ["", fmd]
     return "\n".join(L), "\n".join(M), src
 
 # ------------------------------------------------------------------ ablation
@@ -153,6 +339,8 @@ def ablation_table(rows, a):
     comps = a.components.split(","); metrics = a.metrics.split(",")
     def on(v): return str(v).strip().lower() in ("1", "true", "yes", "y", "✓", "on")
     spec = "c|" + "c" * len(comps) + "|" + "c" * len(metrics)
+    cols = list(rows[0].keys()) if rows else []; st = {}
+    W = [["Group"] + comps + [lab(m) for m in metrics]]
     L = [r"\begin{table}[t]", r"\centering", r"\caption{" + a.caption + "}", r"\label{" + a.label + "}", r"\small", r"\begin{tabular}{" + spec + "}", r"\toprule",
          r"\multirow{2}{*}{\textbf{Group}} & " + " & ".join(r"\multirow{2}{*}{\textbf{%s}}" % esc(c) for c in comps) + r" & \multicolumn{%d}{c}{\textbf{Performance}} \\" % len(metrics),
          r"\cmidrule(lr){%d-%d}" % (2 + len(comps), 1 + len(comps) + len(metrics)),
@@ -167,10 +355,14 @@ def ablation_table(rows, a):
         cm = [str(i + 1)] + [("✓" if on(r.get(c, "")) else "✗") for c in comps]
         for m in metrics:
             v = fnum(r.get(m, ""), a.decimals); mk = marks[m].get(i)
-            ct.append(tex_cell(v, None if a.ablation_plain else mk, bold)); cm.append(md_cell(v, None if a.ablation_plain else mk, bold)); src.append(["", f"group{i+1}", m, r.get(m, "")])
+            src.append(["", f"group{i+1}", m, r.get(m, "")]); sx_t, sx_m = cell_suffix(r, m, cols, a, "", f"group{i+1}", src, st)
+            ct.append(tex_cell(v, None if a.ablation_plain else mk, bold) + sx_t); cm.append(md_cell(v, None if a.ablation_plain else mk, bold) + sx_m)
         if bold: ct = [r"\textbf{" + c + "}" if not c.startswith("\\") else c for c in ct]; cm = ["**" + c + "**" if c.replace(".", "").isdigit() else c for c in cm]
-        L.append(" & ".join(ct) + r" \\"); M.append("| " + " | ".join(cm) + " |")
+        L.append(" & ".join(ct) + r" \\"); M.append("| " + " | ".join(cm) + " |"); W.append(ct)
+    ftex, fmd = sig_footnote(st, a, "the full model (all components)")
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    L = finish_tex(L, W, a, "table", ftex)
+    if fmd: M += ["", fmd]
     return "\n".join(L), "\n".join(M), src
 
 # ------------------------------------------------------------------ seeds (Table VII style: per-seed values + mean ± std per setting)
@@ -187,6 +379,7 @@ def seeds_table(rows, a):
     stats = {k: (statistics.mean(x for _, x in v), statistics.stdev(x for _, x in v) if len(v) > 1 else 0.0, len(v)) for k, v in settings.items()}
     best = (max if higher_for(metric, a) else min)(stats, key=lambda k: stats[k][0])
     d = a.decimals
+    W = [["Setting"] + [f"Seed {s}" for s in seeds] + ["Mean Std"]]
     L = [r"\begin{table}[t]", r"\centering", r"\caption{" + a.caption + "}", r"\label{" + a.label + "}", r"\small", r"\begin{tabular}{l" + "c" * len(seeds) + "|c}", r"\toprule",
          r"\textbf{Setting} & " + " & ".join(r"\textbf{Seed %s}" % esc(s) for s in seeds) + r" & \textbf{Mean $\pm$ Std} \\", r"\midrule"]
     M = ["| Setting | " + " | ".join(f"Seed {s}" for s in seeds) + " | Mean ± Std |", "|---|" + "---|" * (len(seeds) + 1)]
@@ -196,11 +389,12 @@ def seeds_table(rows, a):
         cells = [fnum(by.get(sd, ""), d) for sd in seeds] + [f"{m:.{d}f} $\\pm$ {s:.{d}f}"]
         cm = [fnum(by.get(sd, ""), d) for sd in seeds] + [f"{m:.{d}f} ± {s:.{d}f}"]
         if bold: cells = [r"\textbf{" + c + "}" for c in cells]; cm = ["**" + c + "**" for c in cm]
-        L.append((r"\textbf{" + esc(k) + "}" if bold else esc(k)) + " & " + " & ".join(cells) + r" \\")
+        L.append((r"\textbf{" + esc(k) + "}" if bold else esc(k)) + " & " + " & ".join(cells) + r" \\"); W.append([esc(k)] + cells)
         M.append("| " + ("**" + k + "**" if bold else k) + " | " + " | ".join(cm) + " |")
         for sd in seeds: src.append(["", k, f"{metric}@seed{sd}", by.get(sd, "")])
         src += [["", k, f"{metric}_mean", m], ["", k, f"{metric}_std", s], ["", k, "n_seeds", n]]
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    L = finish_tex(L, W, a, "table")
     return "\n".join(L), "\n".join(M), src
 
 def emit_numbers(src, src_csv, out_dir, decimals):
@@ -210,11 +404,12 @@ def emit_numbers(src, src_csv, out_dir, decimals):
     old = [r for r in csv.DictReader(open(nm, encoding="utf-8"))] if os.path.exists(nm) else []
     old = [r for r in old if r["file"].replace("\\", "/") != rel]
     new = []
-    for ds, mth, met, val in src:
+    for row in src:
+        ds, mth, met, val = row[:4]; tr = row[4] if len(row) > 4 else ""     # optional 5th element = formula for the transform column (delta rows, pm half-width)
         try: v = float(val)
         except Exception: continue
         d = decimals if "." in str(val) or isinstance(val, float) else 0
-        new.append({"value": f"{v:.{d}f}" if d else str(int(v)), "file": rel, "key": f"dataset={ds}|method={mth}|metric={met},value", "transform": ""})
+        new.append({"value": f"{v:.{d}f}" if d else str(int(v)), "file": rel, "key": f"dataset={ds}|method={mth}|metric={met},value", "transform": tr})
     with open(nm, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["value", "file", "key", "transform"]); w.writeheader(); w.writerows(old + new)
     return len(new), nm
@@ -231,14 +426,16 @@ def _find(d, mth, smp, exts):
         if os.path.isfile(p): return p
     return None
 
-def read_boxes(path, fmt, iw, ih):
+def read_boxes(path, fmt, iw, ih, min_score=None):
     """-> [(label, x0, y0, x1, y1)] in 0-1 image coordinates. yolo: 'cls cx cy w h' normalised; xyxy / voc txt: 'cls x1 y1 x2 y2 [score]' in pixels
-    (taken as 0-1 when every coordinate <= 1.5); coco: json list (or {'annotations': [...]}) of {'bbox': [x, y, w, h], 'category_id'} in pixels; voc: Pascal VOC xml."""
+    (taken as 0-1 when every coordinate <= 1.5); coco: json list (or {'annotations': [...]}) of {'bbox': [x, y, w, h], 'category_id'} in pixels; voc: Pascal VOC xml.
+    min_score: drop boxes whose confidence (6th column of a yolo / xyxy line, 'score' of a coco item) is below it; boxes without a score are kept."""
     raw = []   # (label, x0, y0, x1, y1, is_pixel)
     if path.lower().endswith(".json"):
         d = json.load(open(path, encoding="utf-8"))
         for it in (d if isinstance(d, list) else d.get("annotations") or d.get("boxes") or d.get("detections") or []):
             bb, cls = (it.get("bbox"), it.get("category_id", it.get("category", it.get("label", "")))) if isinstance(it, dict) else (it[:4], "")
+            if min_score is not None and isinstance(it, dict) and it.get("score") is not None and float(it["score"]) < min_score: continue
             x, y, w, h = map(float, bb); raw.append((str(cls), x, y, x + w, y + h, True))
     elif path.lower().endswith(".xml"):
         for ob in ET.parse(path).getroot().iter("object"):
@@ -248,6 +445,7 @@ def read_boxes(path, fmt, iw, ih):
         for ln in io.open(path, encoding="utf-8"):
             t = ln.split()
             if len(t) < 5: continue
+            if min_score is not None and len(t) >= 6 and float(t[5]) < min_score: continue
             v = [float(x) for x in t[1:5]]
             if fmt == "yolo": raw.append((t[0], v[0] - v[2] / 2, v[1] - v[3] / 2, v[0] + v[2] / 2, v[1] + v[3] / 2, False))
             else: raw.append((t[0], *v, max(v) > 1.5))
@@ -256,6 +454,23 @@ def read_boxes(path, fmt, iw, ih):
         if pix: x0, x1, y0, y1 = x0 / iw, x1 / iw, y0 / ih, y1 / ih
         out.append((c, max(0.0, min(x0, x1)), max(0.0, min(y0, y1)), min(1.0, max(x0, x1)), min(1.0, max(y0, y1))))
     return out
+
+def _iou(a_, b_):
+    ix = max(0.0, min(a_[3], b_[3]) - max(a_[1], b_[1])); iy = max(0.0, min(a_[4], b_[4]) - max(a_[2], b_[2])); inter = ix * iy
+    ua = (a_[3] - a_[1]) * (a_[4] - a_[2]) + (b_[3] - b_[1]) * (b_[4] - b_[2]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+def match_boxes(gt, pred, thr=0.5):
+    """greedy one-to-one matching of predictions to ground truth at IoU >= thr, same class when both carry one, best IoU first
+    -> (status per prediction: "tp" | "fp", indices of unmatched ground-truth boxes = missed). Boxes are (label, x0, y0, x1, y1)."""
+    cand = sorted(((_iou(g, p_), gi, pi) for gi, g in enumerate(gt) for pi, p_ in enumerate(pred) if _iou(g, p_) >= thr and (not g[0] or not p_[0] or g[0] == p_[0])), reverse=True)
+    used_g, used_p = set(), set()
+    for v, gi, pi in cand:
+        if gi in used_g or pi in used_p: continue
+        used_g.add(gi); used_p.add(pi)
+    return ["tp" if i in used_p else "fp" for i in range(len(pred))], [gi for gi in range(len(gt)) if gi not in used_g]
+
+STATUS_STYLE = {"tp": (GT_COLOR, "-"), "fp": ("#d1495b", "--"), "fn": ("#7d838b", ":")}      # TP green solid, FP accent dashed, FN (missed ground truth) grey dotted
 
 def _fit(fig, txt, max_px, along="x", lo=5.2):
     """shrink a text artist (pt) until its box fits max_px; False when even the floor size overflows"""
@@ -302,12 +517,18 @@ def det_grid(a):
     from PIL import Image
     import make_figure as mf
     from matplotlib.patches import Rectangle, Ellipse
+    if not a.width_mm:
+        a.width_mm, _src = mf.default_width_mm(os.path.abspath(a.project), "full")
+        if _src: print(f"[INFO] width: --width-mm not given, {a.width_mm:g} mm from {_src}")
     plt = mf.plt; plt.rcParams["savefig.pad_inches"] = 0   # finish() saves bbox_inches="tight": no pad, so the page is exactly --width-mm
     root = os.path.abspath(a.project); methods = a.methods.split(","); samples = a.samples.split(","); ncols = a.cols or len(methods); ngroups = math.ceil(len(methods) / ncols)
     nrows = len(samples); notes = []; mm = 25.4; pt = mm / 72   # pt = 1 pt in mm
     col_lab = a.col_labels.split(",") if a.col_labels else list(methods)
     row_lab = [] if a.row_labels == "none" else (a.row_labels.split(",") if a.row_labels else list(samples))
     if len(col_lab) != len(methods) or (row_lab and len(row_lab) != nrows): raise SystemExit(f"[FAIL] --col-labels needs {len(methods)} entries and --row-labels {nrows} (or 'none')")
+    low_ = collections.Counter(m_.lower() for m_ in methods)
+    dup_ = sorted(m_ for m_ in methods if low_[m_.lower()] > 1)
+    if dup_: raise SystemExit(f"[FAIL] method directories {dup_} differ only by case: on Windows / macOS they are the same folder and one column would show the other's images; rename one (e.g. IRraw)")
     hl = {h for h in a.highlight.split(",") if h}; cnames = a.class_names.split(",") if a.class_names else []
     cmap = plt.get_cmap(a.cmap); marks = collections.defaultdict(list)
     if a.marks:
@@ -326,11 +547,14 @@ def det_grid(a):
     # ---- layout in mm
     W = a.width_mm; gap = a.gap_mm; strip = 3.4; ggap = 1.2; left = 3.6 if row_lab else 0.6; cbw, cbg = 2.2, 1.4; right = 0.6 + (cbg + cbw + 1.6 if cb_on else 0)
     cw = (W - left - right - (ncols - 1) * gap) / ncols; ch = cw * aspect; rows_h = nrows * ch + (nrows - 1) * gap
-    top_m = 0.6 + (strip if cb_on and a.label_pos == "bottom" else 0); bot_m = 0.6 + (strip if cb_on and a.label_pos == "top" else 0)
+    top_m = 0.6 + (strip if cb_on and a.label_pos == "bottom" else 0); bot_m = 0.6 + (strip if cb_on and a.label_pos == "top" else 0) + (3.8 if (a.box_status and a.labels_dir and a.gt_col in methods) else 0)
     H = top_m + ngroups * (rows_h + strip) + (ngroups - 1) * ggap + bot_m
     ppm = (a.cell_px / cw) if a.cell_px else a.dpi / mm
     Wp, Hp = int(round(W * ppm)), int(math.ceil(H * ppm)); cwp, chp = max(2, int(round(cw * ppm))), max(2, int(round(ch * ppm)))
     def cell_xy(gi, ci, si): return left + ci * (cw + gap), top_m + gi * (rows_h + strip + ggap) + (strip if a.label_pos == "top" else 0) + si * (ch + gap)
+    bstat = bool(a.box_status)
+    if bstat and not (a.labels_dir and a.gt_col in methods and any(cells[(a.gt_col, smp_)]["lb"] for smp_ in samples)):
+        notes.append(f"--box-status needs --labels-dir and the --gt-col column ({a.gt_col}) among --methods with label files: ignored"); bstat = False
     lw_box = a.box_lw or max(0.4, min(1.0, cw * 0.035))   # printed pt, scaled to the cell, never thinner than 0.4 pt
     if lw_box < 0.4: lw_box = 0.4; notes.append("--box-lw raised to the 0.4 pt printed floor")
     inset = [float(x) for x in a.inset.split(",")] if a.inset else None
@@ -356,7 +580,7 @@ def det_grid(a):
     # ---- vector layer (axes in mm, y down)
     fig = plt.figure(figsize=(W / mm, H / mm)); ax = fig.add_axes([0, 0, 1, 1]); ax.imshow(canvas, extent=(0, W, H, 0), interpolation="none", aspect="auto", zorder=0)
     ax.set_xlim(0, W); ax.set_ylim(H, 0); ax.axis("off")
-    src = []
+    src = []; counts = {}
     for gi in range(ngroups):
         for ci, mth in enumerate(methods[gi * ncols:(gi + 1) * ncols]):
             k = gi * ncols + ci; x0 = cell_xy(gi, ci, 0)[0]
@@ -364,16 +588,25 @@ def det_grid(a):
             t = ax.text(x0 + cw / 2, ty, col_lab[k], ha="center", va="bottom" if a.label_pos == "top" else "top", fontsize=6.5, fontweight="bold" if mth in hl else "normal", color=mf.ACCENT if mth in hl else "black")
             if not _fit(fig, t, cw * 0.98 / mm * fig.dpi): notes.append(f"column label '{col_lab[k]}' wider than its cell at the 5.2 pt floor: shorten it via --col-labels")
             for si, smp in enumerate(samples):
-                c = cells[(mth, smp)]; x, y = cell_xy(gi, ci, si); nb = 0; bcol = ""; mk_ = marks.get((smp, mth), [])
+                c = cells[(mth, smp)]; x, y = cell_xy(gi, ci, si); nb = 0; bcol = ""; mk_ = marks.get((smp, mth), []); missed = []
                 if not (c["img"] or c["ov"] or c["mk"]):
                     ax.add_patch(Rectangle((x, y), cw, ch, fill=False, ec="#999999", lw=0.4))
                 elif c["lb"]:
                     iw, ih = Image.open(c["img"]).size if c["img"] else (1, 1); bcol = GT_COLOR if mth == a.gt_col else mf.ACCENT
-                    for lab_, bx0, by0, bx1, by1 in read_boxes(c["lb"], a.label_fmt, iw, ih):
-                        ax.add_patch(Rectangle((x + bx0 * cw, y + by0 * ch), (bx1 - bx0) * cw, (by1 - by0) * ch, fill=False, ec=bcol, lw=lw_box, zorder=3)); nb += 1
+                    bxs = read_boxes(c["lb"], a.label_fmt, iw, ih, a.min_score or None); stat = [None] * len(bxs)
+                    gcell = cells[(a.gt_col, smp)] if (bstat and mth != a.gt_col) else None
+                    if gcell and gcell["lb"]:
+                        giw, gih = Image.open(gcell["img"]).size if gcell["img"] else (iw, ih)
+                        gtb = read_boxes(gcell["lb"], a.label_fmt, giw, gih); stat, mi = match_boxes(gtb, bxs, 0.5); missed = [gtb[i] for i in mi]
+                        cnt = counts.setdefault(mth, [0, 0, 0]); cnt[0] += stat.count("tp"); cnt[1] += stat.count("fp"); cnt[2] += len(missed)
+                    for (lab_, bx0, by0, bx1, by1), st_ in zip(bxs, stat):
+                        ec_, ls_ = STATUS_STYLE[st_] if st_ else (bcol, "-")
+                        ax.add_patch(Rectangle((x + bx0 * cw, y + by0 * ch), (bx1 - bx0) * cw, (by1 - by0) * ch, fill=False, ec=ec_, ls=ls_, lw=lw_box, zorder=3)); nb += 1
                         if cnames:
                             nm = cnames[int(lab_)] if lab_.isdigit() and int(lab_) < len(cnames) else lab_; up = by0 * ch > 2.4
-                            ax.text(x + bx0 * cw, y + by0 * ch - (0.1 if up else -lw_box * pt), nm, fontsize=5.2, color="white", ha="left", va="bottom" if up else "top", zorder=4, bbox=dict(fc=bcol, ec="none", pad=0.25))
+                            ax.text(x + bx0 * cw, y + by0 * ch - (0.1 if up else -lw_box * pt), nm, fontsize=5.2, color="white", ha="left", va="bottom" if up else "top", zorder=4, bbox=dict(fc=ec_, ec="none", pad=0.25))
+                for lab_, bx0, by0, bx1, by1 in missed:                                   # ground truth this method missed: grey dotted
+                    ax.add_patch(Rectangle((x + bx0 * cw, y + by0 * ch), (bx1 - bx0) * cw, (by1 - by0) * ch, fill=False, ec=STATUS_STYLE["fn"][0], ls=STATUS_STYLE["fn"][1], lw=lw_box, zorder=3))
                 if inset and c["img"]:   # white frames: the zoomed crop (top-right) and the region it was cut from
                     isz = int(cwp * 0.42) / ppm; ax.add_patch(Rectangle((x + cw - isz - 2 / ppm, y + 2 / ppm), isz, isz, fill=False, ec="white", lw=0.6, zorder=3))
                     ax.add_patch(Rectangle((x + inset[0] * cw, y + inset[1] * ch), inset[2] * cw, inset[3] * ch, fill=False, ec="white", lw=0.4, zorder=3))
@@ -389,14 +622,20 @@ def det_grid(a):
     if cb_on:
         ax.add_patch(Rectangle((cbx, cb_top), cbw, cb_bot - cb_top, fill=False, ec="#333333", lw=0.4, zorder=5))
         ax.text(cbx + cbw / 2, cb_top - 0.5, cb_lab[1], ha="center", va="bottom", fontsize=6.0, fontweight="bold"); ax.text(cbx + cbw / 2, cb_bot + 0.5, cb_lab[0], ha="center", va="top", fontsize=6.0, fontweight="bold")
+    if bstat:                                                                    # legend strip at the bottom: TP solid green, FP dashed red, FN (missed GT) dotted grey
+        lx = left; ly = H - 1.9
+        for key, name in (("tp", "TP (IoU >= 0.5)"), ("fp", "FP"), ("fn", "FN (missed ground truth)")):
+            ec_, ls_ = STATUS_STYLE[key]; ax.plot([lx, lx + 5.0], [ly, ly], color=ec_, ls=ls_, lw=max(0.8, lw_box), zorder=6)
+            ax.text(lx + 6.0, ly, name, fontsize=6.5, ha="left", va="center", zorder=6); lx += 6.0 + 1.9 * len(name) * 0.55 + 4.0
     min_dpi = _min_dpi(root); emb = Wp / (W / mm)
     if emb < min_dpi * 0.985: notes.append(f"embedded raster {emb:.0f} dpi < target.min_dpi {min_dpi}: raise --dpi")
     if eff and min(eff) < min_dpi * 0.5: notes.append(f"source images give only {min(eff):.0f} dpi at print size (< half of min_dpi {min_dpi}): the grid is upsampled, not sharper; use larger source images or fewer columns")
     cap = (f"Qualitative grid, {nrows} samples × {len(methods)} methods; photos embedded as one {Wp}×{Hp}px raster ({emb:.0f} dpi at {W:g} mm), frames/boxes/labels vector."
-           + (f" Boxes: green = {a.gt_col}, red = predictions." if any(r[6] == GT_COLOR for r in src) else "") + (f" Overlay: {a.cmap} map blended at alpha {a.overlay_alpha:g}." if cb_on else ""))
+           + (f" Boxes: green solid = true positive (IoU >= 0.5 with a {a.gt_col} box), red dashed = false positive, grey dotted = missed {a.gt_col} box." if bstat else (f" Boxes: green = {a.gt_col}, red = predictions." if any(r[6] == GT_COLOR for r in src) else "")) + (f" Overlay: {a.cmap} map blended at alpha {a.overlay_alpha:g}." if cb_on else ""))
     print(f"grid {Wp}×{Hp}px -> {emb:.0f} dpi embedded @ {W:g} mm; cell {cw:.1f}×{ch:.1f} mm; box line {lw_box:.2f} pt; cells {len(methods)}×{nrows}"
           + (f"; MISSING {len(missing)}: {missing[:6]}" if missing else "") + (f"; source images ≥ {min(eff):.0f} dpi" if eff else ""))
     for n in notes: print(f"[WARN] grid: {n}")
+    if bstat: print("box status (IoU >= 0.5, class-aware; per method TP/FP/FN): " + "; ".join(f"{m_} {v_[0]}/{v_[1]}/{v_[2]}" for m_, v_ in counts.items()))
     mf.finish(fig, a, src, ["sample", "method", "image", "overlay", "mask", "n_boxes", "box_color", "n_marks", "highlight"], root, cap)
     return emb
 
@@ -406,15 +645,19 @@ def main():
         p = sub.add_parser(n); p.add_argument("--csv", required=True); p.add_argument("--out", required=True); p.add_argument("--metrics", required=True)
         p.add_argument("--higher", default=""); p.add_argument("--lower", default=""); p.add_argument("--project", default="", help="read results.metric_direction / primary_direction from <project>/research-state.yaml"); p.add_argument("--caption", default="Caption."); p.add_argument("--label", default="tab:x"); p.add_argument("--decimals", type=int, default=3); p.add_argument("--md", action="store_true")
         p.add_argument("--numbers", action="store_true", help="also register every cell in <out-dir>/numbers.csv for the G6 numbers gate")
+        p.add_argument("--ci-style", choices=["bracket", "pm", "none"], default="bracket", help="uncertainty from <metric>_lo/_hi (bracket, or pm = half-width) or <metric>_sd (pm); none = off")
+        p.add_argument("--alpha", type=float, default=0.05, help="sig_<metric> columns holding p-values: significant when p < alpha"); p.add_argument("--sig-test", default="", help="text for the dagger footnote, e.g. 'paired bootstrap, 10k resamples' (the script never tests anything itself)")
+        p.add_argument("--fit", choices=["auto", "linewidth", "columnwidth", "none"], default="auto", help="wrap the tabular in resizebox when the estimated width exceeds the target"); p.add_argument("--width-mm", type=float, default=0, help="target table width; default = venue template column (via --project) / 88 mm cs_conf / 170 mm"); p.add_argument("--font-pt", type=float, default=9.0, help="table font size in pt (small of a 10 pt class = 9)")
         if n in ("sota", "multi"):
-            p.add_argument("--name-col", default="method"); p.add_argument("--group-col", default=""); p.add_argument("--ours", default=""); p.add_argument("--extra", default="", help="non-ranked columns e.g. Params,FLOPs"); p.add_argument("--cite-col", default="")
+            p.add_argument("--delta", default="", help="'best' or a method name: final row = first --ours minus the strongest non-ours row (or that method)"); p.add_argument("--name-col", default="method"); p.add_argument("--group-col", default=""); p.add_argument("--ours", default=""); p.add_argument("--extra", default="", help="non-ranked columns e.g. Params,FLOPs"); p.add_argument("--cite-col", default="")
         if n == "multi": p.add_argument("--datasets", required=True); p.add_argument("--dataset-col", default="dataset"); p.add_argument("--dataset-labels", default="", help='display names for the dataset headers, e.g. "prostate_t1=Prostate ($K{=}6$),kidney_t1=Kidney"')
         if n == "ablation": p.add_argument("--components", required=True); p.add_argument("--ablation-plain", action="store_true", help="no red/blue, only bold full row")
         if n == "seeds": p.add_argument("--setting-col", default="setting"); p.add_argument("--seed-col", default="seed")
     g = sub.add_parser("grid"); g.add_argument("--root", required=True); g.add_argument("--methods", required=True); g.add_argument("--samples", required=True); g.add_argument("--out", required=True)
-    g.add_argument("--inset", default=""); g.add_argument("--cols", type=int, default=0); g.add_argument("--width-mm", type=float, default=183); g.add_argument("--cell-px", type=int, default=0, help="0 = auto from --dpi"); g.add_argument("--dpi", type=float, default=400)
+    g.add_argument("--inset", default=""); g.add_argument("--cols", type=int, default=0); g.add_argument("--width-mm", type=float, default=0.0, help="print width; default = the venue's full text width (CVPR 174.6 mm; state.target via --project), 183 mm without a venue"); g.add_argument("--cell-px", type=int, default=0, help="0 = auto from --dpi"); g.add_argument("--dpi", type=float, default=400)
     g.add_argument("--project", default=".", help="where figures.csv / research-state.yaml (target.min_dpi) live; --out is relative to it")
     g.add_argument("--labels-dir", default="", help="<dir>/<method>/<sample>.txt|json|xml"); g.add_argument("--label-fmt", choices=["yolo", "coco", "voc", "xyxy"], default="yolo"); g.add_argument("--gt-col", default="GT", help="column whose boxes are green (and whose image is the base for CAM / mask columns without their own image)")
+    g.add_argument("--box-status", action="store_true", help="colour predicted boxes by match status against the --gt-col boxes (IoU >= 0.5, class-aware): TP green solid, FP red dashed, missed ground truth grey dotted on the prediction's cell, legend strip, TP/FP/FN counts printed"); g.add_argument("--min-score", type=float, default=0.0, help="drop predicted boxes below this confidence (6th column of yolo / xyxy lines, 'score' in coco json)")
     g.add_argument("--class-names", default=""); g.add_argument("--box-lw", type=float, default=0, help="printed pt; 0 = scaled to the cell (0.4-1.0 pt)")
     g.add_argument("--overlay-dir", default="", help="<dir>/<method>/<sample>.npy (2-D map, min-max normalised, colour-mapped) or .png (used as is)"); g.add_argument("--overlay-alpha", type=float, default=0.55); g.add_argument("--cmap", default="jet")
     g.add_argument("--colorbar", default="Low,High", help="'bottom,top' end labels of the shared vertical colorbar; 'none' = no bar")
@@ -432,7 +675,8 @@ def main():
     if a.project:
         import yaml
         sp = os.path.join(a.project, "research-state.yaml")
-        if os.path.exists(sp): STATE.update((yaml.safe_load(io.open(sp, encoding="utf-8")) or {}).get("results") or {})
+        if os.path.exists(sp):
+            _st = yaml.safe_load(io.open(sp, encoding="utf-8")) or {}; STATE.update(_st.get("results") or {}); TARGET.update(_st.get("target") or {})
     rows, cols = read_csv(a.csv)
     if a.cmd == "ablation": tex, md, src = ablation_table(rows, a)
     elif a.cmd == "seeds": tex, md, src = seeds_table(rows, a)
@@ -446,6 +690,7 @@ def main():
     if a.numbers:
         n, nm = emit_numbers(src, src_csv, os.path.dirname(a.out) or ".", a.decimals); print(f"numbers: {n} rows registered in {nm}")
     print(md)
+    sys.exit(FAILS)
 
 if __name__ == "__main__":
     main()

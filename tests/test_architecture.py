@@ -115,13 +115,13 @@ def test_trace_depth1(proj):
 def test_trace_stages_in_forward_order(proj):
     r = arch(proj, *TRACE, "--depth", 1, "--out", "figures/arch/_o.yaml")
     assert r.returncode == 0
-    assert "stages: stem_rgb → stem_x → gate → down → neck → head" in r.out and "[PASS] trace" in r.out
+    assert "stages: Stem rgb → Stem x → Gate → Down → Neck → Head" in r.out and "[PASS] trace" in r.out
 
 
 def test_trace_depth2_collapses_and_repeats(proj):
     sp = spec(proj, "toy2.yaml"); ids = {n["id"]: n for n in sp["nodes"]}
     assert {"stem_rgb.0", "stem_rgb.1", "stem_rgb.2", "stem_x.0"} <= set(ids)
-    assert ids["stem_rgb.1"]["cls"] == "BatchNorm2d" and ids["stem_rgb.1"]["stage"] == "stem_rgb"
+    assert ids["stem_rgb.1"]["cls"] == "BatchNorm2d" and ids["stem_rgb.1"]["stage"] == "Stem rgb"
     blk = ids["neck.0"]
     assert blk["cls"] == "Block" and blk["repeat"] == 2 and "neck.1" not in ids     # two identical blocks -> one node "x 2"
     assert len(ops(sp, "add")) == 1                          # the residual add inside each collapsed Block is hidden
@@ -157,7 +157,7 @@ def test_stages_option_and_label_names(proj):
     r = arch(proj, *TRACE, "--depth", 2, "--stages", "RGB=^stem_rgb,Neck=^neck", "--label-names", "--out", "figures/arch/_s.yaml")
     assert r.returncode == 0, r.out
     sp = spec(proj, "_s.yaml"); ids = {n["id"]: n for n in sp["nodes"]}
-    assert ids["stem_rgb.0"]["stage"] == "RGB" and ids["neck.0"]["stage"] == "Neck" and ids["stem_x.0"]["stage"] == "stem_x"
+    assert ids["stem_rgb.0"]["stage"] == "RGB" and ids["neck.0"]["stage"] == "Neck" and ids["stem_x.0"]["stage"] == "Stem x"
     assert ids["stem_rgb.0"]["label"] == "stem_rgb.0"
 
 
@@ -204,7 +204,7 @@ def test_render_dot_vector_and_registered(work):
     d = fitz.open(work / "figures" / "fig_arch.pdf")
     assert d[0].get_images() == [] and b"/Subtype /Image" not in (work / "figures" / "fig_arch.pdf").read_bytes()    # vector
     text = d[0].get_text()
-    assert "Conv2d" in text and "Block" in text and "×2" in text and "stem_rgb" in text
+    assert "Conv2d" in text and "Block" in text and "×2" in text and "Stem rgb" in text
     assert (work / "figures" / "fig_arch.png").exists() and (work / "figures" / "fig_arch.dot").exists()
     nodes = spec(work, "toy2.yaml")["nodes"]
     rows = list(csv.DictReader(io.open(work / "figures" / "fig_arch.source.csv", encoding="utf-8")))
@@ -379,10 +379,10 @@ def test_check_params_in_the_figure_must_match_the_trace(work):
 @needs_dot
 def test_check_stale_spec_and_stage_names_in_method(work):
     assert arch(work, "render", "--spec", "figures/arch/toy2.yaml", "--out", "figures/fig_arch.pdf", "--engine", "dot").returncode == 0
-    write(work / "paper" / "manuscript.md", "# T\n\n## 1 Introduction\n\nstem_x and gate.\n\n## 3 Method\n\nThe stem_rgb branch feeds the neck and the down path; stem_x too.\n\n### 3.1 Fusion\n\nThe head.\n\n## 4 Experiments\n\ngate.\n")
+    write(work / "paper" / "manuscript.md", "# T\n\n## 1 Introduction\n\nStem x and Gate.\n\n## 3 Method\n\nThe Stem rgb branch feeds the Neck and the Down path; Stem x too.\n\n### 3.1 Fusion\n\nThe Head.\n\n## 4 Experiments\n\nGate.\n")
     r = arch(work, "check", "--spec", "figures/arch/toy2.yaml")
     miss = [l for l in r.out.splitlines() if "在 Method 节里没出现" in l]
-    assert len(miss) == 1 and "\"gate\"" in miss[0] and r.fails == 0      # gate is only named in other sections
+    assert len(miss) == 1 and "\"Gate\"" in miss[0] and r.fails == 0      # gate is only named in other sections
     sp = work / "figures" / "arch" / "toy2.yaml"; sp.write_text(sp.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
     assert "图是从旧 spec 渲染的" in arch(work, "check", "--spec", "figures/arch/toy2.yaml").out
 

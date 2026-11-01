@@ -91,6 +91,11 @@
 为什么：P5 以前只按刊物平均数选图（『82% 的 CVPR 论文有总览图』），既不知道同主题论文怎么开场、怎么排版，也没有任何东西把图表和主张连起来——有主张没图承载，或有图不服务任何主张，都是靠人眼发现的。
 漏法：判不了图有没有把它的主张讲清楚；范文由标题上的 BM25 选，可能漏掉最接近的那几篇，用 `--pdf` 补；角色按题注关键词判定，题注写得含糊的图会落进 analysis；图的单/双栏宽按图像与矢量元素的外框估算，纯文字图或整页背景图会判不出。
 
+**图的独立视觉审稿（2.14 新增，`figure_review.py check`；暂定阈值）**：
+判据：① figures.csv 有图而 `paper/figure_review.md` 没有 `## Figure review (independent, packet <sha8>)` 节：`paper/figure_plan.csv` 存在（新式项目）FAIL，否则 WARN；② 每节的 packet sha8 要在 `paper/figure_review/round*/manifest.json`（含 `rereview*/`）里登记，否则 FAIL；③ 每张图取日志里**最近一个**块（审稿或复审）：`scores:` 缺七项中任一项 WARN；任一项 ≤ 2 FAIL「Fig N: <项> = 2」；七项均分 < 3.5 WARN；`verdict: revise`、任一 `[major]`、任一 `OPEN` 行 FAIL，除非后面有该图的 `## Figure re-review` 块、packet 与前一块不同且图已改（manifest 里源文件 sha 或渲染 sha 不同）、verdict accept、没有 ≤ 2 的分、没有 [major] 和 OPEN；④ 图现在的源文件 sha 与最近一次审稿的 packet 里记的不同 WARN「Fig N 改过、未复审」；⑤ packet 里有而日志没有审稿块的图 WARN。阈值（≤ 2 FAIL、均分 3.5 WARN）是暂定的，没有拿用户对「难看」的判断标定过。
+为什么：G5 查的是形式（字号 ≥ 5 pt、dpi、字体、灰度、数量、类型），不查图好不好；画图的会话也评不了自己的图——cvpr2027_med2 的图改了四版（v2–v5），每次的审美判断都是会话即兴的，直到用户说「太难看 / 质量太低」。独立审稿沿用 G7 的机制（子代理只看渲染图、范文缩略图和量表；packet 登记；复审必须在改后的对象上做），量表把「好看」拆成七项有锚点的分数，意见必须带具体改法。
+漏法：量表是一个模型的品味，accept 不等于用户觉得好看，最后一道审稿人仍是用户（定稿前给他看 crop 与范文缩略图）；渲染用 PyMuPDF 按题注 `Figure N` 找页、用 `figure_plan.figure_region` 找图区，题注不是「Figure N: / Fig. N.」开头的版式或图区找不准时退到 true_scale（图本身按印刷宽度画在白页上，看不到排版）；只改 LaTeX 宽度 / 位置、源文件不变的修改，`rereview` 靠渲染 sha 放行，但 check 的「改过未复审」只比源文件。
+
 ## G6 正文六项
 ### refs
 bib 解析支持嵌套花括号与无尾逗号；DOI 从 doi/url 字段抽，arXiv 编号从 note/url/journal 字段抽（很多 bib 把 arXiv 写在 note 里）。CrossRef `works/{doi}` 取 title，与 bib title 做序列比率，<0.85 判 FAIL。PubMed 走 efetch 时限定 `PubmedData` 下的 ArticleId，否则会取到该文参考文献的 DOI。
@@ -143,6 +148,11 @@ G6d 的伪代码块检查（`scripts/make_algorithm.py check`，paper/latex 里�
 判据：① 包与命令族一致：有 algorithm 环境就要 `\usepackage{algorithm}`（或 algorithm2e）；algorithmic 环境要 algpseudocode / algorithmic；`\State` 属于 algpseudocode、`\STATE` 属于 algorithmic、`\KwIn` 属于 algorithm2e，错配或 algorithm2e 与 algorithmic 同时加载 = FAIL。② 每块有 `\caption` 和 `\label{alg:..}`（FAIL），label 在正文被 `\ref/\cref/\autoref` 引用（FAIL，同无人引用的图）；manuscript.md 侧 `**Algorithm N.**` 同样要被 "Algorithm N" 引用（gate_check floats，FAIL；引用本稿没有的编号只 WARN，可能在引别人论文里的算法）。③ label 在 state.algorithms 里没有行 = WARN "没有 source 锚点"；行的 source 文件或函数不存在 / 解析失败 = FAIL。④ 符号：块里的 `\texttt{..}`、含 `_` 或数字的文字记号、没有在块内定义的 Greek 符号，必须是 params 键或 source 函数的标识符（名字 / 参数 / 属性 / 调用），否则 WARN。⑤ `\Require` 里 `符号 = 数值`（或 `\gets`）且符号在 params：数值必须等于 ref run 的值（bundle.matrix.ref.args 的 `--key value`，没有则 runs/<ref>*/args.json），不等 FAIL，ref run 里没有这个键 WARN。⑥ 形状：函数前两层的循环数多于块里的 `\For/\While` = WARN；≥3 个 if 而块里没有 `\If` = WARN；> 30 个编号行 = WARN；skeleton 占位（空 `\State`、`\For{$\ldots$}`）没改 = WARN。⑦ `\State` 等语句行里出现 ≥3 位有效数字的数 = WARN（伪代码不写结果数字）。
 为什么：凭记忆写的伪代码描述的是想要的方法，不是跑出结果的那个——超参改过、循环被删过、顺序换过，正文和代码就各说各的。把块锚到函数（ast）和 ref run 的参数，同 G3b 的逻辑：不让文字自己为自己作证。
 漏法：只比对符号与数值和循环数，不比对语义（把两句话写反不会被发现）；`params` 没登记的超参不对账；Python 以外的代码（C++/CUDA）无法 ast，source 只能指到 Python 入口；块里的 Greek 符号若在块内用 `\gets` 定义过就视为已定义，不再追溯。语料校准（`make_algorithm.py calibrate`，PyMuPDF 取前 14 页的 "Algorithm N" 题注行，每 venue ≤40 篇、2023+、seed 20261023）给出各家族有伪代码的比例，供 G6c shape_check 参考。
+
+G6d 的表格宽度检查（`latex_check.py check` 读 `<main>.log`，2026-11-01；log 不存在则不查，比 .tex 源旧只 WARN "不据此检查"）：
+判据：log 里每条 `Overfull \hbox (x pt too wide) in alignment|paragraph at lines a--b`（或 `detected at line n`），若行号区间落在某个 .tex 源的 table / tabular / longtable 内（当前文件靠 log 里括号栈判断，判不出就试所有源），按表的 `\label` 归并取最大超出量：> 2 pt WARN，> 10 pt FAIL；都没有则 PASS。阈值是暂定值。
+为什么：表格比图更容易悄悄溢出——宽表在单栏里压到相邻栏或页边，编译照样成功，G6d 以前只查 manuscript.md 是否过时；`make_comparison.py --fit auto` 的宽度估算是启发式，要有一个读真实排版结果的复核。
+漏法：只看编译日志里的 Overfull，不看 PDF；`\resizebox` 缩过的表不再溢出但字号可能 < 5 pt（那一项在 make_comparison 生成时查，印出实际字号）；log 里的括号栈在文件名被折行时会错位，错位时按"所有源"回退，可能把别的表的溢出算到同行号区间的表头上；显著性标记与区间只是渲染 csv，本关口不检验它们对不对。
 
 ## G6f 可读性（`scripts/readability_check.py`，机械；2026-10-23）
 判据：正文（Introduction 起，不含参考文献、图表题注、表格、公式、代码、Appendix/Supplement/Protocol/Preregistration 节）的指标对照 references/readability-norms.csv（已发表 CVPR/ICCV/ECCV/NeurIPS/MICCAI/WACV/AAAI、TMI/MedIA/TIP/TPAMI/IJCV、Nature 系各 40 篇，seed 20261023）：摘要数字/缩写/词数、贡献条目数字与字数、引言与全文的数字每千词、分号每千词、平均句长、>40 词句占比。单项 > p90 或 > p95 只 WARN（已发表论文 40 篇里 7–12 篇恰好有一项超 p95）；**≥3 项同时超 p95 FAIL**（已发表样本 2/40）；贡献条目 > 2 个数字 FAIL（P6 规则）。固定规则：流程簿记词（preregist*、registered ablation/prediction…、refuted、falsified、addendum、amendment、convention change、protocol 意义上的 locked、post hoc（非统计意义）、findings.md、G6c 式关口名）> 3 处 FAIL、1–3 处 WARN；引言/相关工作的目录式段落（≥4 引用且 ≥3 分号，或 ≥5 句 "Name [n] …"）每个 WARN、≥3 个 FAIL。正文 < 1500 词时比率指标只 WARN；家族无校准行用 PROVISIONAL 阈值并 WARN。

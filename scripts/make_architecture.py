@@ -59,6 +59,10 @@ def die(gate, msg):
     say("FAIL", gate, msg); sys.exit(1)
 
 
+class ImportFail(Exception):
+    """the model file / package could not be imported: usually the running interpreter is not the project's environment (torch, ultralytics, ... missing)"""
+
+
 def rel(p, root): return os.path.relpath(p, root).replace("\\", "/")
 
 
@@ -134,10 +138,12 @@ def load_model(spec, init, root, state):
         sp = importlib.util.spec_from_file_location(name, fpath)
         mod = importlib.util.module_from_spec(sp); sys.modules[name] = mod
         try: sp.loader.exec_module(mod)
+        except ImportError as e: raise ImportFail(f"导入 {left} 失败: {type(e).__name__}: {e}")
         except Exception as e: die("trace", f"导入 {left} 失败: {type(e).__name__}: {e}")
         sha = sha_file(fpath)
     else:
         try: mod = importlib.import_module(left)
+        except ImportError as e: raise ImportFail(f"导入 {left} 失败: {type(e).__name__}: {e}")
         except Exception as e: die("trace", f"导入 {left} 失败: {type(e).__name__}: {e}")
         top = importlib.import_module(left.split(".")[0])
         sha = f"pkg:{left.split('.')[0]}=={getattr(top, '__version__', '?')}"
@@ -250,11 +256,19 @@ def fmt_shape(s, drop_batch=True):
     return "×".join(str(v) for v in s)
 
 
+def humanise(name):
+    """readable stage title from a code name: fuse_block -> "Fuse block", RGBBranch -> "RGB branch", layer1 -> "Layer 1" """
+    t = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name); t = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", t)
+    t = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", t.replace("_", " ")).strip()
+    return t[:1].upper() + t[1:] if t else t
+
+GENERIC_STAGES = {"layers", "layer", "model", "net", "network", "module", "modules", "blocks", "block", "seq", "sequential", "body", "main", "features"}
+
 def stage_of(name, rules):
     if rules:
         for st, rx in rules:
             if re.search(rx, name): return st
-    return name.split(".")[0] if name else ""
+    return humanise(name.split(".")[0]) if name else ""        # never the raw code name ("layers", "fuse"): --stages "RGB branch=...,Fusion=..." names real stages
 
 
 def parse_stages(s):
@@ -388,10 +402,13 @@ def load_image(path, shape, device):
     return t.to(device)
 
 
-def do_trace(model_spec, init_s, input_s, depth, device, sample_s, stages_s, label_names, root, state, dump=None):
+def do_trace(model_spec, init_s, input_s, depth, device, sample_s, stages_s, label_names, root, state, dump=None, soft=False):
     import torch
     init = parse_init(init_s); ins = parse_inputs(input_s)
-    model, sha = load_model(model_spec, init, root, state)
+    try: model, sha = load_model(model_spec, init, root, state)
+    except ImportFail as e:
+        if soft: raise
+        die("trace", f"{e}（当前解释器 {sys.executable} 导不进模型的依赖：用项目的 python / venv 运行）")
     model.eval().to(device)
     samples = dict(kv.split("=", 1) for kv in (sample_s or "").split(",") if "=" in kv)
     tens = []
@@ -408,6 +425,9 @@ def do_trace(model_spec, init_s, input_s, depth, device, sample_s, stages_s, lab
     for d in (dump or []):
         if d not in rec.acts: die("trace", f"--dump-activations {d}: 该模块不存在或前向里没被调用（可用的名字例：{', '.join(n for n, _ in list(model.named_modules())[1:6])}）")
     nodes, edges = build_graph(rec, leaves, in_uids, ins, depth, parse_stages(stages_s), label_names, type(model).__name__)
+    if not parse_stages(stages_s):
+        gen = sorted({n["stage"] for n in nodes if n["stage"].lower().replace(" ", "") in GENERIC_STAGES})
+        if gen: print(f"[WARN] trace: default stage name(s) {gen} are code names that group unrelated parts (a 'layers' stage can hold both backbones, the neck and the head): give --stages \"RGB branch=^layers\\.[0-9],Fusion=^fuse,...\"")
     spec = {"meta": {"model": model_spec, "init": init_s or "", "input": input_s, "depth": depth, "device": device, "torch": str(torch.__version__),
                      "date": datetime.date.today().isoformat(), "code_sha256": sha, "params_total": sum(p.numel() for p in model.parameters()),
                      "label_names": bool(label_names), "stages": stages_s or "", "sample": sample_s or ""},
@@ -870,7 +890,9 @@ def check_one(a, root, state, specp):
         fresh = None
         try:
             fresh, _ = do_trace(meta["model"], meta.get("init", ""), meta["input"], int(meta.get("depth", 1)), meta.get("device", "cpu") if (meta.get("device", "cpu") != "cuda" or torch.cuda.is_available()) else "cpu",
-                                "", meta.get("stages", ""), meta.get("label_names", False), root, state)
+                                "", meta.get("stages", ""), meta.get("label_names", False), root, state, soft=True)
+        except ImportFail as e:
+            say("WARN", "architecture", f"{tag}: interpreter cannot import the model's dependencies（解释器导不进模型的依赖，{e}）；当前 python = {sys.executable}。重新 trace 这一项没做，不是图错了：用项目环境的 python 再跑 check")
         except SystemExit:
             say("FAIL", "architecture", f"{tag}: 无法重新 trace（模型加载/前向失败，见上一行）：图是不是从已不存在的代码画的？")
         if fresh:

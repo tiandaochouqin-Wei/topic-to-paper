@@ -480,4 +480,5 @@ def test_g5_line_carries_the_plan_counts_and_fails_on_an_undrawn_figure(planned)
     assert line.startswith("[FAIL] G5") and "plan 2 FAIL" in line, line
     draw_everything(planned)
     line, _ = g5_line(planned)
-    assert "G5" in line and "plan 0 FAIL" in line and not line.startswith("[FAIL]"), line
+    assert "G5" in line and "plan 0 FAIL" in line, line
+    assert "review 1 FAIL" in line, line                                                                          # a plan exists -> the independent figure review (figure_review.py) is now required; tests/test_figure_review.py covers it

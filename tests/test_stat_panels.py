@@ -89,13 +89,14 @@ def test_curves_ema_inset_annotation_numbers_match_the_input(tmp_path):
     summ = [s for s in src if s["kind"] == "summary"]
     assert [s["panel"] for s in summ] == ["LLVIP", "M3FD"] and all(s["epoch"] == "30.0" for s in summ)   # last epoch both series share = 30, not 40
     for s in summ:
-        def smooth(method):
+        def raw(method):          # the annotated numbers are the RAW seed means at the shared last epoch (the EMA is for drawing only)
             by = {}
             for p, m, sd, e, v in rows:
                 if p == s["panel"] and m == method: by.setdefault(e, []).append(v)
-            es = sorted(by); return dict(zip(es, mf.ema([np.mean(by[e]) for e in es], 0.2)))
-        o, b = smooth("ACSR")[30], smooth("Base")[30]
+            return {e: float(np.mean(v)) for e, v in by.items()}
+        o, b = raw("ACSR")[30], raw("Base")[30]
         assert abs(float(s["ours"]) - o) < 1e-9 and abs(float(s["baseline"]) - b) < 1e-9 and abs(float(s["delta"]) - (o - b)) < 1e-9
+        assert s["basis"] == "raw seed mean"
     pts = [s for s in src if s["kind"] == "point"]
     assert {"AP50_smooth", "AP50_mean", "AP50_sd"} <= set(src[0]) and all(float(p["n"]) == 2 for p in pts)
     assert "α = 0.2" in read(tmp_path / "figures.csv")                                 # the smoothing weight is in the caption text
@@ -305,10 +306,13 @@ def test_curves_inset_and_annotation_avoid_a_falling_curve_ending_lower_right(tm
     fig, src = _run_curves_in_process(monkeypatch, tmp_path, ["--csv", "fall.csv", "--x", "epoch", "--y", "loss", "--series", "method", "--ours", "ours", "--ema", "0.3",
                                                               "--inset", "last:10", "--annotate", "last", "--width-mm", "88", "--height-in", "2.6", "--out", "figures/fall.png"])
     ax = fig.axes[0]; rend = fig.canvas.get_renderer(); axbb = ax.get_window_extent(rend)
-    ins = ax.child_axes[0].get_window_extent(rend); txt = [t for t in ax.texts if t.get_gid() == "stat-annotation"][0].get_window_extent(rend)
-    for name, bb in (("inset", ins), ("annotation", txt)):
-        cx = ((bb.x0 + bb.x1) / 2 - axbb.x0) / axbb.width; cy = ((bb.y0 + bb.y1) / 2 - axbb.y0) / axbb.height
-        assert not (cx > 0.5 and cy < 0.5), f"{name} sits in the lower right, on the curve end"
+    ins = ax.child_axes[0].get_window_extent(rend)
+    cx = ((ins.x0 + ins.x1) / 2 - axbb.x0) / axbb.width; cy = ((ins.y0 + ins.y1) / 2 - axbb.y0) / axbb.height
+    assert not (cx > 0.5 and cy < 0.5), "inset sits in the lower right, on the curve end"
+    ends = [t for t in ax.texts if t.get_gid() == "end-label"]                       # direct end labels replace the grey corner text: right of the last epoch
+    assert len(ends) == 3
+    x_last = ax.transData.transform((60, 0))[0]
+    assert all(mf._text_bb(t, rend).x0 >= x_last for t in ends)
     assert not [m for sv, m in mf.audit_layout(fig) if "covers" in m], mf.audit_layout(fig)
     plt.close(fig)
 

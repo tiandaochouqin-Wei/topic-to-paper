@@ -23,6 +23,10 @@ X <-> Y is forced", "ours is a different paradigm"). Choose the subcommand by th
       --ours "A,B" (comma list), --broken-x "65,110" (x axis broken over that interval), --bubble-legend "8,100,786" (needs --size),
       labels placed greedily around each point (8 offsets, no label on label, dropped + printed when nothing fits; source CSV column
       placed_label); with --color each method is named once, ours at every point (--label-each: all points)
+      --color with datasets whose y ranges do not overlap (AP 30 vs 60) draws flat fronts on one axis: WARN, and --y-norm per-color [--y-ref <method>]
+      plots y as the gain over that method (else the group's best) per colour group (source CSV keeps the raw y; column y_norm). A legend entry
+      says marker area ~ --size, column names are shown humanised (params_M -> Params (M)) unless --labels names them. WARN when ours is on the
+      front only because it is the costliest model of its group. --width-mm defaults to the venue's column width.
   breadth of a result (a results teaser, rarely a motivation: about 1 % of CS Fig. 1s in the local sample)
     radar      one polygon per series over >= 3 benchmarks, every axis on its own printed range
       python make_motivation.py radar --csv results/bench.csv --axis dataset --series method --value AP --ours ours [--groups ...]
@@ -318,6 +322,13 @@ def _legend_auto(fig, ax, handles, labels, pts_disp, **kw):
     return ax.legend(handles, labels, loc=best[1], **kw)
 
 
+def _human(col):
+    """display text for a raw column name: params_M -> "Params (M)", GFLOPs -> "GFLOPs", AP50_95 -> "AP50 95"; a --labels entry always wins"""
+    t = col.replace("_", " ").strip(); parts = t.split()
+    if len(parts) > 1 and parts[-1] in ("M", "G", "K", "B", "ms", "s", "MB", "GB"): t = " ".join(parts[:-1]) + f" ({parts[-1]})"
+    return t[:1].upper() + t[1:]
+
+
 def tradeoff(a):
     from matplotlib.lines import Line2D
     root = os.path.abspath(a.project)
@@ -329,6 +340,27 @@ def tradeoff(a):
         acc.setdefault((r[a.label], r[a.color] if a.color else ""), []).append((xv, yv, sv))
     if len({k[0] for k in acc}) < 2: fail(f"{a.csv} 少于 2 个方法")
     pts = {k: (float(np.mean([p[0] for p in v])), float(np.mean([p[1] for p in v])), (float(np.mean([p[2] for p in v])) if a.size else None), len(v)) for k, v in acc.items()}
+    raw_y = {k: p[1] for k, p in pts.items()}; ref_note = ""
+    if a.y_norm == "per-color":
+        if not a.color: fail("--y-norm per-color needs --color <column>")
+        for c in dict.fromkeys(k[1] for k in pts):
+            grp = [k for k in pts if k[1] == c]
+            if a.y_ref:
+                hit = [k for k in grp if k[0] == a.y_ref]
+                if not hit: fail(f"--y-ref {a.y_ref} has no row in {a.color}={c}: {[k[0] for k in grp]}")
+                ref = pts[hit[0]][1]
+            else: ref = (max if not a.lower else min)(pts[k][1] for k in grp)
+            for k in grp: pts[k] = (pts[k][0], pts[k][1] - ref, *pts[k][2:])
+        ref_note = f"{a.y_ref} of each {a.color}" if a.y_ref else f"the best value of each {a.color}"
+    else:
+        rng = {c: (min(raw_y[k] for k in pts if k[1] == c), max(raw_y[k] for k in pts if k[1] == c)) for c in dict.fromkeys(k[1] for k in pts)} if a.color else {}
+        cs = list(rng)
+        if len(cs) > 1:
+            tot = max(v[1] for v in rng.values()) - min(v[0] for v in rng.values())
+            disjoint = all(rng[c1][1] < rng[c2][0] or rng[c2][1] < rng[c1][0] for i_, c1 in enumerate(cs) for c2 in cs[i_ + 1:])
+            if disjoint and tot > 0 and max(v[1] - v[0] for v in rng.values()) < 0.5 * tot:
+                print(f"[WARN] tradeoff: the {a.color} groups have disjoint {a.y} ranges ({', '.join(f'{c} {v[0]:g}–{v[1]:g}' for c, v in rng.items())}); on one axis the points of one group sit within "
+                      f"{max(v[1] - v[0] for v in rng.values()):g} of each other and the fronts are flat lines. Use --y-norm per-color [--y-ref <method>] (y as gain over a reference)")
     ours_set = [s for s in (a.ours or "").split(",") if s]
     for s in ours_set:
         if s not in {k[0] for k in pts}: fail(f"--ours {s} 不在 {a.label} 列里：{sorted({k[0] for k in pts})}")
@@ -342,6 +374,8 @@ def tradeoff(a):
     peers = lambda k: [o for o in pts if o != k and (not a.color or o[1] == k[1])]      # with --color a front only makes sense inside one benchmark
     front = [k for k in pts if not any(dominates(pts[o], pts[k]) for o in peers(k))]
     labels = _parse_kv(a.labels)
+    for col_ in [a.x, a.y, a.size, a.color]:
+        if col_ and col_ not in labels: labels[col_] = _human(col_)                   # raw column names (params_M) never reach the figure
     cats = list(dict.fromkeys(k[1] for k in pts)) if a.color else []
     if len(cats) > len(mf.CAT): print(f"[WARN] tradeoff: {len(cats)} {a.color} values, fill colours repeat after {len(mf.CAT)}")
     cmap = {c: mf.CAT[i % len(mf.CAT)] for i, c in enumerate(cats)}
@@ -419,9 +453,8 @@ def tradeoff(a):
     xlab = a.xlabel or labels.get(a.x, a.x) + (", log scale" if a.logx else "")
     if gap: fig.supxlabel(xlab, fontsize=7.5, y=0.045)
     else: axs[0].set_xlabel(xlab)
-    axs[0].set_ylabel(a.ylabel or labels.get(a.y, a.y))
+    axs[0].set_ylabel(a.ylabel or (labels.get(a.y, a.y) if a.y_norm == "none" else f"Δ {labels.get(a.y, a.y)} vs. {ref_note}"))
     if a.title: fig.suptitle(a.title, fontsize=7.5, fontweight="bold", y=0.995)
-    if a.size and not a.bubble_legend: axs[-1].text(0.98, 0.03, f"marker area ∝ {labels.get(a.size, a.size)}", transform=axs[-1].transAxes, fontsize=5.6, ha="right", va="bottom", color="#666666")
     # one legend: markers | bubble sizes in the first column, fill colours in the second
     hd = lambda t: (Line2D([], [], ls="", marker=""), t, True)
     c1, c2 = [], []
@@ -431,6 +464,7 @@ def tradeoff(a):
         except ValueError: fail("--bubble-legend wants numbers, e.g. 8,100,786")
         c1 += [hd(f"Bubble area = {labels.get(a.size, a.size)}")] + [(Line2D([], [], ls="", marker="o", ms=math.sqrt(area(v)), mfc="#c9ced4", mec="#8a8f98", mew=0.4), f"{v:g}", False) for v in sorted(refs, reverse=True)]
     if a.color: c2 += [hd(f"{labels.get(a.color, a.color)} (fill colour)")] + [(Line2D([], [], ls="", marker="o", ms=5, mfc=cmap[c], mec="white"), c, False) for c in cats]
+    if a.size and not a.bubble_legend: (c1 if c1 or not c2 else c2).append((Line2D([], [], ls="", marker="o", ms=5, mfc="#c9ced4", mec="#8a8f98", mew=0.4), f"Marker area ~ {labels.get(a.size, a.size)}", False))   # in the legend, not as loose text that the legend could cover
     has_front = (not a.no_front) and sum(1 for _ in front) > 1
     if has_front: (c1 if c1 or not c2 else c2).append((Line2D([], [], ls="--", lw=0.8, color="#9a9a9a"), "Pareto front" if not a.color else "Pareto front per " + a.color, False))
     ents = c1 + c2 if not (c1 and c2) else c1 + [(Line2D([], [], ls="", marker=""), "", False)] * max(0, len(c2) - len(c1)) + c2 + [(Line2D([], [], ls="", marker=""), "", False)] * max(0, len(c1) - len(c2))
@@ -446,12 +480,16 @@ def tradeoff(a):
     print(f"Pareto front ({'lower' if lowx else 'higher'} {a.x}, {'higher' if hib else 'lower'} {a.y}){' per ' + a.color if a.color else ''}: {fxn}")
     for k in pts:
         if not is_ours(k): continue
-        if k in front: print(f"ours ({nm(k)}) is on the Pareto front")
+        if k in front:
+            print(f"ours ({nm(k)}) is on the Pareto front")
+            grp = [o for o in pts if not a.color or o[1] == k[1]]
+            if lowx and pts[k][0] >= max(pts[o][0] for o in grp) or (not lowx and pts[k][0] <= min(pts[o][0] for o in grp)):
+                print(f"[WARN] tradeoff: ours ({nm(k)}) has the highest cost on {a.x} in its group, so it is on the front by construction (nothing costs more); do not caption it as a favourable trade-off")
         else: print(f"[WARN] tradeoff: ours ({nm(k)}) is dominated by {[nm(o) for o in peers(k) if dominates(pts[o], pts[k])]}; the caption must not claim the best trade-off")
-    src = [[k[0], p[0], p[1], p[2] if p[2] is not None else "", p[3], k in front, k[1], placed.get(k, "skipped")] for k, p in pts.items()]
+    src = [[k[0], p[0], raw_y[k], p[2] if p[2] is not None else "", p[3], k in front, k[1], placed.get(k, "skipped")] + ([p[1]] if a.y_norm != "none" else []) for k, p in pts.items()]
     n_on = sum(1 for k in pts if is_ours(k) and k in front); n_o = sum(1 for k in pts if is_ours(k))
-    finish(fig, a, src, ["label", a.x, a.y, a.size or "size", "n", "on_front", a.color or "color", "placed_label"], root,
-           f"{labels.get(a.y, a.y)} vs. {labels.get(a.x, a.x)}" + (f"; fill colour = {labels.get(a.color, a.color)}" if a.color else "") + ("" if a.no_front else f"; dashed = Pareto front{' per ' + a.color if a.color else ' (' + ', '.join(fxn) + ')'}")
+    finish(fig, a, src, ["label", a.x, a.y, a.size or "size", "n", "on_front", a.color or "color", "placed_label"] + (["y_norm"] if a.y_norm != "none" else []), root,
+           f"{labels.get(a.y, a.y)}{(' as the gain over ' + ref_note) if a.y_norm != 'none' else ''} vs. {labels.get(a.x, a.x)}" + (f"; fill colour = {labels.get(a.color, a.color)}" if a.color else "") + ("" if a.no_front else f"; dashed = Pareto front{' per ' + a.color if a.color else ' (' + ', '.join(fxn) + ')'}")
            + (f"; ours on the front in {n_on}/{n_o} points" if n_o and not a.no_front else "") + (f"; x axis broken between {gap[0]:g} and {gap[1]:g}" if gap else "") + ".")
 
 
@@ -712,6 +750,9 @@ def main():
     t.add_argument("--bubble-legend", default="", help="'8,100,786': reference bubble sizes in the legend (needs --size)")
     t.add_argument("--no-front", action="store_true", help="no Pareto front line"); t.add_argument("--title", default="")
     t.add_argument("--no-arrow", action="store_true", help="no green 'better' arrow")
+    t.add_argument("--y-norm", choices=["none", "per-color"], default="none", help="per-color: subtract each --color group's reference from its y (the --y-ref method, else the group's best value) so benchmarks with different "
+                   "ranges (AP 30 vs 60) share one axis as gains; the source CSV keeps the raw y")
+    t.add_argument("--y-ref", default="", help="with --y-norm per-color: the --label value that is 0 in every group (default: the best value of the group)")
     r = sub.add_parser("radar", help="one polygon per series over >= 3 benchmarks")
     r.add_argument("--csv", default="", help="long table, one row per (axis, series[, seed]) value; empty = state.results main table")
     r.add_argument("--axis", default="dataset"); r.add_argument("--series", default="method"); r.add_argument("--value", default="AP")
@@ -726,12 +767,15 @@ def main():
         q.add_argument("--labels", default="", help="'col=display name,…'")
         q.add_argument("--synthetic", action="store_true", help="simulated / demo data: SYNTHETIC DEMO watermark (provenance rule of make_figure.py)")
         q.add_argument("--no-watermark-check", action="store_true", dest="no_watermark_check", help="skip the data-provenance check")
-        if name != "schematic": q.add_argument("--width-mm", type=float, default=widths[name])
+        if name != "schematic": q.add_argument("--width-mm", type=float, default=0.0 if name in ("condition", "paired", "tradeoff") else widths[name], help="print width; default for condition / paired / tradeoff = the venue's column width (CVPR 82.5 mm), else 88 mm" if name in ("condition", "paired", "tradeoff") else None)
         if name in ("condition", "paired", "tradeoff"):
             q.add_argument("--height-in", type=float, default=2.1); q.add_argument("--xlabel", default=""); q.add_argument("--ylabel", default="")
     a = ap.parse_args()
     if not a.out.lower().endswith(".png"): fail("--out 给 .png 路径（同名 .pdf、_gray.png、.source.csv 自动写在旁边）")
     if a.cmd == "schematic": a.width_mm = 0
+    elif not a.width_mm:
+        a.width_mm, _src = mf.default_width_mm(os.path.abspath(a.project), "col")
+        if _src: print(f"[INFO] width: --width-mm not given, {a.width_mm:g} mm from {_src}")
     {"condition": condition, "paired": paired, "tradeoff": tradeoff, "radar": radar, "strip": strip, "schematic": schematic}[a.cmd](a)
 
 

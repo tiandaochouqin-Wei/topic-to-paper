@@ -12,11 +12,18 @@
                                  [--seed seed] [--panel dataset] [--xlabel ...] [--band sd|minmax|none] [--logx]
       one line per series; seeds collapse to mean with a shaded s.d. (or min–max) band; optional one panel per --panel value
       (training curves, horizon / threshold sweeps, trade-off curves). Reads a long CSV, not state.results.
-      Fig-6-style training curves: [--ema 0.12] EMA-smoothed solid line over a faint raw line (s_t = a*x_t + (1-a)*s_t-1, per series
-      per panel, on the seed mean); [--inset last:40 | x0:x1] zoom of the last N points as an inset + grey rectangle on the panel;
-      [--annotate last --ours ours [--baseline base] [--delta-unit pp]] filled / open circle at the last epoch both series share and
-      the text "Δy @ epoch N: +d | ours a | base b" (numbers from the smoothed curves, also written to the source CSV as a
-      kind=summary row); [--ncols 3] [--free-y] [--letters] [--legend above|best|none]. Without these options the output is unchanged.
+      Fig-6-style training curves: [--ema 0.12] EMA-smoothed solid line over one neutral light-grey raw line (s_0 = x_0, s_t = a*x_t + (1-a)*s_t-1,
+      per series per panel, on the seed mean). EMA is DRAWING ONLY and needs >= 20 points per series: with fewer it is not applied (WARN; raw seed
+      means with markers), because 10 points never catch up with the data; [--inset last:40 | x0:x1] zoom as an inset with connector lines to the
+      grey rectangle (refused when it spans >= half of the series; placed in the corner with the fewest plotted samples; ticks >= 3, house font size);
+      [--annotate last --ours ours [--baseline base] [--delta-unit pp]] filled / open circle at the last x both series share, direct end labels
+      "ours 37.68" / "base 36.88" and "Δ +0.80". These numbers are the RAW seed means at that x (the caption and the source CSV's kind=summary row,
+      column basis, say so). Palette: ours accent red, thick; baseline dark grey dashed, thin; the rest distinct hues with distinct markers;
+      [--ncols 3] [--free-y] [--letters] [--legend auto|above|best|none] (auto = inside the axes when a corner is free, else one row above; n of the
+      seeds goes to the caption, not the legend). All text in the figure is one size (the house 7.5 pt). Without --ema / --inset / --annotate the
+      source columns are unchanged.
+      --width-mm defaults to the target venue's text / column width (state.target.venue -> references/latex-templates.csv; CVPR 174.6 / 82.5 mm),
+      else 183 / 88 mm; figures.csv registers the width of the saved PDF (bbox-tight adds label margins) so G5 measures print sizes on the real page.
   python make_figure.py stems    --csv results/backbones.csv --item backbone --x baseline_AP --y ours_AP [--group family] --out figures/fig_stems.png
       paired baseline (x) vs ours (y) per item: dashed y = x, one stem from the diagonal to each point, gain label "+d" on top, colour
       by --group (without --group: one colour + marker per item); prints "k/n <item>s above y = x"
@@ -189,6 +196,19 @@ def add_watermark(fig):
     fs = float(np.clip(0.8 * np.hypot(w_pt, h_pt) / 8.7, 7, 44))              # "SYNTHETIC DEMO" is about 8.7 font sizes wide
     fig.text((x0 + x1) / 2, (y0 + y1) / 2, "SYNTHETIC DEMO", rotation=ang, rotation_mode="anchor", ha="center", va="center", fontsize=fs, color="#b5b5b5", alpha=0.5, fontweight="bold", zorder=100, gid="synthetic-watermark")
 
+def pdf_width_mm(path):
+    """width of page 1 of a PDF in mm (PyMuPDF; else the /MediaBox of the raw bytes), None when unreadable"""
+    try:
+        import fitz
+        with fitz.open(path) as d: return d[0].rect.width / 72 * 25.4
+    except Exception:
+        pass
+    try:
+        m = re.search(rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]", open(path, "rb").read())
+        return (float(m.group(3)) - float(m.group(1))) / 72 * 25.4 if m else None
+    except Exception:
+        return None
+
 def finish(fig, a, src_rows, src_hdr, root, caption):
     out = os.path.join(root, a.out); os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     issues = audit_layout(fig)
@@ -201,6 +221,10 @@ def finish(fig, a, src_rows, src_hdr, root, caption):
     if os.path.splitext(out)[1].lower() not in (".png", ".pdf"): fig.savefig(out, dpi=400, bbox_inches="tight")
     from PIL import Image
     Image.open(png).convert("L").save(os.path.splitext(out)[0] + "_gray.png")   # grayscale preview: the colour-vision / print-in-B&W check
+    wm = pdf_width_mm(os.path.splitext(out)[0] + ".pdf")            # bbox_inches="tight" grows the page: register the width the PDF really has
+    if wm and abs(wm - a.width_mm) > 0.05:
+        print(f"[INFO] width: the saved PDF is {wm:.1f} mm wide (requested {a.width_mm:g} mm, bbox-tight adds the label margins); figures.csv registers {wm:.1f} mm, so print sizes are measured on the real page. For a page that is exactly {a.width_mm:g} mm re-run with --width-mm {2 * a.width_mm - wm:.1f}")
+        a.width_mm = round(wm, 1)
     w = Image.open(png).size[0]; dpi = w / (a.width_mm / 25.4)
     sp = os.path.splitext(out)[0] + ".source.csv"
     with open(sp, "w", newline="", encoding="utf-8") as f: wr = csv.writer(f); wr.writerow(src_hdr); wr.writerows(src_rows)
@@ -373,60 +397,48 @@ def _line_samples(ax, n=200):
         gx = np.linspace(d[0, 0], d[-1, 0], n); out.append(np.column_stack([gx, np.interp(gx, d[:, 0], d[:, 1])]))
     return np.vstack(out) if out else np.zeros((0, 2))
 
-def _place_blocks(fig, ax, cur, styles, inset, text):
-    """inset zoom and annotation text, each in the corner of the panel where the fewest plotted samples (all series, raw and smoothed)
-    would be covered. The inset (with its tick labels) and the text must not share a row unless stacked on one side. If even the best
-    inset covers > 25 % of the samples it is shrunk to 30 % width; if it still does, return a warning string."""
-    rend = fig.canvas.get_renderer(); axbb = ax.get_window_extent(rend); P = _line_samples(ax)
-    P = np.column_stack([(P[:, 0] - axbb.x0) / axbb.width, (P[:, 1] - axbb.y0) / axbb.height]) if len(P) else np.zeros((0, 2))
-    def frac(rects):
-        if not len(P) or not rects: return 0.0
-        m = np.zeros(len(P), bool)
-        for x0, y0, x1, y1 in rects: m |= (P[:, 0] >= x0) & (P[:, 0] <= x1) & (P[:, 1] >= y0) & (P[:, 1] <= y1)
-        return float(m.mean())
-    corners = [(True, False), (True, True), (False, False), (False, True)]       # (right, upper): lower right first
-    tw = th = 0.0; tt = None
-    if text:
-        tt = ax.text(0.5, 0.5, text, transform=ax.transAxes, fontsize=5.6, ha="right", va="bottom", color="#333", linespacing=1.25, zorder=7, gid="stat-annotation")
-        bb = tt.get_window_extent(rend); tw, th = bb.width / axbb.width, bb.height / axbb.height
-    def tbox(c):
-        right, up = c; x1 = 0.97 if right else 0.03 + tw; y0 = 0.97 - th if up else 0.03
-        return (x1 - tw - 0.01, y0 - 0.01, x1 + 0.01, y0 + th + 0.01), (x1, 0.97 if up else 0.03)
-    def ibox(c, w, h, stack):
-        right, up = c; x0 = 0.97 - w if right else 0.14
-        if stack: y0 = 0.97 - th - 0.03 - h if up else 0.03 + th + 0.03 + 0.10
-        else: y0 = 0.97 - h if up else 0.12
-        return (x0, y0, w, h), (x0 - 0.11, y0 - 0.10, x0 + w, y0 + h)
-    def options(w, h):
-        opts = []
-        if inset and text:
-            for tc in corners:
-                for ic, stack in ([(tc, True)] + [((r, not tc[1]), False) for r in (True, False)]):
-                    ib, irect = ibox(ic, w, h, stack); tr, _ = tbox(tc); opts.append((frac([irect, tr]), frac([irect]), ib, tc))
-        elif inset:
-            for ic in corners: ib, irect = ibox(ic, w, h, False); opts.append((frac([irect]), frac([irect]), ib, None))
-        else:
-            for tc in corners: tr, _ = tbox(tc); opts.append((frac([tr]), 0.0, None, tc))
-        return min(opts, key=lambda o: o[0])
-    best = options(0.50, 0.30); warn = None
-    if inset and best[1] > 0.25:
-        best = options(0.30, 0.30)
-        if best[1] > 0.25: warn = f"inset overlaps data ({best[1]:.0%} of the plotted samples lie under it)"
-    if tt is not None:
-        right, up = best[3]; tt.set_position((0.97 if right else 0.03, 0.97 if up else 0.03)); tt.set_ha("right" if right else "left"); tt.set_va("top" if up else "bottom")
-    if inset:
-        x0, x1, ylo, yhi = inset; ins = ax.inset_axes(list(best[2])); ins.set_zorder(8)
-        for sname, c in cur.items():
-            m = (c["xs"] >= x0) & (c["xs"] <= x1); st = styles[sname]; ins.plot(c["xs"][m], c["sm"][m], lw=0.9, color=st["color"], ls=st["ls"])
-        ins.set_xlim(x0, x1); ins.set_ylim(ylo, yhi); ins.set_xticks([x0, x1]); ins.set_xticklabels([_fx(x0), _fx(x1)])
-        ins.yaxis.set_major_locator(plt.MaxNLocator(2)); ins.tick_params(labelsize=5, length=1.5, width=0.4, pad=1)
-        for sp_ in ins.spines.values(): sp_.set_visible(True); sp_.set_linewidth(0.5); sp_.set_color("#555")
-        ax.add_patch(plt.Rectangle((x0, ylo), x1 - x0, yhi - ylo, fill=False, ec="#555", lw=0.6, zorder=6))
-    return warn
+CURVE_HUES = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#6a3d9a", "#8c564b", "#999933", "#332288"]   # Okabe-Ito style hues for the series that are neither ours nor the baseline: no red (accent), no shades of one blue
+BASE_GREY = "#4b4f55"; RAW_GREY = "#808080"
+EMA_MIN_POINTS = 20          # below this the EMA lags the data by ~1/alpha points and its end values are wrong: not drawn, markers instead
+_CORNERS = [(True, False), (True, True), (False, False), (False, True)]       # (right, upper): lower right first
+
+
+def _cover(P, rects):
+    """share of the line samples P (axes fractions, N x 2) that lie inside any of the rectangles (x0, y0, x1, y1)"""
+    if not len(P) or not rects: return 0.0
+    m = np.zeros(len(P), bool)
+    for x0, y0, x1, y1 in rects: m |= (P[:, 0] >= x0) & (P[:, 0] <= x1) & (P[:, 1] >= y0) & (P[:, 1] <= y1)
+    return float(m.mean())
+
+def _rect_hit(a_, b_): return a_[0] < b_[2] and b_[0] < a_[2] and a_[1] < b_[3] and b_[1] < a_[3]
+
+def _best_corner(P, w, h, obstacles, left_room=0.0, bottom_room=0.0, m=0.03):
+    """the corner of the panel where a w x h block (plus `left_room` / `bottom_room` for its tick labels) covers the fewest line samples and
+    touches no obstacle -> (score, content box, padded box, (right, upper)); a clash with an obstacle adds 1 to the score"""
+    best = None
+    for right, up in _CORNERS:
+        x0 = 1 - m - w if right else m + left_room; y0 = 1 - m - h if up else m + bottom_room
+        box = (x0, y0, x0 + w, y0 + h); padded = (x0 - left_room - 0.01, y0 - bottom_room - 0.01, x0 + w + 0.01, y0 + h + 0.01)
+        score = _cover(P, [padded]) + (1.0 if any(_rect_hit(padded, o) for o in obstacles) else 0.0)
+        if best is None or score < best[0]: best = (score, box, padded, (right, up))
+    return best
+
+def _text_bb(t, rend):
+    """window extent of the text alone (an Annotation's own extent also contains its leader arrow)"""
+    import matplotlib.text as _mt
+    return _mt.Text.get_window_extent(t, rend)
+
+def _axes_fraction_rect(bb, axbb):
+    return ((bb.x0 - axbb.x0) / axbb.width, (bb.y0 - axbb.y0) / axbb.height, (bb.x1 - axbb.x0) / axbb.width, (bb.y1 - axbb.y0) / axbb.height)
+
+def _frac_points(ax, rend):
+    axbb = ax.get_window_extent(rend); P = _line_samples(ax)
+    return np.column_stack([(P[:, 0] - axbb.x0) / axbb.width, (P[:, 1] - axbb.y0) / axbb.height]) if len(P) else np.zeros((0, 2)), axbb
 
 
 def fig_curves(a):
     """long CSV -> one line per series, seeds averaged with a band, optional small-multiple panels (+ Fig-6 options: EMA, inset, annotation)."""
+    FS = plt.rcParams["font.size"]            # ONE size for axes labels, ticks, legend, end labels and inset ticks (the house size)
     root = os.path.abspath(a.project); rows = _csv_rows(root, a.csv, [a.x, a.y])
     labels = dict(kv.split("=", 1) for kv in a.labels.split(",") if "=" in kv) if a.labels else {}
     panels = sorted({r[a.panel] for r in rows}, key=str) if a.panel and a.panel in rows[0] else [None]
@@ -442,93 +454,197 @@ def fig_curves(a):
     if paired:
         base = a.baseline or next((s_ for s_ in series_all if s_ != a.ours), "")
         if base not in series_all or base == a.ours: print(f"[FAIL] baseline {base!r} must be a series other than ours: {series_all}"); sys.exit(1)
-    legend = a.legend or ("above" if new else "best")
+    legend = a.legend or ("auto" if new else "best")
+
+    def collect(sname, pn):
+        pts = collections.defaultdict(list)
+        for r in rows:
+            if (a.series and r.get(a.series, "") != sname) or (pn is not None and r[a.panel] != pn): continue
+            try: pts[float(r[a.x])].append(float(r[a.y]))
+            except ValueError: continue
+        return pts
+    npts = [len(collect(s_, pn)) for pn in panels for s_ in series_all if collect(s_, pn)]
+    min_pts = min(npts) if npts else 0
+    use_ema = a.ema > 0 and min_pts >= EMA_MIN_POINTS
+    notes = []
+    if a.ema and not use_ema:
+        notes.append(f"--ema {a.ema:g} with only {min_pts} points per series (< {EMA_MIN_POINTS}): EMA smoothing is not meaningful here (it lags the data by about 1/alpha = {1 / a.ema:.0f} points "
+                     f"and shifts the end values); drawing the raw seed means with markers instead. Annotated numbers are raw seed means either way")
     ncols = a.ncols or len(panels); nrows = -(-len(panels) // ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(a.width_mm / 25.4, a.height_in), sharey=(not a.logy and not a.free_y), squeeze=False); src = []; notes = []; summ = []; blocks = []
+    fig, axes = plt.subplots(nrows, ncols, figsize=(a.width_mm / 25.4, a.height_in), sharey=(not a.logy and not a.free_y), squeeze=False); src = []; summ = []; info = []
     flat = [ax for r_ in axes for ax in r_]
     for ax in flat[len(panels):]: ax.set_visible(False)
-    styles = {}
-    for i, sname in enumerate(series_all):
-        if sname and sname == a.ours: styles[sname] = dict(color=ACCENT, ls="-", lw=1.1)
-        elif paired and sname == base: styles[sname] = dict(color="#7d838b", ls="--", lw=1.0)
-        else: styles[sname] = dict(color=PALETTE[(2 + i) % len(PALETTE)], ls="-", lw=1.1 if not paired else 0.9)
+    styles = {}; k_cat = 0
+    for sname in series_all:
+        if sname and sname == a.ours: styles[sname] = dict(color=ACCENT, ls="-", lw=1.8, mk="o", z=5)
+        elif paired and sname == base: styles[sname] = dict(color=BASE_GREY, ls="--", lw=0.9, mk="s", z=4)
+        else:
+            styles[sname] = dict(color=CURVE_HUES[k_cat % len(CURVE_HUES)], ls="-", lw=1.1 if not a.ours else 0.9, mk=MARKS[(k_cat + 2) % len(MARKS)], z=3); k_cat += 1
     n_by = {}
+    def draw_line(ax, xs, ys, st, idx, label=None, lw=None):
+        sparse = len(xs) < EMA_MIN_POINTS; step = 1 if sparse else max(2, len(xs) // 7)
+        ax.plot(xs, ys, lw=lw or st["lw"], color=st["color"], ls=st["ls"], marker=st["mk"], ms=2.8 if sparse else 2.4, markevery=(0, 1) if sparse else (idx * step // max(1, len(series_all)), step),
+                markeredgewidth=0, label=label, zorder=st["z"])
     for pi, (ax, pn) in enumerate(zip(flat, panels)):
         cur = collections.OrderedDict()
         for i, sname in enumerate(series_all):
-            sub = [r for r in rows if (not a.series or r.get(a.series, "") == sname) and (pn is None or r[a.panel] == pn)]
-            pts = collections.defaultdict(list)
-            for r in sub:
-                try: pts[float(r[a.x])].append(float(r[a.y]))
-                except ValueError: continue
+            pts = collect(sname, pn)
             if not pts: continue
             xs = np.array(sorted(pts)); ys = np.array([np.mean(pts[x]) for x in xs]); n = max(len(pts[x]) for x in xs); n_by[sname] = max(n, n_by.get(sname, 0))
             sd = np.array([np.std(pts[x], ddof=1) if len(pts[x]) > 1 else 0.0 for x in xs])
             lo = np.array([np.min(pts[x]) if a.band == "minmax" else m - s_ for x, m, s_ in zip(xs, ys, sd)]); hi = np.array([np.max(pts[x]) if a.band == "minmax" else m + s_ for x, m, s_ in zip(xs, ys, sd)])
-            sm, lo_s, hi_s = (ema(ys, a.ema), ema(lo, a.ema), ema(hi, a.ema)) if a.ema else (ys, lo, hi)
+            sm, lo_s, hi_s = (ema(ys, a.ema), ema(lo, a.ema), ema(hi, a.ema)) if use_ema else (ys, lo, hi)      # s_0 = first raw value: the line starts where the data start
             cur[sname] = dict(xs=xs, ys=ys, sm=sm, n=n)
-            st = styles[sname]; ln = (labels.get(sname, sname) + (f" (n={n})" if n > 1 else "")) if sname else None
-            if a.ema: ax.plot(xs, ys, lw=0.5, color=st["color"], alpha=0.25, zorder=2)
-            ax.plot(xs, sm, lw=st["lw"], color=st["color"], ls=st["ls"], label=ln if legend == "best" else None, zorder=3)
-            if n > 1 and a.band != "none": ax.fill_between(xs, lo_s, hi_s, color=st["color"], alpha=0.18, lw=0, zorder=2)
+            st = styles[sname]
+            if use_ema: ax.plot(xs, ys, lw=0.5, color=RAW_GREY, alpha=0.15, zorder=1.5)       # raw records: one neutral light grey for every series
+            draw_line(ax, xs, sm, st, i, label=(labels.get(sname, sname) if sname else None) if legend == "best" else None)
+            if n > 1 and a.band != "none": ax.fill_between(xs, lo_s, hi_s, color=st["color"], alpha=0.16, lw=0, zorder=2)
             for x, y, y2 in zip(xs, ys, sm):
                 row = [pn if pn is not None else "", sname, x, y, np.std(pts[x], ddof=1) if len(pts[x]) > 1 else 0.0, len(pts[x])]
-                src.append(row + ([float(y2), "point", "", "", ""] if new else []))
+                src.append(row + ([float(y2), "point", "", "", "", ""] if new else []))
         if a.logx: ax.set_xscale("log")
         if a.logy: ax.set_yscale("log")
-        ax.set_xlabel(a.xlabel or labels.get(a.x, a.x), fontsize=6.8); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0)
+        ax.set_xlabel(a.xlabel or labels.get(a.x, a.x), fontsize=FS); ax.grid(axis="y", lw=0.4, color="#e6e6e6", zorder=0); ax.tick_params(labelsize=FS)
         if pn is not None:
             ttl = labels.get(pn, pn)
-            if a.letters: ax.set_title(f"({chr(97 + pi)}) {ttl}", fontsize=7.2, loc="left", fontweight="bold")
-            else: ax.set_title(ttl, fontsize=7.2)
-        if pi % ncols == 0: ax.set_ylabel(a.ylabel or labels.get(a.y, a.y))
+            if a.letters: ax.set_title(f"({chr(97 + pi)}) {ttl}", fontsize=FS, loc="left", fontweight="bold")
+            else: ax.set_title(ttl, fontsize=FS)
+        if pi % ncols == 0: ax.set_ylabel(a.ylabel or labels.get(a.y, a.y), fontsize=FS)
         if not cur: continue
-        ann = bool(a.annotate and a.ours in cur and base in cur); inset = None; text = None
-        if a.annotate and not ann: notes.append(f"panel {pn}: ours or baseline has no data, no annotation")
+        allx = sorted({x for c in cur.values() for x in c["xs"]}); ax.set_xlim(allx[0], allx[-1]); ax.margins(x=0)     # x starts at the first epoch, no negative padding
+        ann = None; inset = None
+        if a.annotate and not (a.ours in cur and base in cur): notes.append(f"panel {pn}: ours or baseline has no data, no annotation")
+        elif a.annotate:
+            co, cb = cur[a.ours], cur[base]; common = sorted(set(co["xs"]) & set(cb["xs"]))
+            if not common: notes.append(f"panel {pn}: ours and baseline share no x, no annotation")
+            else:
+                xc = common[-1]; vo = float(co["ys"][list(co["xs"]).index(xc)]); vb = float(cb["ys"][list(cb["xs"]).index(xc)]); d = vo - vb      # RAW seed means: the EMA is for drawing only
+                ann = (xc, vo, vb, d)
+                ax.scatter([xc], [vo], s=16, color=ACCENT, edgecolors="white", linewidths=0.4, zorder=6, clip_on=False)
+                ax.scatter([xc], [vb], s=16, facecolors="white", edgecolors=BASE_GREY, linewidths=0.8, zorder=6, clip_on=False)
+                src.append([pn if pn is not None else "", f"{a.ours} vs {base}", xc, "", "", "", "", "summary", vo, vb, d, "raw seed mean"]); summ.append((pn, xc, vo, vb, d))
         if a.inset:
-            allx = sorted({x for c in cur.values() for x in c["xs"]})
             try:
                 if a.inset.startswith("last:"): k = max(2, int(a.inset[5:])); x0, x1 = (allx[-k] if len(allx) >= k else allx[0]), allx[-1]
                 else: x0, x1 = (float(t) for t in a.inset.split(":"))
             except ValueError: print(f"[FAIL] --inset must be last:N or x0:x1, got {a.inset!r}"); sys.exit(1)
+            n_in = max(int(((c["xs"] >= x0) & (c["xs"] <= x1)).sum()) for c in cur.values()); n_all = max(len(c["xs"]) for c in cur.values())
             vals = np.concatenate([c["sm"][(c["xs"] >= x0) & (c["xs"] <= x1)] for c in cur.values()])
-            if len(vals) >= 2 and x1 > x0:
+            if n_in >= 0.5 * n_all and n_all > 2: notes.append(f"panel {pn}: inset {a.inset} spans {n_in} of {n_all} points (>= half): the zoom would be the whole curve, no inset (use a smaller N or an x0:x1 range)")
+            elif len(vals) >= 2 and x1 > x0:
                 ylo, yhi = float(vals.min()), float(vals.max()); pad = 0.18 * (yhi - ylo or 1.0); inset = (x0, x1, ylo - pad, yhi + pad)
             else: notes.append(f"panel {pn}: inset range {x0:g}–{x1:g} holds fewer than 2 points, no inset")
-        if ann:
-            co, cb = cur[a.ours], cur[base]; common = sorted(set(co["xs"]) & set(cb["xs"]))
-            if not common: notes.append(f"panel {pn}: ours and baseline share no x, no annotation")
-            else:
-                xc = common[-1]; vo = float(co["sm"][list(co["xs"]).index(xc)]); vb = float(cb["sm"][list(cb["xs"]).index(xc)]); d = vo - vb
-                ax.scatter([xc], [vo], s=16, color=ACCENT, edgecolors="white", linewidths=0.4, zorder=6, clip_on=False)
-                ax.scatter([xc], [vb], s=16, facecolors="white", edgecolors="#555", linewidths=0.8, zorder=6, clip_on=False)
-                unit = f" {a.delta_unit}" if a.delta_unit else ""; yl = labels.get(a.y, a.y)
-                text = f"Δ{yl}{' (EMA)' if a.ema else ''} @ {a.x} {_fx(xc)}: " + f"{d:+.2f}".replace("-", "−") + f"{unit}\n{labels.get(a.ours, a.ours)} {vo:.2f} | {labels.get(base, base)} {vb:.2f}"
-                src.append([pn if pn is not None else "", f"{a.ours} vs {base}", xc, "", "", "", "", "summary", vo, vb, d]); summ.append((pn, xc, vo, vb, d))
-        if inset or text: blocks.append((ax, pn, cur, styles, inset, text))
-    if legend == "above" and a.series:
-        from matplotlib.lines import Line2D
-        hs = [Line2D([], [], color=styles[s_]["color"], ls=styles[s_]["ls"], lw=styles[s_]["lw"]) for s_ in series_all]
-        ls_ = [labels.get(s_, s_) + (f" (n={n_by[s_]})" if n_by.get(s_, 0) > 1 else "") for s_ in series_all]
-        if a.ema: hs.append(Line2D([], [], color="#9a9a9a", lw=0.5, alpha=0.5)); ls_.append("Raw records (faint)")
-        fig.legend(hs, ls_, loc="upper center", ncol=min(len(hs), 6), fontsize=6.3, handlelength=1.6, bbox_to_anchor=(0.5, 1.0))
-        fig.tight_layout(pad=0.3, rect=(0, 0, 1, 0.94))
-    else:
-        if legend == "best" and a.series: flat[len(panels) - 1].legend(fontsize=6.3, loc="best", handlelength=1.2)
-        fig.tight_layout(pad=0.3)
-    if blocks:
+        info.append(dict(ax=ax, pn=pn, cur=cur, ann=ann, inset=inset, allx=allx))
+    from matplotlib.lines import Line2D
+    def handle(s_):
+        st = styles[s_]; sparse = min_pts < EMA_MIN_POINTS
+        return Line2D([], [], color=st["color"], ls=st["ls"], lw=st["lw"], marker=st["mk"], ms=2.8 if sparse else 2.4, markeredgewidth=0)
+    hs = [handle(s_) for s_ in series_all] if a.series else []; ls_ = [labels.get(s_, s_) for s_ in series_all] if a.series else []      # no "(n=3)": n goes into the caption
+    if use_ema and hs: hs.append(Line2D([], [], color=RAW_GREY, lw=0.8, alpha=0.4)); ls_.append("Raw seed means")
+    # ---- layout, then the overlays that need the final geometry: end labels, insets, legend
+    above = legend == "above" and bool(hs)
+    def legend_above():
+        n = len(hs); ncol = n if len(series_all) <= 6 else -(-n // 2)       # one row; wrap only with more than 6 series
+        for cs, hl in ((1.2, 1.6), (0.7, 1.2), (0.4, 0.9)):
+            lg = fig.legend(hs, ls_, loc="upper center", ncol=ncol, fontsize=FS, handlelength=hl, columnspacing=cs, bbox_to_anchor=(0.5, 1.0))
+            fig.canvas.draw()
+            if lg.get_window_extent().width <= 0.985 * fig.bbox.width or ncol == 1: break
+            lg.remove()
+        else:
+            ncol = -(-n // 2); notes.append(f"legend of {n} entries does not fit one row at this width: wrapped into two rows")
+            lg = fig.legend(hs, ls_, loc="upper center", ncol=ncol, fontsize=FS, handlelength=1.2, columnspacing=0.7, bbox_to_anchor=(0.5, 1.0)); fig.canvas.draw()
+        return lg
+    lg_above = None
+    if above:
+        lg_above = legend_above(); h_fig = lg_above.get_window_extent().height / fig.bbox.height
+        fig.tight_layout(pad=0.3, rect=(0, 0, 1, 1 - h_fig - 0.012))
+    else: fig.tight_layout(pad=0.3)
+    fig.canvas.draw(); rend = fig.canvas.get_renderer()
+    label_arts = {}
+    def place_end_labels():
+        for rec in info:
+            if not rec["ann"]: continue
+            ax = rec["ax"]; xc, vo, vb, d = rec["ann"]; axbb = ax.get_window_extent(rend); unit = f" {a.delta_unit}" if a.delta_unit else ""
+            txt = {a.ours: f"{labels.get(a.ours, a.ours)} {vo:.2f}", base: f"{labels.get(base, base)} {vb:.2f}", "__delta__": f"Δ {d:+.2f}{unit}".replace("-", "−")}
+            if id(ax) not in label_arts:
+                label_arts[id(ax)] = {}
+                for nm, (v, c) in ((a.ours, (vo, ACCENT)), (base, (vb, BASE_GREY)), ("__delta__", (min(vo, vb), "#333333"))):
+                    t = ax.annotate(txt[nm], (xc, v), xytext=(5, 0), textcoords="offset points", ha="left", va="center", fontsize=FS, color=c, fontweight="bold" if nm == a.ours else "normal",
+                                    linespacing=1.15, zorder=7, annotation_clip=False, gid="end-label",
+                                    arrowprops=dict(arrowstyle="-", lw=0.4, color=c, shrinkA=0.5, shrinkB=1.5, relpos=(0, 0.5)))
+                    t.arrow_patch.set_visible(False); label_arts[id(ax)][nm] = (t, v)
+                # widen the x range so the labels sit inside the axes, to the right of the LAST x of the panel (the markers may be earlier)
+                wmax = max(_text_bb(t, rend).width for t, _ in label_arts[id(ax)].values()) + 7 * fig.dpi / 72
+                f = np.log10 if a.logx else (lambda z: z); x0 = rec["allx"][0]; xmax = rec["allx"][-1]
+                if f(xmax) > f(x0):
+                    need = f(x0) + (f(xmax) - f(x0)) * axbb.width / max(axbb.width - wmax, 0.3 * axbb.width)
+                    ax.set_xlim(x0, 10 ** need if a.logx else need)
         fig.canvas.draw()
-        for ax, pn, cur, styles_, inset, text in blocks:
-            w_ = _place_blocks(fig, ax, cur, styles_, inset, text)
-            if w_: notes.append(f"panel {pn}: {w_}")
+        for rec in info:                                                                 # vertical de-collision of the two labels (display px, top to bottom)
+            if not rec["ann"] or id(rec["ax"]) not in label_arts: continue
+            ax = rec["ax"]; axbb = ax.get_window_extent(rend); xc = rec["ann"][0]; items = []
+            dx_pt = (ax.transData.transform((rec["allx"][-1], 0))[0] - ax.transData.transform((xc, 0))[0]) * 72 / fig.dpi + 5
+            for nm, (t, v) in label_arts[id(ax)].items():
+                y = ax.transData.transform((xc, v))[1]; h = _text_bb(t, rend).height; items.append([y - (0.01 if nm == "__delta__" else 0.0), h, t])       # the Δ line always sits below the two value labels
+            items.sort(key=lambda z: -z[0])
+            for it in items: it.append(it[0])
+            for _pass in range(3):                       # push down from the top, clamp into the axes, push back up from the bottom
+                for k in range(1, len(items)): items[k][3] = min(items[k][3], items[k - 1][3] - items[k - 1][1] / 2 - items[k][1] / 2 - 1.5)
+                for it in items: it[3] = min(max(it[3], axbb.y0 + it[1] / 2), axbb.y1 - it[1] / 2)
+                for k in range(len(items) - 2, -1, -1): items[k][3] = max(items[k][3], items[k + 1][3] + items[k + 1][1] / 2 + items[k][1] / 2 + 1.5)
+            for y, h, t, pos in items:
+                t.xyann = (dx_pt, (pos - y) * 72 / fig.dpi); t.arrow_patch.set_visible(not t.get_text().startswith("Δ") and (dx_pt > 9 or abs(pos - y) * 72 / fig.dpi > 4))       # a thin leader only when the label had to move away from its marker
+        fig.canvas.draw()
+    place_end_labels()
+    # insets: the corner with the fewest plotted samples, clear of the end labels
+    ins_pad = {}
+    for rec in info:
+        if not rec["inset"]: continue
+        ax = rec["ax"]; P, axbb = _frac_points(ax, rend)
+        obs = [_axes_fraction_rect(_text_bb(t, rend), axbb) for t, _ in label_arts.get(id(ax), {}).values()]
+        got = None
+        for w_, h_ in ((0.40, 0.34), (0.30, 0.28)):
+            sc, box, padded, _ = _best_corner(P, w_, h_, obs, left_room=0.19, bottom_room=0.19)
+            if sc <= 0.06: got = (box, padded); break
+        if got is None: notes.append(f"panel {rec['pn']}: no free corner for the inset (best one would still cover {sc:.0%} of the plotted samples), no inset"); continue
+        x0, x1, ylo, yhi = rec["inset"]; box, padded = got; ins_pad[id(ax)] = padded
+        ins = ax.inset_axes([box[0], box[1], box[2] - box[0], box[3] - box[1]]); ins.set_zorder(8)
+        for i, (sname, c) in enumerate(rec["cur"].items()):
+            m = (c["xs"] >= x0) & (c["xs"] <= x1); st = styles[sname]; ins.plot(c["xs"][m], c["sm"][m], lw=st["lw"] * 0.9, color=st["color"], ls=st["ls"], marker=st["mk"], ms=2.2, markeredgewidth=0)
+        ins.set_xlim(x0, x1); ins.set_ylim(ylo, yhi)
+        xt = np.linspace(x0, x1, 3); xt = np.round(xt) if all(float(v).is_integer() for v in rec["allx"]) else xt
+        ins.set_xticks(xt); ins.set_xticklabels([_fx(v) for v in xt]); ins.yaxis.set_major_locator(plt.MaxNLocator(4, min_n_ticks=3))
+        ins.tick_params(labelsize=FS, length=1.8, width=0.4, pad=1.2)                                     # inset ticks at the house size (>= 6 pt)
+        for sp_ in ins.spines.values(): sp_.set_visible(True); sp_.set_linewidth(0.5); sp_.set_color("#555")
+        ind = ax.indicate_inset_zoom(ins, edgecolor="#555555", linewidth=0.6); ind.set_zorder(6)
+        for cn in getattr(ind, "connectors", ()) or (): cn.set_linewidth(0.5); cn.set_color("#555555")
+    # legend inside the axes when a free corner exists (occupancy test), else one row above the panels
+    if legend == "auto" and hs:
+        best = None
+        for rec in info:
+            ax = rec["ax"]; P, axbb = _frac_points(ax, rend)
+            obs = [_axes_fraction_rect(_text_bb(t, rend), axbb) for t, _ in label_arts.get(id(ax), {}).values()] + ([ins_pad[id(ax)]] if id(ax) in ins_pad else [])
+            tmp = ax.legend(hs, ls_, fontsize=FS, loc="lower left", handlelength=1.4, labelspacing=0.3, borderaxespad=0); fig.canvas.draw()
+            bb = tmp.get_window_extent(rend); tmp.remove()
+            sc, box, padded, _ = _best_corner(P, bb.width / axbb.width, bb.height / axbb.height, obs)
+            if best is None or sc < best[0]: best = (sc, ax, box)
+        if best and best[0] <= 0.02:
+            sc, ax, box = best; ax.legend(hs, ls_, fontsize=FS, loc="lower left", bbox_to_anchor=(box[0], box[1]), bbox_transform=ax.transAxes, borderaxespad=0, handlelength=1.4, labelspacing=0.3)
+        else:
+            lg_above = legend_above(); h_fig = lg_above.get_window_extent().height / fig.bbox.height
+            fig.tight_layout(pad=0.3, rect=(0, 0, 1, 1 - h_fig - 0.012)); fig.canvas.draw(); place_end_labels()
+    elif legend == "best" and a.series: flat[len(panels) - 1].legend(fontsize=FS, loc="best", handlelength=1.2)
     for n_ in notes: print(f"[WARN] curves: {n_}")
-    for pn, xc, vo, vb, d in summ: print(f"annotated {pn if pn is not None else 'panel'}: Δ{a.y} @ {a.x} {_fx(xc)} = {d:+.2f} ({a.ours} {vo:.2f}, {base} {vb:.2f})")
-    band_txt = {"sd": "shaded band = ± s.d. over seeds", "minmax": "shaded band = min–max over seeds", "none": "single run per series"}[a.band]
+    for pn, xc, vo, vb, d in summ: print(f"annotated {pn if pn is not None else 'panel'}: Δ{a.y} @ {a.x} {_fx(xc)} = {d:+.2f} ({a.ours} {vo:.2f}, {base} {vb:.2f}; raw seed means)")
+    nmax = max(n_by.values()) if n_by else 1
+    band_txt = {"sd": "shaded band = ± s.d. over seeds", "minmax": "shaded band = min–max over seeds", "none": ("no band drawn" if nmax > 1 else "single run per series")}[a.band]
     cap = f"Curves of {a.y} vs. {a.x}; {band_txt}"
-    if a.ema: cap += f"; solid lines = EMA smoothing (α = {a.ema:g}) of the seed mean, faint lines = raw records"
-    if a.inset: cap += f"; inset and grey rectangle zoom on {a.inset}"
-    if a.annotate: cap += f"; circles mark the last {a.x} both series share, Δ = {a.ours} − {base} read from the {'smoothed ' if a.ema else ''}curves"
-    hdr = ["panel", "series", a.x, f"{a.y}_mean", f"{a.y}_sd", "n"] + ([f"{a.y}_smooth", "kind", "ours", "baseline", "delta"] if new else [])
+    if nmax > 1: cap += f"; n = {nmax} seeds per series" if len(set(n_by.values())) == 1 else "; seeds per series: " + ", ".join(f"{labels.get(k, k)} {v}" for k, v in n_by.items())
+    if use_ema: cap += f"; solid lines = EMA smoothing (α = {a.ema:g}, s_0 = first value) of the seed mean, faint grey lines = raw seed means"
+    elif a.ema: cap += f"; --ema {a.ema:g} not applied ({min_pts} points per series < {EMA_MIN_POINTS}), lines are the raw seed means"
+    if a.inset and any(r_["inset"] for r_ in info): cap += f"; inset and grey rectangle zoom on {a.inset}"
+    if a.annotate: cap += f"; circles mark the last {a.x} both series share; end labels and Δ = {a.ours} − {base} are the RAW seed means at that {a.x} (the EMA is for drawing only)"
+    hdr = ["panel", "series", a.x, f"{a.y}_mean", f"{a.y}_sd", "n"] + ([f"{a.y}_smooth", "kind", "ours", "baseline", "delta", "basis"] if new else [])
     finish(fig, a, src, hdr, root, cap + ".")
 
 
@@ -916,11 +1032,36 @@ def fig_bland_altman(a):
            f"Bland–Altman plot of {a.a} vs. {a.b}: bias {st['bias']:+.2f}{u} (solid), limits of agreement bias ± 1.96 SD = {st['lo']:+.2f} to {st['hi']:+.2f}{u} (dashed); n = {st['n']}.")
 
 
+_FULL_CMDS = ("main", "ablation", "seeds", "curves")          # full text width (seeds halves it); every other subcommand is a one-column figure
+
+def default_width_mm(root, kind):
+    """print width for --width-mm when it is not given: (mm, where it came from). kind = "full" | "col". From state.target.venue / family via
+    references/latex-templates.csv (CVPR: 174.6 / 82.5 mm); without a known venue the historical 183 / 88 mm."""
+    full, col, src = 183.0, 88.0, ""
+    try:
+        import yaml
+        st = yaml.safe_load(io.open(os.path.join(root, "research-state.yaml"), encoding="utf-8")) or {}
+        tgt = st.get("target") or {}
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import latex_check as lc
+        tpl = lc.pick_template(tgt.get("venue") or "", tgt.get("family") or "")
+        if tpl:
+            full = float(tpl["full_width_mm"]); col = float(tpl["single_col_mm"]) if tpl.get("twocolumn", "").lower() == "yes" else min(88.0, full)
+            src = f"state.target.venue {tgt.get('venue') or tgt.get('family')} -> latex-templates.csv row {tpl['key']}"
+    except Exception:
+        pass
+    return (full if kind == "full" else col), src
+
+def resolve_width(a):
+    if getattr(a, "width_mm", 0):
+        return
+    a.width_mm, src = default_width_mm(os.path.abspath(a.project), "full" if a.cmd in _FULL_CMDS else "col")
+    if src: print(f"[INFO] width: --width-mm not given, {a.width_mm:g} mm from {src}")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     for n in ("main", "ablation", "seeds", "curves"):
         p = sub.add_parser(n); p.add_argument("--project", default="."); p.add_argument("--out", required=True); p.add_argument("--metrics", default=""); p.add_argument("--labels", default="")
-        p.add_argument("--width-mm", type=float, default=183); p.add_argument("--height-in", type=float, default=2.6); p.add_argument("--logy", action="store_true"); p.add_argument("--ylabel", default=""); p.add_argument("--ours", default="")
+        p.add_argument("--width-mm", type=float, default=0.0, help="print width; default = the target venue's full text width (state.target.venue -> references/latex-templates.csv: CVPR 174.6 mm), 183 without a known venue"); p.add_argument("--height-in", type=float, default=2.6); p.add_argument("--logy", action="store_true"); p.add_argument("--ylabel", default=""); p.add_argument("--ours", default="")
         p.add_argument("--lower", default="", help="metrics where lower is better (comma list); default all higher")
         if n == "seeds": p.add_argument("--methods", default="")
         if n == "curves":
@@ -933,11 +1074,11 @@ def main():
             p.add_argument("--annotate", choices=["", "last"], default="", help="'last': markers + Δ text at the last x shared by --ours and the baseline")
             p.add_argument("--baseline", default="", help="baseline series, drawn dashed grey (default with --ours/--annotate: first series that is not ours)")
             p.add_argument("--ncols", type=int, default=0, help="panels per row (default: all in one row)"); p.add_argument("--free-y", action="store_true", help="every panel its own y range")
-            p.add_argument("--letters", action="store_true", help="panel titles '(a) name'"); p.add_argument("--legend", choices=["", "best", "above", "none"], default="", help="default: above when --ema/--inset/--annotate is given, else best")
+            p.add_argument("--letters", action="store_true", help="panel titles '(a) name'"); p.add_argument("--legend", choices=["", "auto", "best", "above", "none"], default="", help="default: auto (inside a free corner, else one row above) when --ema/--inset/--annotate is given, else best")
             p.add_argument("--delta-unit", default="", help="unit written after Δ in the annotation (pp)")
     for n, w in (("stems", 88), ("box", 88), ("hbar", 88)):
         p = sub.add_parser(n); p.add_argument("--project", default="."); p.add_argument("--out", required=True); p.add_argument("--labels", default=""); p.add_argument("--csv", required=True)
-        p.add_argument("--width-mm", type=float, default=w); p.add_argument("--height-in", type=float, default=2.8 if n == "stems" else 0.0, help="box / hbar: default grows with the number of groups")
+        p.add_argument("--width-mm", type=float, default=0.0, help="print width; default = the venue's column width (CVPR 82.5 mm), 88 mm without a known venue"); p.add_argument("--height-in", type=float, default=2.8 if n == "stems" else 0.0, help="box / hbar: default grows with the number of groups")
         p.add_argument("--xlabel", default=""); p.add_argument("--ylabel", default="")
         if n == "stems":
             p.add_argument("--item", required=True, help="column naming the item (backbone)"); p.add_argument("--x", required=True, help="baseline value column"); p.add_argument("--y", required=True, help="ours value column")
@@ -948,7 +1089,7 @@ def main():
         if n == "hbar": p.add_argument("--lower", action="store_true", help="lower is better (only changes which group is flagged best in the source CSV)"); p.add_argument("--fmt", default="{:+.2f}", help="value label format")
     for n in ("roc", "pr", "confusion", "calibration", "bland-altman"):
         p = sub.add_parser(n); p.add_argument("--project", default="."); p.add_argument("--out", required=True); p.add_argument("--csv", required=True)
-        p.add_argument("--width-mm", type=float, default=88); p.add_argument("--height-in", type=float, default={"roc": 3.0, "pr": 3.0, "confusion": 3.1, "calibration": 3.6, "bland-altman": 2.8}[n])
+        p.add_argument("--width-mm", type=float, default=0.0, help="print width; default = the venue's column width (CVPR 82.5 mm), 88 mm without a known venue"); p.add_argument("--height-in", type=float, default={"roc": 3.0, "pr": 3.0, "confusion": 3.1, "calibration": 3.6, "bland-altman": 2.8}[n])
         p.add_argument("--xlabel", default=""); p.add_argument("--ylabel", default="")
         if n in ("roc", "pr"):
             p.add_argument("--y-true", required=True, help="0/1 label column"); p.add_argument("--score", required=True, help="score column (higher = more positive)")
@@ -966,7 +1107,7 @@ def main():
     for p in sub.choices.values():
         p.add_argument("--synthetic", action="store_true", help="simulated / demo data: draw the SYNTHETIC DEMO watermark and tag figures.csv issues")
         p.add_argument("--no-watermark-check", action="store_true", dest="no_watermark_check", help="skip the data-provenance check (data kept outside results/ and runs/)")
-    a = ap.parse_args(); {"roc": fig_roc, "pr": fig_pr, "confusion": fig_confusion, "calibration": fig_calibration, "bland-altman": fig_bland_altman, "main": fig_main, "ablation": fig_ablation, "seeds": fig_seeds, "curves": fig_curves, "stems": fig_stems, "box": fig_box, "hbar": fig_hbar}[a.cmd](a)
+    a = ap.parse_args(); resolve_width(a); {"roc": fig_roc, "pr": fig_pr, "confusion": fig_confusion, "calibration": fig_calibration, "bland-altman": fig_bland_altman, "main": fig_main, "ablation": fig_ablation, "seeds": fig_seeds, "curves": fig_curves, "stems": fig_stems, "box": fig_box, "hbar": fig_hbar}[a.cmd](a)
 
 if __name__ == "__main__":
     main()

@@ -5,6 +5,9 @@
                                   [--index literature/lit_index.sqlite] [--pdf extra.pdf ...] [--net] [--from-dir <replay>]
   python figure_plan.py plan      --project . [--force]
   python figure_plan.py check     --project .                       (G5 of t2p.py runs it; exit = #FAIL)
+  python figure_plan.py add       --project . --role qualitative [--item "Fig 7"] [--kind figure|table] [--claim C2[;C3]] [--generator "..."] [--files figures/fig_cam]
+                                  [--reason "why this form"] [--width single|double] [--note "..."]
+  python figure_plan.py drop      --project . --item "Fig 3" --reason "why this figure is not drawn"
 
 exemplars: BM25 over the local corpus (lit_scout.py index, built when missing) with the query = project topic + prereg §1 sentence + claim statements,
         reduced to content terms. Venue filter = target venue + the top list of the family (cs_conf CVPR ICCV ECCV NeurIPS ICML ICLR; cs_journal TPAMI IJCV
@@ -20,6 +23,9 @@ plan:   paper/figure_plan.csv + .md from paper/claims.csv, prereg §0, the exemp
         (>= 3 methods x >= 2 metrics or >= 2 datasets of exact numbers -> table; trend / trade-off / per-item gains -> figure), generator command, the best-matching
         exemplar figure of the same role ("modelled on <paper> Fig N"). `files` = figures.csv paths (extension dropped; `x_a`, `x_b` panels are covered by `x`) that
         carry the row: check matches figures.csv by it (or by an optional figures.csv column plan_item). The plan is a draft you edit; --force overwrites it.
+add / drop: edit paper/figure_plan.csv (+ .md) without hand-editing the CSV. add: a row for a figure the claim-first plan did not propose (qualitative, CAM, efficiency ...);
+        the item number is the next free one when --item is omitted, --claim ids must exist in claims.csv, status becomes done when figures.csv already covers --files.
+        drop: status = dropped with the reason in `note` (check FAILs a dropped row without a note); a dropped row no longer needs drawing.
 check:  no plan WARN; < 3 exemplars WARN; planned figure not in figures.csv FAIL; dropped without note FAIL; figures.csv figure no row covers WARN;
         numeric claim no row carries WARN; claim_ids naming a claim that no longer exists FAIL."""
 import argparse, collections, csv, datetime, io, json, os, re, statistics, sys, urllib.parse
@@ -569,12 +575,73 @@ def plan(a):
         if r["kind"] == "figure" and any(covers(r["files"].lower(), s) for s in fstems): r["status"] = "done"
     write_csv(out, PLAN_COLS, rows)
     lines = report(root, st, rows, claims, ex_rows, fig_rows, shares)
+    write(os.path.join(root, "paper", "figure_plan.md"), "\n".join(plan_md(rows) + ["", "## 报告", ""] + [f"- {l}" for l in lines]) + "\n")
+    print(f"\nplan: {nf} 图 {nt} 表 -> paper/figure_plan.csv / .md（草稿：改完再画；画完登记 figures.csv，`files` 列对应）")
+
+
+def plan_md(rows):
     md = ["# 图表计划（figure_plan.py plan）", "", "草稿：先看 `literature/exemplars/thumbs/` 的缩略图，再改 `figure_plan.csv`（claims 先行；范文有而本文没有主张的图不画）。", "",
           "| item | kind | role | claims | 形式理由 | 生成命令 | 宽度 | 面板 | 位置 | 范文 | 状态 |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         md.append(f"| {r['item']} | {r['kind']} | {r['role']} | {r['claim_ids']} | {r['form_reason']} | `{r['generator']}` | {r['width']} | {r['panels']} | {r['page_hint']} | {r['exemplar']}<br>{r['exemplar_caption']}<br>{r['thumb']} | {r['status']} |")
-    write(os.path.join(root, "paper", "figure_plan.md"), "\n".join(md + ["", "## 报告", ""] + [f"- {l}" for l in lines]) + "\n")
-    print(f"\nplan: {nf} 图 {nt} 表 -> paper/figure_plan.csv / .md（草稿：改完再画；画完登记 figures.csv，`files` 列对应）")
+    return md
+
+
+def _item_key(t): return re.sub(r"[^a-z0-9]", "", (t or "").lower().replace("figure", "fig"))
+
+
+def _save_plan(root, rows):
+    """write figure_plan.csv and refresh the table of figure_plan.md (the '## 报告' section of the last `plan` run is kept)"""
+    write_csv(os.path.join(root, "paper", "figure_plan.csv"), PLAN_COLS, rows)
+    mp = os.path.join(root, "paper", "figure_plan.md"); old = read(mp) if os.path.exists(mp) else ""
+    tail = old[old.index("\n## 报告"):] if "\n## 报告" in old else ""
+    write(mp, "\n".join(plan_md(rows)) + "\n" + tail)
+
+
+def _load_plan(root):
+    pp = os.path.join(root, "paper", "figure_plan.csv")
+    if not os.path.exists(pp): say("FAIL", "paper/figure_plan.csv 不存在：先 figure_plan.py plan"); return None
+    return read_csv(pp)
+
+
+def drop(a):
+    root = os.path.abspath(a.project); rows = _load_plan(root)
+    if rows is None: return
+    if not (a.reason or "").strip(): say("FAIL", "--reason 不能为空：写明为什么不画（哪条主张不需要它）"); return
+    hit = [r for r in rows if _item_key(r.get("item")) == _item_key(a.item)]
+    if not hit: say("FAIL", f"计划里没有 {a.item!r}；现有: {[r.get('item') for r in rows]}"); return
+    r = hit[0]; was = r.get("status") or "planned"; r["status"] = "dropped"; r["note"] = a.reason.strip()
+    _save_plan(root, rows)
+    say("PASS", f"{r['item']} ({r.get('role')}) {was} -> dropped；note = {r['note']}")
+
+
+def add(a):
+    root = os.path.abspath(a.project); st = load_state(root); rows = _load_plan(root)
+    if rows is None: return
+    roles = ROLES + ["efficiency", "other"] if a.kind == "table" else ROLES
+    if a.role not in roles: say("FAIL", f"--role {a.role!r} 不在 {roles}"); return
+    cl = [c.strip() for c in re.split(r"[;,]", a.claim or "") if c.strip()]
+    ids = {c.get("claim_id") for c in read_csv(os.path.join(root, "paper", "claims.csv"))}
+    bad = [c for c in cl if c not in ids]
+    if bad: say("FAIL", f"--claim {bad} 不在 paper/claims.csv 里（现有: {sorted(i for i in ids if i)[:12]}）"); return
+    if a.item: item = a.item.strip()
+    else:
+        pre = "Fig" if a.kind == "figure" else "Table"; used = [int(m.group(1)) for r in rows for m in [re.match(rf"{pre}\s*(\d+)$", r.get("item") or "")] if m]
+        item = f"{pre} {max(used, default=0) + 1}"
+    if any(_item_key(r.get("item")) == _item_key(item) for r in rows): say("FAIL", f"{item} 已在计划里（drop 它再 add，或换个 --item）"); return
+    ex_rows = read_csv(os.path.join(root, "literature", "exemplars", "exemplars.csv")); fig_rows = read_csv(os.path.join(root, "literature", "exemplars", "exemplar_figures.csv"))
+    ref = pick_reference(ex_rows, fig_rows, a.role, a.kind, st, ROLE_TYPES.get(a.role, set())) if ex_rows and fig_rows else None
+    d = {"item": item, "kind": a.kind, "role": a.role, "claim_ids": ";".join(cl), "form_reason": a.reason or "手工加入（figure_plan.py add）：claims 先行的计划没有提出这张图",
+         "generator": a.generator, "files": a.files, "width": a.width or (ref["width"] if ref and ref["width"] else DEFAULT_WIDTH.get(a.role, "single")),
+         "panels": ref["panels"] if ref else 1, "page_hint": PAGE_HINT.get(a.role, "") if a.kind == "figure" else "", "exemplar": "", "exemplar_caption": "", "thumb": "", "status": "planned", "note": a.note}
+    if ref:
+        e = ref["_meta"]; short = (e["title"] or ref["paper_id"])[:40]
+        d["exemplar"] = f"仿 {short} Fig {ref['n']}（p.{ref['page']}，{ref['width'] or '宽度未知'}，{ref['panels']} 面板）" if a.kind == "figure" else f"仿 {short} Table {ref['n']}（p.{ref['page']}）"
+        d["exemplar_caption"] = ref["caption_first"]; d["thumb"] = ref["thumb"]
+    fstems = [os.path.splitext(r["file"].replace("\\", "/"))[0].lower() for r in read_csv(os.path.join(root, "figures.csv"))]
+    if a.kind == "figure" and any(covers(f.lower(), s_) for f in plan_files(d) for s_ in fstems): d["status"] = "done"
+    rows.append(d); _save_plan(root, rows)
+    say("PASS", f"{item} ({a.role}, {a.kind}) 加入计划，status={d['status']}" + (f"，claims {';'.join(cl)}" if cl else "，不挂主张") + ("" if a.files else "；--files 为空：check 会报「还没画」直到你在 CSV 的 files 列填上 figures.csv 里的路径"))
 
 
 def covers(entry, fstem):
@@ -660,8 +727,13 @@ def main():
     e.add_argument("--from-dir", default="", help="replay <dir>/openalex_cited.json instead of calling OpenAlex")
     p = sub.add_parser("plan"); p.add_argument("--project", default="."); p.add_argument("--force", action="store_true")
     c = sub.add_parser("check"); c.add_argument("--project", default=".")
+    ad = sub.add_parser("add"); ad.add_argument("--project", default="."); ad.add_argument("--item", default="", help="'Fig 7' / 'Table 3'; default = the next free number")
+    ad.add_argument("--role", required=True, help="|".join(ROLES)); ad.add_argument("--kind", choices=["figure", "table"], default="figure"); ad.add_argument("--claim", default="", help="claim id(s), ';' or ',' separated; empty = no claim (method / motivation / qualitative figures)")
+    ad.add_argument("--generator", default="", help="the command that draws it"); ad.add_argument("--files", default="", help="figures.csv path(s) without extension, ';' separated"); ad.add_argument("--reason", default="", help="why this form (form_reason)")
+    ad.add_argument("--width", default="", help="single|double"); ad.add_argument("--note", default="")
+    dr = sub.add_parser("drop"); dr.add_argument("--project", default="."); dr.add_argument("--item", required=True); dr.add_argument("--reason", required=True, help="why it is not drawn (goes to the note column)")
     a = ap.parse_args()
-    {"exemplars": exemplars, "plan": plan, "check": check}[a.cmd](a)
+    {"exemplars": exemplars, "plan": plan, "check": check, "add": add, "drop": drop}[a.cmd](a)
     print("\n" + ("ALL PASS" if FAILS == 0 else f"{FAILS} FAIL")); sys.exit(FAILS)
 
 

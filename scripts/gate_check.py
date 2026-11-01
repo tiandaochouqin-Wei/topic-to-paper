@@ -600,6 +600,18 @@ FAMILY_MUST_TYPES = {"cs_journal": ["overview", "qualitative", "comparison", "ab
 # types that >= 70% of published papers in the family carry (references/figure-norms.md, "按家族" table, 590-paper sample); nature families
 # are too heterogeneous for a must-list, so none is enforced there.
 
+def _vector_for(f, say_raster=False):
+    """the PDF whose text layer stands for registered figure `f`: the file itself when it is a .pdf; for a raster row (make_figure.py /
+    make_motivation.py / make_comparison.py register figures/x.png) the sibling x.pdf with the same stem. None when there is none (a raster-only
+    figure has no text layer: say_raster=True prints the WARN, the font size can only be judged by eye)."""
+    low = f.lower()
+    if low.endswith(".pdf"): return f if os.path.exists(f) else None
+    if not low.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff")) or not os.path.exists(f): return None
+    pdf = os.path.splitext(f)[0] + ".pdf"
+    if os.path.exists(pdf): return pdf
+    if say_raster: say("WARN", "dpi", f"{f} 未量字号（只有栅格）：没有同名 .pdf，印刷字号无法量，只能目测；用 make_figure.py / make_motivation.py 出图会同时写 .pdf")
+    return None
+
 def _dpi_print_fonts(a):
     """printed font size of every vector figure = span size x (print_width_mm / native width); smallest below min_font_pt -> FAIL, below +1 -> WARN"""
     try:
@@ -612,10 +624,11 @@ def _dpi_print_fonts(a):
         st = yaml.safe_load(read(a.state)); min_pt = float(st["target"].get("min_font_pt") or 5.0)
     except Exception:
         pass
-    bad = 0; checked = 0
+    bad = 0; checked = 0; seen = set()
     for row in csv.DictReader(open(a.figures, encoding="utf-8-sig")):
-        f = row["file"]
-        if not f.lower().endswith(".pdf") or not os.path.exists(f): continue
+        f = _vector_for(row["file"], say_raster=True)
+        if f is None or f in seen: continue
+        seen.add(f)
         try:
             doc = fitz.open(f); pg = doc[0]
             spans = [dict(sp, dir=l.get("dir", (1, 0))) for b in pg.get_text("dict")["blocks"] for l in b.get("lines", []) for sp in l["spans"] if sp["text"].strip()]   # rotation is a line property
@@ -649,10 +662,11 @@ def _dpi_fonts_embedded(a):
         from pypdf import PdfReader
     except ImportError:
         say("INFO", "dpi", "未安装 pypdf（pip install pypdf），跳过字体嵌入检查"); return
-    bad = 0; checked = 0
+    bad = 0; checked = 0; seen = set()
     for row in csv.DictReader(open(a.figures, encoding="utf-8-sig")):
-        f = row["file"]
-        if not f.lower().endswith(".pdf") or not os.path.exists(f): continue
+        f = _vector_for(row["file"])
+        if f is None or f in seen: continue
+        seen.add(f)
         checked += 1; t3 = set(); noemb = set()
         try:
             for pg in PdfReader(f).pages:
