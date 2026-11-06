@@ -159,7 +159,7 @@ _OUT = re.compile(r"\bout\d+\b|\b(?:in|feat|layer|blk|fc|conv)\d+\b", re.I)
 _PATH = re.compile(r"^[A-Za-z]:[\\/]|[\\/][\w.\- ]+[\\/]|\b[\w\-]+[\\/][\w\-]+[\\/][\w\-]+|\.(?:png|jpe?g|csv|json|pdf|npy|txt|ya?ml|pth?|ckpt|py|tex)\b", re.I)
 _CAMEL_UP = re.compile(r"\b[A-Z]{2,}[a-z]{3,}\b")                                           # IRraw
 _CAMEL_LOW = re.compile(r"\b[a-z]{3,}[A-Z][a-z]+")                                         # clsLoss
-_LEGIT3 = {"str", "spr", "spl", "scr", "thr", "shr", "sch", "chr", "phr", "ght", "tch", "nch", "rch", "lch", "rth", "nth", "lth", "rst", "nst", "lst", "mpt", "mpl", "mpr",
+_LEGIT3 = {"str", "spr", "spl", "scr", "thr", "shr", "sch", "chr", "phr", "ght", "wth", "tch", "nch", "rch", "lch", "rth", "nth", "lth", "rst", "nst", "lst", "mpt", "mpl", "mpr",
            "nds", "ndr", "ndl", "lph", "thm", "ntr", "ntl", "ctr", "ngl", "ngr", "ngth", "mbl", "mbr", "xpl", "xpr", "xtr", "rtl", "rgl", "rld", "rnt", "nct", "nsf", "nsp", "nsm", "bst",
            "dst", "ndw", "dth", "pth", "xth", "ghth", "rtn", "rch", "rnl", "ntf", "ngt", "nks", "lms", "rms", "rts", "rds", "rns", "lls", "tls", "rst", "mps", "sts", "nsc"}
 _BAD_V = re.compile(r"v[^aeiouy]|[bcdfghjkmnpqstwxz]v|j[^aeiouy]|q(?!u)")

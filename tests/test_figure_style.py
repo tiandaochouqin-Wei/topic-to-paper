@@ -42,6 +42,11 @@ def test_looks_like_code_has_no_false_positive_on_plain_figure_words():
     assert [w for w in WORDS if fs.looks_like_code(w, placeholders=False)] == []
 
 
+def test_looks_like_code_accepts_english_words_with_the_wth_cluster():
+    """2026-11-06 (tpami_medimg): 'growth' in the QUBIQ task name 'brain growth' was flagged as code-like because 'wth' was not a legitimate run"""
+    assert [w for w in ("growth", "growths", "length", "strength", "width", "depth") if fs.looks_like_code(w, placeholders=False)] == []
+
+
 def test_placeholder_axis_labels_only_count_as_labels():
     assert fs.looks_like_code("Value") and fs.looks_like_code("val")
     assert not fs.looks_like_code("value", placeholders=False)        # a word of running text / PDF words
