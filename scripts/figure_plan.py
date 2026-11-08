@@ -3,6 +3,7 @@
 
   python figure_plan.py exemplars --project . [--query "..."] [--k 8] [--min-year 2023] [--venues CVPR,ICCV,...] [--papers Z:/LDCT/papers]
                                   [--index literature/lit_index.sqlite] [--pdf extra.pdf ...] [--net] [--from-dir <replay>]
+                                  [--gallery DIR] [--gallery-k 4] [--gallery-roles motivation,method[,analysis]]
   python figure_plan.py plan      --project . [--force]
   python figure_plan.py check     --project .                       (G5 of t2p.py runs it; exit = #FAIL)
   python figure_plan.py add       --project . --role qualitative [--item "Fig 7"] [--kind figure|table] [--claim C2[;C3]] [--generator "..."] [--files figures/fig_cam]
@@ -18,6 +19,11 @@ exemplars: BM25 over the local corpus (lit_scout.py index, built when missing) w
         Per exemplar (PyMuPDF): every figure caption -> number, page, types (figure_norms rules), panels, width single|double (the image/drawing cluster just above
         the caption vs the page text width, > 0.6 = double), role motivation|method|main_result|ablation|qualitative|analysis; table captions -> main_result|ablation|
         efficiency|other; a 110 dpi thumbnail per figure (open them with the Read tool). Writes literature/exemplars/{exemplars.csv,exemplar_figures.csv,exemplars.md,thumbs/}.
+        --gallery (env T2P_GALLERY, else research-state.yaml figures.gallery) = a local clone of github.com/qwdwqfwq/topconf-paper-figure-gallery (never downloaded here):
+        per role --gallery-k Figure-1-type figures (motivation <- teaser|conceptual, method <- architecture|framework|pipeline, analysis <- taxonomy, survey projects only),
+        ranked by domain match on the title (--domain; not a filter: topic_match=no stays in as a style reference), BM25 over titles, acceptance tier (where the clone has one),
+        target-family venue, year, gallery score; one per paper. They are appended to exemplars.csv (source=gallery, url, topic_match, tier) and exemplar_figures.csv
+        (thumb = downscaled copy under literature/exemplars/thumbs/gallery_<id>.jpg), listed in exemplars.md and gallery_attribution.md; they do not count as the >= 3 exemplars.
 plan:   paper/figure_plan.csv + .md from paper/claims.csv, prereg §0, the exemplars and figures.csv. Claim first: a figure enters the plan through a claim, the
         prereg §0 phenomenon or the method overview. A role the exemplars have but no claim supports is reported (INFO), not planned. Per row: figure vs table
         (>= 3 methods x >= 2 metrics or >= 2 datasets of exact numbers -> table; trend / trade-off / per-item gains -> figure), generator command, the best-matching
@@ -28,7 +34,7 @@ add / drop: edit paper/figure_plan.csv (+ .md) without hand-editing the CSV. add
         drop: status = dropped with the reason in `note` (check FAILs a dropped row without a note); a dropped row no longer needs drawing.
 check:  no plan WARN; < 3 exemplars WARN; planned figure not in figures.csv FAIL; dropped without note FAIL; figures.csv figure no row covers WARN;
         numeric claim no row carries WARN; claim_ids naming a claim that no longer exists FAIL."""
-import argparse, collections, csv, datetime, io, json, os, re, statistics, sys, urllib.parse
+import argparse, collections, csv, datetime, io, json, math, os, re, statistics, sys, urllib.parse
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -46,7 +52,7 @@ DEFAULT_WIDTH = {"motivation": "double", "method": "double", "qualitative": "dou
 ROLE_TYPES = {"motivation": {"concept"}, "method": {"overview"}, "main_result": {"comparison", "bars", "curves"}, "ablation": {"ablation"},
               "qualitative": {"qualitative"}, "analysis": {"heatmap", "embedding", "curves", "failure"}}
 PLAN_COLS = ["item", "kind", "role", "claim_ids", "form_reason", "generator", "files", "width", "panels", "page_hint", "exemplar", "exemplar_caption", "thumb", "status", "note"]
-EX_COLS = ["paper_id", "title", "venue", "year", "cited", "fresh", "bm25", "source", "pdf"]
+EX_COLS = ["paper_id", "title", "venue", "year", "cited", "fresh", "bm25", "source", "pdf", "url", "topic_match", "tier"]   # url / topic_match / tier: gallery rows only (readers are dict-based)
 FIG_COLS = ["paper_id", "kind", "n", "page", "width", "role", "types", "panels", "caption_first", "caption", "thumb"]
 LOCAL_STOP = {"ours", "our", "relative", "strongest", "baseline", "baselines", "removing", "removes", "removed", "raises", "lowers", "less", "than", "more", "within", "seed",
               "seeds", "standard", "deviation", "deviations", "held", "out", "reported", "rather", "interpreted", "cells", "single", "run", "each", "term", "gain", "comes"}
@@ -393,6 +399,178 @@ def venue_norm(st, col):
     return None
 
 
+# ------------------------------------------------------------------ exemplars: top-conference Figure-1 gallery (style references)
+GALLERY_REPO = "https://github.com/qwdwqfwq/topconf-paper-figure-gallery"
+GALLERY_ROLES = {"motivation": ("teaser", "conceptual"), "method": ("architecture", "framework", "pipeline"), "analysis": ("taxonomy",)}
+GALLERY_VENUE = {"aaai": "AAAI", "acl": "ACL", "cvpr": "CVPR", "iclr": "ICLR", "icml": "ICML", "neurips": "NeurIPS"}
+TIER_RANK = {"": 0, "Spotlight": 1, "Oral": 2, "Best": 3}
+
+
+def is_gallery(e): return (e.get("source") or "") == "gallery"
+
+
+def gallery_dir(a, st, root):
+    """--gallery, else env T2P_GALLERY, else state.figures.gallery (relative to the project); '' = not configured"""
+    d = getattr(a, "gallery", "") or ""
+    if d: return os.path.abspath(d)
+    d = os.environ.get("T2P_GALLERY", "")
+    if d: return os.path.abspath(d)
+    d = str((st.get("figures") or {}).get("gallery") or "").strip()
+    return (d if os.path.isabs(d) else os.path.join(root, d)) if d else ""
+
+
+def load_gallery(d):
+    """data/figures.json of the gallery clone -> list of records with the fields used here, or None when missing/unreadable (untrusted data: only read)"""
+    try: recs = json.load(io.open(os.path.join(d, "data", "figures.json"), encoding="utf-8"))
+    except Exception: return None
+    if not isinstance(recs, list): return None
+    return [r for r in recs if isinstance(r, dict) and all(isinstance(r.get(k), str) and r.get(k) for k in ("id", "title", "image", "pattern", "venue"))]
+
+
+def tier_label(text):
+    t = (text or "").lower()
+    if re.search(r"best|outstanding|honou?rable", t): return "Best"
+    if re.search(r"\boral\b|top 5%", t): return "Oral"
+    if re.search(r"spotlight|top 25%", t): return "Spotlight"
+    return ""
+
+
+def gallery_tiers(d, recs):
+    """{id: 'Best'|'Oral'|'Spotlight'}. The shipped data/figures.json carries a string `tier` (oral | spotlight) on ~1 040 of its 3 449 records (ICLR / ICML / NeurIPS 2023-2025)
+    and an `award` (best | honorable) on a few; both are used (an award counts as Best). Fallback for ICLR records without one: the OpenReview venue string of the forum id in
+    the paper URL (data/openreview/*.json: 'ICLR 2025 Oral', 'notable top 5%' ...). The integer `tier` of data/selected.json is a topic tier, not an acceptance tier: ignored."""
+    out = {}; want = {}
+    for r in recs:
+        lab = tier_label(" ".join(str(r.get(k)) for k in ("tier", "award") if isinstance(r.get(k), str)))
+        if lab: out[r["id"]] = lab
+        m = re.search(r"openreview\.net/forum\?id=([\w-]+)", r.get("paper") or "")
+        if m and r["id"] not in out: want[m.group(1)] = r["id"]
+    if want:
+        import glob
+        for fn in glob.glob(os.path.join(d, "data", "openreview", "*.json")):
+            try: notes = json.load(io.open(fn, encoding="utf-8")).get("notes") or []
+            except Exception: continue
+            for n in notes:
+                if not isinstance(n, dict) or n.get("forum") not in want: continue
+                c = n.get("content"); v = c.get("venue") if isinstance(c, dict) else None
+                lab = tier_label(v.get("value") if isinstance(v, dict) else v)
+                if lab: out[want[n["forum"]]] = lab
+    return out
+
+
+def title_tokens(t): return [w for w in re.findall(r"[a-z0-9]+", (t or "").lower())]
+
+
+def bm25_titles(q_words, titles, k1=1.5, b=0.75):
+    """plain BM25 of the query words (singular/plural folded) over a list of titles -> [score]"""
+    stem = lambda w: w[:-1] if len(w) > 3 and w.endswith("s") else w
+    docs = [[stem(w) for w in title_tokens(t)] for t in titles]; n = len(docs) or 1; avg = (sum(map(len, docs)) / n) or 1
+    df = collections.Counter(w for dd in docs for w in set(dd)); qs = list(dict.fromkeys(stem(w) for w in q_words))
+    out = []
+    for dd in docs:
+        tf = collections.Counter(dd); s = 0.0
+        for w in qs:
+            if tf[w]: s += math.log(1 + (n - df[w] + 0.5) / (df[w] + 0.5)) * tf[w] * (k1 + 1) / (tf[w] + k1 * (1 - b + b * len(dd) / avg))
+        out.append(s)
+    return out
+
+
+def make_thumb(src, dst, maxside=900):
+    """downscaled JPEG copy (<= maxside px on the long side); False when the image cannot be read"""
+    try:
+        from PIL import Image
+        with Image.open(src) as im:
+            im = im.convert("RGB"); w, h = im.size; s = min(1.0, maxside / max(w, h))
+            if s < 1.0: im = im.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+            os.makedirs(os.path.dirname(dst), exist_ok=True); im.save(dst, "JPEG", quality=85)
+        return True
+    except Exception:
+        return False
+
+
+def pick_gallery(a, st, root, d, recs, q_words, roles, thumbs):
+    """-> (ex rows, fig rows, attribution records) for the Figure-1 gallery. Per role the top --gallery-k records by
+    (domain match on the title, BM25 over titles in 4 buckets, tier, target-family venue, newer year, gallery score); one record per paper, no near-identical titles;
+    records without a domain match stay in as style references (topic_match=no)."""
+    fam = target_family(st); tvn = norm((st.get("target") or {}).get("venue")); tiers = gallery_tiers(d, recs)
+    ex_rows = []; fig_rows = []; attr = []; used_papers = set(); used_toks = []; droot = os.path.realpath(d)
+    # a vision / medical paper must not take its Figure-1 references from NLP venues: on the RGB-IR fusion trial "multimodal fusion"
+    # in ACL titles (video-language, fake-news detection) outranked every vision paper. ACL is kept only for an NLP target or --gallery-venues.
+    nlp_target = bool(re.search(r"\b(acl|emnlp|naacl|coling|tacl)\b", str((st.get("target") or {}).get("venue") or ""), re.I))
+    venues = {v.strip().lower() for v in (a.gallery_venues or "").split(",") if v.strip()} or (set(GALLERY_VENUE) if nlp_target else set(GALLERY_VENUE) - {"acl"})
+    for role in roles:
+        pats = GALLERY_ROLES[role]; pool = [r for r in recs if r["pattern"] in pats and r["venue"].lower() in venues]
+        bm = bm25_titles(q_words, [r["title"] for r in pool]); top = max(bm, default=0)
+        def key(i):
+            r = pool[i]; v = r["venue"].lower()
+            vpref = (3 if tvn and norm(r["venue"]) in tvn and len(norm(r["venue"])) >= 3 else 0) + (2 if fam == "cs_conf" and v == "cvpr" else 1 if fam == "cs_conf" and v in ("iclr", "icml", "neurips") else 0)
+            topic = int(bool(domain_ok(a.domain, r["title"], "", q_words)))
+            sc = r.get("score"); sc = float(sc) if isinstance(sc, (int, float)) else 0.0
+            yr = r.get("year") if isinstance(r.get("year"), int) else 0
+            return (topic, int(round(4 * bm[i] / top)) if top > 0 else 0, TIER_RANK[tiers.get(r["id"], "")], vpref, yr, sc)
+        got = 0
+        for i in sorted(range(len(pool)), key=key, reverse=True):
+            if got >= a.gallery_k: break
+            r = pool[i]; pk = r.get("paper") or norm(r["title"]); toks = set(title_tokens(r["title"]))
+            if pk in used_papers or any(len(toks & u) / max(1, len(toks | u)) >= 0.7 for u in used_toks): continue
+            src = os.path.realpath(os.path.join(d, r["image"]))
+            if os.path.commonpath([droot, src]) != droot or not os.path.isfile(src): continue
+            sid = re.sub(r"[^\w.-]+", "_", r["id"])[:80]; dst = os.path.join(thumbs, f"gallery_{sid}.jpg")
+            if not make_thumb(src, dst): say("WARN", f"画廊图 {r['id']} 打不开，跳过"); continue
+            used_papers.add(pk); used_toks.append(toks); got += 1
+            ven = GALLERY_VENUE.get(r["venue"].lower(), r["venue"]); yr = str(r.get("year") or ""); tier = tiers.get(r["id"], ""); title = re.sub(r"\s+", " ", r["title"]).strip()
+            topic = "yes" if key(i)[0] else "no"; pid = f"gallery_{sid}"
+            ex_rows.append({"paper_id": pid, "title": title, "venue": ven, "year": yr, "cited": "", "fresh": 0, "bm25": round(bm[i], 3), "source": "gallery", "pdf": "",
+                            "url": r.get("paper") or "", "topic_match": topic, "tier": tier})
+            w, h = r.get("w"), r.get("h"); wide = isinstance(w, int) and isinstance(h, int) and h > 0 and w / h >= 1.5
+            cap = f"[gallery, {ven} {yr}{', ' + tier if tier else ''}] {title}"
+            fig_rows.append({"paper_id": pid, "kind": "fig", "n": 1, "page": 1, "width": "double" if wide else "single", "role": role, "types": r["pattern"], "panels": 1,
+                             "caption_first": cap, "caption": cap, "thumb": os.path.relpath(dst, root).replace("\\", "/")})
+            attr.append({"id": r["id"], "title": title, "authors": ", ".join(map(str, r["authors"])) if isinstance(r.get("authors"), list) else str(r.get("authors") or ""),
+                         "venue": ven, "year": yr, "url": r.get("paper") or "", "thumb": fig_rows[-1]["thumb"], "role": role, "pattern": r["pattern"]})
+    return ex_rows, fig_rows, attr
+
+
+def gallery_attribution_md(attr, d):
+    L = ["# Gallery images used as design references", "",
+         f"Copied (downscaled to <= 900 px) from the local clone `{d}` of {GALLERY_REPO} into `literature/exemplars/thumbs/`. They are Figure 1 / overview figures of the papers below.", "",
+         "Image © the original authors; used as a design reference only (gallery: " + GALLERY_REPO + ", images policy: IMAGES_POLICY.md). Do not copy them into the manuscript or the submission package.", ""]
+    for x in attr:
+        L += [f"- **{x['title']}** — {x['authors']}. {x['venue']} {x['year']}. {x['url']}  ", f"  gallery id `{x['id']}`, role {x['role']} ({x['pattern']}), file `{x['thumb']}`"]
+    return "\n".join(L) + "\n"
+
+
+def gallery_md(g_ex, g_fig, d):
+    role = {f["paper_id"]: f for f in g_fig}
+    L = ["", "## Gallery (Figure 1 style references)", "", f"来源 `{d}`（{GALLERY_REPO}）。只覆盖主图型图（motivation / method），没有结果图、没有医学刊物；`topic_match=no` 只借版式。版权属原作者，见 gallery_attribution.md。", "",
+         "| role | pattern | venue | year | tier | topic_match | title | thumb |", "|---|---|---|---|---|---|---|---|"]
+    for e in g_ex:
+        f = role[e["paper_id"]]; L.append(f"| {f['role']} | {f['types']} | {e['venue']} | {e['year']} | {e['tier']} | {e['topic_match']} | {e['title'][:80]} | {f['thumb']} |")
+    return L
+
+
+def gallery_rows(a, st, root, thumbs):
+    """-> (ex rows, fig rows, (summary line, dir)); writes literature/exemplars/gallery_attribution.md. Nothing is downloaded: a missing clone gives one INFO line."""
+    outdir = os.path.dirname(thumbs); ap = os.path.join(outdir, "gallery_attribution.md")
+    for f in (os.listdir(thumbs) if os.path.isdir(thumbs) else []):          # a re-run replaces the gallery picks of the last run
+        if f.startswith("gallery_") and f.endswith(".jpg"): os.remove(os.path.join(thumbs, f))
+    if os.path.exists(ap): os.remove(ap)
+    d = gallery_dir(a, st, root); clone = f"git clone --depth 1 {GALLERY_REPO} <dir>"
+    recs = load_gallery(d) if d else None
+    if recs is None:
+        say("INFO", ("画廊 " + d + " 不存在或读不了（缺 data/figures.json）" if d else "没配画廊（--gallery / 环境变量 T2P_GALLERY / research-state.yaml figures.gallery）") + f"：主图型范文（motivation / method）可先 `{clone}`，再传 --gallery；本次不加画廊行")
+        return [], [], ("", d)
+    roles = [r.strip() for r in (a.gallery_roles or "").split(",") if r.strip()] or ["motivation", "method"] + (["analysis"] if st.get("branch") == "survey" else [])
+    bad = [r for r in roles if r not in GALLERY_ROLES]
+    if bad: say("WARN", f"--gallery-roles {bad} 不在 {list(GALLERY_ROLES)}，忽略"); roles = [r for r in roles if r in GALLERY_ROLES]
+    q_words = [w for w in lit_scout.terms(build_query(a, st, root))[1] if w not in LOCAL_STOP]
+    g_ex, g_fig, attr = pick_gallery(a, st, root, d, recs, q_words, roles, thumbs)
+    if attr: write(ap, gallery_attribution_md(attr, d))
+    cnt = collections.Counter(f["role"] for f in g_fig); nt = sum(e["topic_match"] == "yes" for e in g_ex)
+    line = "gallery: " + " + ".join(f"{cnt[r]} {r}" for r in roles) + f" references ({nt} topic-matched, rest style-only) from {d}"
+    return g_ex, g_fig, (line, d)
+
+
 def exemplars(a):
     root = os.path.abspath(a.project); st = load_state(root)
     outdir = os.path.join(root, "literature", "exemplars"); thumbs = os.path.join(outdir, "thumbs"); os.makedirs(thumbs, exist_ok=True)
@@ -411,12 +589,14 @@ def exemplars(a):
         for f in figs:
             if f["thumb"]: f["thumb"] = os.path.relpath(f["thumb"], root).replace("\\", "/")
         fig_rows += figs
-    write_csv(os.path.join(outdir, "exemplars.csv"), EX_COLS, ex_rows); write_csv(os.path.join(outdir, "exemplar_figures.csv"), FIG_COLS, fig_rows)
-    md, summary = exemplars_md(st, stats, ex_rows, fig_rows); write(os.path.join(outdir, "exemplars.md"), md)
+    g_ex, g_fig, g_line = gallery_rows(a, st, root, thumbs)
+    write_csv(os.path.join(outdir, "exemplars.csv"), EX_COLS, ex_rows + g_ex); write_csv(os.path.join(outdir, "exemplar_figures.csv"), FIG_COLS, fig_rows + g_fig)
+    md, summary = exemplars_md(st, stats, ex_rows, fig_rows); write(os.path.join(outdir, "exemplars.md"), md + (chr(10).join(gallery_md(g_ex, g_fig, g_line[1])) + chr(10) if g_ex else ""))
     n = len(ex_rows); nf = sum(r["kind"] == "fig" for r in fig_rows); nt = len(fig_rows) - nf
     print(f"\nexemplars: {n} 篇（用户给的 {sum(r['source'] == 'user' for r in ex_rows)}）, {nf} 图 / {nt} 表 -> {os.path.relpath(outdir, root)}")
     print(f"候选 {stats['cand']}，无本地 PDF 跳过 {stats['skipped_nopdf']}，引用不足淘汰 {stats['dropped_cit']}，引用未知保留 {stats['unknown_cit']}，题材不符淘汰 {stats.get('off_domain', 0)}，PDF 打不开 {unreadable}")
     print(chr(10).join(summary))
+    if g_line[0]: print(g_line[0])
     if n < 3: say("WARN", f"范文只有 {n} 篇（< 3）：调 --query / --min-year / --venues，或用 --pdf 补；不足时 figure-norms.md 是刊物层面的退路")
     else: say("PASS", f"{n} 篇范文；先用 Read 工具打开 literature/exemplars/thumbs/ 里的缩略图，再 `figure_plan.py plan`")
 
@@ -486,11 +666,36 @@ def pick_reference(ex_rows, fig_rows, role, kind, st, wanted):
     return r
 
 
+def choose_reference(role, kind, st, wanted, ex_rows, fig_rows):
+    """-> (ref, from_gallery). Corpus exemplars first; the Figure-1 gallery only fills the motivation / method figure rows when the corpus has no figure of that role,
+    its thumbnail is missing, or (method) it has fewer than 2 panels"""
+    corpus = [e for e in ex_rows if not is_gallery(e)]; gal = [e for e in ex_rows if is_gallery(e)]
+    cids = {e["paper_id"] for e in corpus}
+    ref = pick_reference(corpus, [r for r in fig_rows if r["paper_id"] in cids], role, kind, st, wanted) if corpus else None
+    if gal and kind == "figure" and role in ("motivation", "method") and (ref is None or not ref.get("thumb") or (role == "method" and int(ref["panels"] or 1) < 2)):
+        meta = {e["paper_id"]: e for e in gal}; order = {e["paper_id"]: i for i, e in enumerate(gal)}
+        cands = [r for r in fig_rows if r["kind"] == "fig" and r["role"] == role and r["paper_id"] in meta and r.get("thumb")]
+        if cands:
+            g = min(cands, key=lambda r: (meta[r["paper_id"]].get("topic_match") != "yes", order[r["paper_id"]])); g["_meta"] = meta[g["paper_id"]]
+            return g, True
+    return ref, False
+
+
+def fill_reference(d, ref, gal, kind):
+    """exemplar / exemplar_caption / thumb of a plan row from the chosen reference"""
+    e = ref["_meta"]; short = (e["title"] or ref["paper_id"])[:40]
+    if gal: d["exemplar"] = f"仿 {short} ({e['venue']} {e['year']}, gallery, {'主题相同' if e.get('topic_match') == 'yes' else '仅版式参考'})"
+    elif kind == "figure": d["exemplar"] = f"仿 {short} Fig {ref['n']}（p.{ref['page']}，{ref['width'] or '宽度未知'}，{ref['panels']} 面板）"
+    else: d["exemplar"] = f"仿 {short} Table {ref['n']}（p.{ref['page']}）"
+    d["exemplar_caption"] = ref["caption_first"]; d["thumb"] = ref["thumb"]
+
+
 def plan(a):
     root = os.path.abspath(a.project); st = load_state(root); out = os.path.join(root, "paper", "figure_plan.csv")
     if os.path.exists(out) and not a.force:
         say("FAIL", "paper/figure_plan.csv 已存在（计划是你改过的草稿）：--force 才覆盖"); return
-    ex_rows = read_csv(os.path.join(root, "literature", "exemplars", "exemplars.csv")); fig_rows = read_csv(os.path.join(root, "literature", "exemplars", "exemplar_figures.csv"))
+    all_ex = read_csv(os.path.join(root, "literature", "exemplars", "exemplars.csv")); all_fig = read_csv(os.path.join(root, "literature", "exemplars", "exemplar_figures.csv"))
+    ex_rows = [e for e in all_ex if not is_gallery(e)]; cids = {e["paper_id"] for e in ex_rows}; fig_rows = [r for r in all_fig if r["paper_id"] in cids]   # gallery rows are style references: no part in shares / counts
     claims = load_claims(root); ph, _ = prereg_parts(root); res = st.get("results") or {}
     main = csv_info(root, res.get("main_table") or "results/main.csv"); abl = csv_info(root, res.get("ablation_table") or "results/ablation.csv")
     main_rel = res.get("main_table") or "results/main.csv"; abl_rel = res.get("ablation_table") or "results/ablation.csv"
@@ -508,14 +713,13 @@ def plan(a):
     seeds = (res.get("min_seeds") or 0) >= 2 or len((st.get("experiments") or {}).get("seeds") or []) >= 2 or len({r.get("seed") for r in main["rows"]}) > 1
     rows = []
     def add(role, kind, claim_ids, reason, gen, files, wanted, note=""):
-        ref = pick_reference(ex_rows, fig_rows, role, kind, st, wanted) if ex_rows else None
+        ref, gal = choose_reference(role, kind, st, wanted, all_ex, all_fig)
         d = {"item": "", "kind": kind, "role": role, "claim_ids": ";".join(claim_ids), "form_reason": reason, "generator": gen, "files": files,
              "width": (ref["width"] if ref and ref["width"] else DEFAULT_WIDTH.get(role, "single")), "panels": (ref["panels"] if ref else (2 if role == "ablation" and kind == "figure" else 1)),
              "page_hint": PAGE_HINT[role] if kind == "figure" or role != "method" else "", "exemplar": "", "exemplar_caption": "", "thumb": "", "status": "planned", "note": note}
-        if ref:
-            e = ref["_meta"]; short = (e["title"] or ref["paper_id"])[:40]
-            d["exemplar"] = f"仿 {short} Fig {ref['n']}（p.{ref['page']}，{ref['width'] or '宽度未知'}，{ref['panels']} 面板）" if kind == "figure" else f"仿 {short} Table {ref['n']}（p.{ref['page']}）"
-            d["exemplar_caption"] = ref["caption_first"]; d["thumb"] = ref["thumb"]
+        if ref: fill_reference(d, ref, gal, kind)
+        if ref and gal and n_ex: d["note"] = (note + "；" if note else "") + "范文里没有可用的同角色图（缺图 / 缩略图 / 面板太少），用画廊版式参考"
+        if ref: pass
         elif n_ex: d["note"] = (note + "；" if note else "") + "范文里没有同角色的" + ("图" if kind == "figure" else "表") + "，按 references/figure-norms.md 的刊物常态"
         rows.append(d)
     # motivation
@@ -630,14 +834,11 @@ def add(a):
         item = f"{pre} {max(used, default=0) + 1}"
     if any(_item_key(r.get("item")) == _item_key(item) for r in rows): say("FAIL", f"{item} 已在计划里（drop 它再 add，或换个 --item）"); return
     ex_rows = read_csv(os.path.join(root, "literature", "exemplars", "exemplars.csv")); fig_rows = read_csv(os.path.join(root, "literature", "exemplars", "exemplar_figures.csv"))
-    ref = pick_reference(ex_rows, fig_rows, a.role, a.kind, st, ROLE_TYPES.get(a.role, set())) if ex_rows and fig_rows else None
+    ref, gal = choose_reference(a.role, a.kind, st, ROLE_TYPES.get(a.role, set()), ex_rows, fig_rows) if ex_rows and fig_rows else (None, False)
     d = {"item": item, "kind": a.kind, "role": a.role, "claim_ids": ";".join(cl), "form_reason": a.reason or "手工加入（figure_plan.py add）：claims 先行的计划没有提出这张图",
          "generator": a.generator, "files": a.files, "width": a.width or (ref["width"] if ref and ref["width"] else DEFAULT_WIDTH.get(a.role, "single")),
          "panels": ref["panels"] if ref else 1, "page_hint": PAGE_HINT.get(a.role, "") if a.kind == "figure" else "", "exemplar": "", "exemplar_caption": "", "thumb": "", "status": "planned", "note": a.note}
-    if ref:
-        e = ref["_meta"]; short = (e["title"] or ref["paper_id"])[:40]
-        d["exemplar"] = f"仿 {short} Fig {ref['n']}（p.{ref['page']}，{ref['width'] or '宽度未知'}，{ref['panels']} 面板）" if a.kind == "figure" else f"仿 {short} Table {ref['n']}（p.{ref['page']}）"
-        d["exemplar_caption"] = ref["caption_first"]; d["thumb"] = ref["thumb"]
+    if ref: fill_reference(d, ref, gal, a.kind)
     fstems = [os.path.splitext(r["file"].replace("\\", "/"))[0].lower() for r in read_csv(os.path.join(root, "figures.csv"))]
     if a.kind == "figure" and any(covers(f.lower(), s_) for f in plan_files(d) for s_ in fstems): d["status"] = "done"
     rows.append(d); _save_plan(root, rows)
@@ -694,7 +895,7 @@ def report(root, st, rows, claims, ex_rows, fig_rows, shares):
 def check(a):
     root = os.path.abspath(a.project); pp = os.path.join(root, "paper", "figure_plan.csv")
     if not os.path.exists(pp): say("WARN", "没有图表计划（figure_plan.py exemplars → plan）"); return
-    n_ex = len(read_csv(os.path.join(root, "literature", "exemplars", "exemplars.csv")))
+    n_ex = sum(not is_gallery(e) for e in read_csv(os.path.join(root, "literature", "exemplars", "exemplars.csv")))   # gallery rows are style references, not same-topic exemplars
     if n_ex < 3: say("WARN", f"literature/exemplars/exemplars.csv 只有 {n_ex} 篇范文（< 3）：图表只对照了刊物常态，没有同主题高质量论文作参考")
     rows = read_csv(pp); claims = read_csv(os.path.join(root, "paper", "claims.csv")); ids = {c["claim_id"] for c in claims if c.get("claim_id")}
     figs = read_csv(os.path.join(root, "figures.csv")); bad = 0
@@ -721,7 +922,10 @@ def check(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    e = sub.add_parser("exemplars"); e.add_argument("--project", default="."); e.add_argument("--query", default=""); e.add_argument("--domain", default="", help="'a|b, c|d': every comma group must match title+abstract"); e.add_argument("--k", type=int, default=8); e.add_argument("--min-year", type=int, default=2023)
+    e = sub.add_parser("exemplars"); e.add_argument("--gallery", default="", help="local clone of the top-conference Figure-1 gallery (default: env T2P_GALLERY, else research-state.yaml figures.gallery)")
+    e.add_argument("--gallery-k", type=int, default=4, help="gallery references per role"); e.add_argument("--gallery-roles", default="", help="motivation,method[,analysis] (default: motivation,method; + analysis for a survey)")
+    e.add_argument("--gallery-venues", default="", help="comma list of gallery venues to draw from (default: all but ACL; ACL included when the target venue is an NLP venue)")
+    e.add_argument("--project", default="."); e.add_argument("--query", default=""); e.add_argument("--domain", default="", help="'a|b, c|d': every comma group must match title+abstract"); e.add_argument("--k", type=int, default=8); e.add_argument("--min-year", type=int, default=2023)
     e.add_argument("--venues", default=""); e.add_argument("--papers", default=os.environ.get("T2P_PAPERS", "Z:/LDCT/papers")); e.add_argument("--index", default="literature/lit_index.sqlite")
     e.add_argument("--pdf", action="append", default=[], help="a paper you want as an exemplar (repeatable)"); e.add_argument("--net", action="store_true", help="OpenAlex citation counts (the quality filter)")
     e.add_argument("--from-dir", default="", help="replay <dir>/openalex_cited.json instead of calling OpenAlex")
