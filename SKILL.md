@@ -15,7 +15,8 @@ license: MIT
 | 用户的话 | Claude 的动作 |
 |---|---|
 | "帮我做一篇 X 的综述" / "write a survey on X" | 走 **综述分支** S0→S6（下文），从 S0 开始 |
-| "用 topic-to-paper 开始 X 方向" / "我想做 X 的方法论文" | 走 **研究分支** P0→P8，从 P0 开始 |
+| "用 topic-to-paper 开始 X 方向" | 走 **研究分支** P0→P8，从 P0 开始 |
+| 方法论文（提出新方法并在公认基准上赢强基线） | `init --paper-type method`，全程照 [references/method-track.md](references/method-track.md)，多三道关口 G1c / G2m / G4m |
 | "这是我的稿子 <路径>，帮我过一遍" | `t2p.py init --entry have_draft`（已有项目则把 state.project.entry 改成 have_draft）→ 稿子转 paper/manuscript.md → 判断是综述还是研究稿 → 跑对应分支的写作关口（G6 或 S5）→ 报告。G1b–G5 显示 N/A 是正常的 |
 | "收到审稿意见了" | entry 改 have_reviews（新项目 `init --entry have_reviews`）→ 意见逐条进 paper/review_log.md → P7/S6 修订分支，用 `nature-response` |
 | "resume X" / "继续 X 项目" | `t2p.py status`（显示上次 check 写回的状态板）→ 从第一道未过关口继续；状态可疑就重跑 `t2p.py check` |
@@ -38,12 +39,12 @@ license: MIT
 {project}/
 ├── research-state.yaml      # 唯一状态源；branch: research | survey
 ├── prereg.md | protocol.md  # 研究 / 综述 的预注册
-├── literature/              # corpus.csv  gap_map.md  pdf/
+├── literature/
 ├── runs/ results/           # 研究分支
-├── coding/ tables/          # 综述分支：screening_sheet.csv  coded.csv
+├── coding/ tables/          # 综述分支
 ├── figures/ figures.csv
-├── paper/                   # manuscript.md  claims.csv  numbers.csv  refs.bib
-└── submission/              # guide.txt  cover_letter.md  blind.md …
+├── paper/
+└── submission/
 ```
 
 Claude 的第一步永远是 `python <skill>/scripts/t2p.py init --project <dir> --venue "<刊>" --field <cv|ml|medimg|nature> --entry <topic_only|topic_plus_data|have_results|have_draft|have_reviews>`（已存在则跳过），最后一步永远是 `t2p.py check --project <dir> --net` 并把状态板翻译成汇报。`check` 会把每道关口的 status/evidence/checked 写回 state.gates，`status` 读它；**state.gates 一律不手工改**，预注册/协议的 sha256 用 `t2p.py lock` 写。

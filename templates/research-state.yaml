@@ -6,6 +6,7 @@ project:
   topic: ""
   started: ""              # YYYY-MM-DD
   entry: ""                # topic_only | topic_plus_data | have_results | have_draft | have_reviews
+  paper_type: analysis     # analysis（默认，诊断/测量类论文）| method（方法论文：多 G1c / G2m / G4m 三道关口，见 references/method-track.md）
 
 target:
   venue: ""
@@ -242,3 +243,26 @@ survey:                     # 综述分支（branch: survey 时填），scripts/
 # gate_check.py 读取的两个列表
 acronym_ok: []              # 不需展开的缩略语：期刊名、品牌名、单位（GB, GPU 已内置）
 blind_terms: []             # 盲稿中不得出现的词：作者姓、单位、城市、基金号
+
+# 方法轨道（project.paper_type: method 时才生效；analysis 项目忽略这一块）。规则与顺序见 references/method-track.md，脚本 scripts/method_track.py
+method:                                   # 方法轨道
+  primary_metric: ""                      # 默认 results.primary_metric
+  primary_direction: ""                   # higher | lower；空 = 由 results.primary_direction / metric_direction.py 推
+  min_effect: 1.0                         # 值得写一篇方法论文的最小提升（指标单位）；依据写在 min_effect_basis
+  min_effect_basis: ""                    # 如 "近两年同基准上 SOTA 逐篇提升的中位数 1.2 AP（mined/baselines.csv）"
+  benchmark: {name: "", split_source: "", metric_source: ""}   # 公认基准、官方划分与评测脚本的出处
+  baseline: {name: "", code: "", published: {value: null, source: ""}, tol: null}   # 最强的有代码已发表方法；published.value 是它论文里在该基准上的数
+  splits:
+    dev:     {tag: dev,     files: []}    # 开发集（含 train/val）：自由迭代
+    confirm: {tag: confirm, files: [], sha256: ""}   # 验证集（官方 test 或留出集）：冻结前不许评测；sha256 由 `method_track.py init` 写
+  headroom:
+    k_sd: 3                               # 提升空间要 >= k_sd x 基线 seed s.d. 且 >= min_effect
+    oracle: {desc: "", run_glob: "", key: ""}          # 把瞄准的瓶颈"理想地解决"之后的上界（GT 路由、oracle 选择、域内上界…），dev 上评测
+    cheap_fixes: []                       # [{name: "数据增强", run_glob: "runs/aug_dev_s*", key: ""}, ...] 最便宜的替代做法，至少 2 个
+  budget: {max_iters: 30, stall: 5, iter_hours: null, extension: ""}   # 迭代预算；连续 stall 轮没有超过噪声的提升就该停或换方向；一轮 dev 实验的小时数
+  files: {bottleneck: method/bottleneck.md, ideas: method/ideas.csv, iterations: method/iterations.csv, tuning: method/baseline_tuning.csv}
+  components: []                          # [{name, ablation_glob}]：G2m 只读这个列表（空 = WARN，不解析 prereg §6）；逐个检查去掉后 dev 上是否掉点（与 prereg §6 一致）
+  mechanism: {}                           # {desc, run_glob | file, key, expect: "+"|"-"|">=x"}：提升"因为什么"的可检验预测
+  freeze: {}                              # `method_track.py freeze` 写：date, iteration, code_sha256, dev_gain, se_gain, k_iters, bias, gain_adj
+  confirm: {registered_looks: 1, looks: []}   # 验证集允许看几次；每次由 confirm-check 登记
+  outcome: ""                             # confirmed | not_confirmed（not_confirmed 是合法出口：转分析论文或换验证集重来）

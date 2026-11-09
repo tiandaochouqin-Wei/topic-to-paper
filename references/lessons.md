@@ -27,6 +27,7 @@
 | 自写训练循环比参考实现低 2.8 AP（29.5 vs 32.3） | persistent dataloader worker 没拿到 `ds.epoch`，增强每 epoch 相同；人工对账才发现 | G3b train_loop 用参考实现对账；G3 `stochastic_keys`：增强种子/哈希逐 epoch 必须变 |
 | 146 个 FAIL 变成 PASS | 把 `main_table_runs` 收窄到不含问题 run 的集合，头条数字来自集合之外 | G3 收窄审计集 WARN；要收窄须在 convention_changes 登记 |
 | 所有真实项目的 `reproductions: []`；finding 里写「impl: 排除」就结案 | 复现基线与分诊结论没有机械证据要求 | G4：reproductions 为空 WARN；结案 finding 必须带存在的 evidence: 文件，cause: real 另需 control: |
+| 五条「提出方法」的路线（融合门控的路由、学习到的映射、st_he 的方法角度、摊销式几何校准、微机器人速度估计）全部在预注册的一次性实验里失败，论文只能退成诊断；融合项目的 oracle 路由补不上差距、普通数据增强反而补上了，这是方法做完才发现的 | 流水线只给方法一次机会（设计 → 锁 → 跑一次 → 失败转向），没有几十轮开发迭代的位置；也没人在设计之前测瞄准的瓶颈有没有提升空间、便宜做法拿走了多少 | 方法论文走方法轨道（`init --paper-type method`，references/method-track.md）：G1c 先测 oracle 提升空间与便宜做法的剩余，G2m 登记每一轮 dev 尝试并扣赢家诅咒，freeze 之后才锁预注册，G4m 在没碰过的验证集上只评一次；`not_confirmed` 与 NO-GO 都是合法出口 |
 
 ## 写作
 

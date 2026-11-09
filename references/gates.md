@@ -20,10 +20,20 @@
 漏法：形状对不等于失效点为真（"DOFA 假设相邻波段信息互补"写得出来但可以是错的）；判定只能保证写了一句"目标领域的 X 让它在 Y 上坏掉"这种形状的话。候选里 arXiv 未录用的标 INFO 不拦。
 2026-10-08 二次扩充（来源：用户给的《人工智能科研论文创新点寻找方法》，采纳了其中可机械化的四条：问题表 + 反复缺口计数、失败案例分析、"值不值得做"五维、§0 现象先于方法；未采纳的是纯写作模板与阅读清单——写进 SKILL.md 原则行即可，不设关口）。
 
+## G1c 方法可行性与提升空间（`scripts/method_track.py headroom`，机械；仅 `project.paper_type: method`；references/method-track.md）
+判据：① benchmark（name / split_source / metric_source）、baseline（name / code）、min_effect 与 min_effect_basis 非空，各 FAIL；② 基线在 dev 上 ≥ 3 个 run（role=baseline，eval_split=dev，`results.seed_waiver` 可豁免），均值 b、s.d. sd_b；填了 `baseline.published.value` 则 |论文数 − b| ≤ tol（默认 2×sd_b），否则 FAIL「基线没复现到论文数字」，没填 WARN；③ oracle（`headroom.oracle.run_glob`，role=oracle，dev）必须存在，提升空间 H = 方向感知的 (oracle − b)，H ≥ max(min_effect, k_sd×sd_b) 才过，oracle 比基线还差单独报「理想地解决它反而更差：瓶颈判断错了」；④ 至少 2 个 cheap_fixes 且各有 dev run，剩余 R = (oracle − 最强便宜做法)，R 低于同一门槛 FAIL「便宜做法 X 已经拿走 p% 的提升空间」，并报每个做法占 H 的比例；⑤ dev / confirm 文件列表非空、无交集，confirm 的 sha256 与文件一致，冻结前没有 eval_split=confirm 的 run；⑥ budget.iter_hours 未填 WARN，填了则打印 dev 预算（GPU 小时）；⑦ method/bottleneck.md 不是模板：必须点名瓶颈、证据文件、占基线误差的份额。末行 `G1c: GO (...)` / `NO-GO`。
+为什么：五条方法路线都是方法做完才发现瓶颈没有提升空间（融合门控：oracle 路由补不上差距，普通数据增强反而补上了）。提升空间是设计之前就能测的，测了才有资格设计。
+漏法：`eval_split` 与 `role` 是 run 自报的标记，脚本核不了一个把 confirm 数据标成 dev 的 run（靠 confirm 文件 sha256 不变和 launcher 把它做成参数兜底）；oracle 的定义由作者选，选得太弱会让 H 偏小而误杀，选得太强（用了测试标签以外的信息）会让 H 虚高；k_sd 门槛只看基线 seed 方差，不看 oracle 本身的方差。
+
 ## G2 预注册八项
 判据：`scripts/prereg_check.py` 全绿。§0 phenomenon：缺则 WARN，有则必须含 现象/原因/对照 三行（缺 FAIL），最小对照未做 WARN；§1 无原因词（因为/because/机制）WARN；§1 须写 `来源: gap#X|transfer#Tn`（规则前锁定的降 WARN）。八个小节齐全且非空；denominator 与 inclusion_window 写明"跨数据集相同"或列出差异；baselines/ablations 表 ≥1 行；success 含最小改进量（数字+指标）与统计判据（≥3 seeds / CI / 检验）；failure 含备选 claim；事前预测带符号；sha256 与 state 锁一致；state 已有 run 而未锁 → 事后注册 FAIL。脚本同时打印目标刊的 venue-norms 行供对标。测试：在一份合格 prereg 上去掉一致性声明与统计判据并伪造 3 个 run，6/6 抓到。
 为什么：分母与窗口两项最常被事后改动。症状是"换一个实现数字就动"，根因是归一化分母在不同数据集里含义不同。
 漏法：同一项目犯过两次分母不一致；接触窗口 |F|≥0.1 N 的口径未写死时，全量口径得出三类相反结论。
+
+## G2m 开发迭代与冻结（`scripts/method_track.py dev-check` + `ideas-check`，机械；仅 method 轨道）
+判据：① 每个 eval_split=dev 且 role ∈ {ours, ablation} 的 run 目录属于某条迭代记录的 runs 通配，否则 FAIL「未登记的 dev 实验」；run 没有 eval_split / role 标记 FAIL；② 每条迭代有 hypothesis、change、至少匹配一个 run 目录，后面还有迭代时必须有 decision；③ 冻结前不得评测验证集；④ 预算：K = 迭代数，K > max_iters WARN、> 1.5 倍 FAIL（`budget.extension` 写理由可豁免），最近 `stall` 轮最好成绩没有超过 se_gain WARN；⑤ 冻结之后（`method.freeze` 已写）：冻结的迭代存在且 decision=keep、seed 数 ≥ results.min_seeds；**赢家诅咒线** bias = se_gain×sqrt(2 ln K)，gain_adj = dev 提升 − bias，≥ min_effect 过，0 < gain_adj < min_effect WARN，≤ 0 FAIL（打印算式）；`method.components` 的每个组件去掉后 dev 上要掉点超过 2×se，否则 FAIL「删掉它再冻结」；`method.mechanism` 缺 WARN、被反驳 FAIL；`baseline_tuning.csv` 里最强基线得到 ≥ min(K,10) 次调参（或 published_config + ≥ 5 次），否则 FAIL「基线没有得到同等调参预算」；当前代码哈希必须等于 freeze.code_sha256。`ideas-check`（method/ideas.csv ≥ 5 个想法、≥ 3 种类型、每行机制 / 最便宜检验 / 杀掉条件齐）只给 WARN。
+为什么：方法需要几十轮迭代，而迭代次数就是选择压力：从 K 次含噪尝试里挑最好的，期望偏差是 se×sqrt(2 ln K)。不登记就没有 K，也就没有办法扣掉它；基线只用论文默认配置、自己调 30 轮，是最常见的虚假提升。
+漏法：赢家诅咒线假设各次尝试近似独立的零效应估计，相关尝试（同一思路微调）会让真实偏差更小，线偏保守；登记全靠 run 目录在不在，删目录或把 run 放到 results.runs_dir 之外脚本看不到；想法清单和 mechanism 的内容好坏只核有没有写、能不能被读到，不核想法本身好不好。
 
 ## G3 三项审计 + 完成度（`scripts/audit_check.py`，全部机械）
 远程实验包（`scripts/bundle.py`，用户上传跑的工作流）：runs/ 为空时 G3 由 `bundle.py check` 顶上——矩阵 ⊇ prereg §5 基线与 §6 消融、seeds ≥ min_seeds 且参照方法多 seed、矩阵里无 run 打开 leak_flags、每个数据源有 remote 路径与 inputs、eval 命令已配。`make` 生成的 check_env.py 在服务器上逐 clip 核对 inputs（clip_glob 限定用到的子目录），任何 MISS 退出非零；run_one.sh 先写 hardware.json 与 manifest.json 再训练；`tables` 回表时拒绝 manifest 与包不一致的 run。本地验证：EAAI 项目 15 run 矩阵 check 全绿，check_env 第一次把 data_B 的 12 个未用 clip（Free/Palpation/Traction 无 frames）报成 MISS——这是对的，加 clip_glob 后 ENV OK；smoke.sh 在 A2000 上跑通一 epoch + eval。
@@ -66,6 +76,11 @@
 附加规则（仍写在 SKILL.md，脚本不查）：训完看 log 条数（已在 G3）；参数量用加载真实 ckpt 的函数；不同 GPU 进 repro.csv；零结果先查分层变量量程；对照实验分解后才可写进论文。
 漏法：评估早于训练结束（_stale_preds 目录里 2212 N 的成因）；eval.json 带 _tainted 仍被 make_tables 读入；S/V/VS 基线单 seed 却与三 seed 的本文方法同表配对比较。
 **消融分辨率口径（验证轮 20 新增）**：`ablation_plan.py resolve` 与 `make_figure.py ablation` 识别消融行代表几个 seed——同名消融多行 = 逐 seed 记录（取均值，n = 行数），否则读 `n_seeds` 列，都没有 = 单 run。单 run 仍判 |Δ| ≥ 2σ_ref√2；n 个 seed 的均值判 |Δ| ≥ 2σ_ref√(1/n + 1/n_ref)。为什么：med-world-model 把 10 seed 均值当单 run 喂进去，配对检验 p=0.003 的效应被画成「不可分辨」。
+
+## G4m 验证（`scripts/method_track.py confirm-check`，机械；仅 method 轨道）
+判据：① prereg 已锁（gates.G2.prereg_sha256）且正文含 freeze.code_sha256 的前 8 位，锁定日期不早于冻结；② 每个 eval_split=confirm 的 run 晚于冻结，且 args.json 记的 code_sha256 等于 freeze.code_sha256，逐 run FAIL；③ 验证集上评测过的 ours 变体个数 ≤ `confirm.registered_looks`（默认 1），否则 FAIL「验证集看了 n 次」；基线在验证集上有多个配置 WARN（必须用 baseline_tuning.csv 的最好 dev 配置）；④ 确认提升（ours − 调参后最强基线，各 ≥ min_seeds）≥ min_effect 且超过 2×se → confirmed，否则 not_confirmed；`method.outcome` 填成与数字一致的值才 PASS（not_confirmed 是合法结局，打印两个出口：转分析论文，或换新的验证集回 dev 循环），空或矛盾 FAIL；⑤ INFO 打印 dev 提升 → confirm 提升的收缩量（进论文局限）。
+为什么：一块验证集只能确认一次。看过结果再调方法，它就变成第二块 dev，确认的统计意义消失。失败的确认也是结果，必须能干净地写成论文而不是被悄悄重跑。
+漏法：looks 只数 args.json 里记下的 (method, 配置哈希)；没记就看不到。confirm 文件的 sha256 只证明文件没变，证明不了训练时没人偷看过它。code_sha256 是 run 自报，运行时用了别的代码但记了冻结的哈希，脚本发现不了。
 
 ## G5 图
 判据：`dpi = pixel_width / (print_width_mm / 25.4) ≥ 300`；295.5–300 容差带、<40 mm 宽或 <15 mm 高的小图降 WARN（275 篇校准：Nature 印刷版 90/130 张落在 295–300，是版面缩放舍入；ICML 46 张 <150 dpi 全是公式与 logo）；figures.csv 每行有 source 列；state.figure_inspect 每张图一条目测记录。
