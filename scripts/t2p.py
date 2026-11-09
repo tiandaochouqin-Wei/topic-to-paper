@@ -7,7 +7,9 @@
                                                (--net also resolves DOIs via CrossRef; --no-write for a dry run)
   python t2p.py init    [--project .] [--venue V] [--field F] [--branch research|survey]
                         [--entry topic_only|topic_plus_data|have_results|have_draft|have_reviews]
-                                               create the workspace from templates; --entry says where the project starts
+                        [--paper-type analysis|method]
+                                               create the workspace from templates; --entry says where the project starts;
+                                               --paper-type method turns on the method track (state.project.paper_type)
   python t2p.py lock    [--project .]          hash prereg.md (research) / protocol.md (survey) into gates.G2.prereg_sha256
                                                / gates.G-S2.protocol_sha256 — do not edit that field by hand
   python t2p.py doctor  [--skills]             verify python deps and the scripts themselves
@@ -33,6 +35,10 @@ Gate → script mapping (inputs decide whether a gate runs):
   G6g paper/manuscript.md (research)                      argument_check.py: paper/argument.md (written before the draft) vs title / abstract / Introduction / Conclusion — one claim, one headline number, the reader's question; a manuscript without argument.md FAILs
   G7  paper/review_log.md                                  review_check.py
   G8  submission/ with cover_letter.md|title_page.md|…     gate_check.py submission
+Method track (project.paper_type == method, research branch only; hidden from the board otherwise — references/method-track.md):
+  G1c state.method filled                                  method_track.py headroom: baseline reproduced, oracle headroom, cheap fixes leave room, splits untouched
+  G2m method/iterations.csv has a row                      method_track.py dev-check + ideas-check: every dev attempt logged, winner's-curse bar, component necessity, freeze
+  G4m a run with eval_split=confirm exists                 method_track.py confirm-check: confirmation run once on untouched data, outcome confirmed | not_confirmed
 A gate whose script crashes (traceback, or non-zero exit without a [FAIL] line) is reported as CRASH and counted as a
 FAIL: a gate that did not run must never read as PASS.
 Exit code = number of gates that FAILed or CRASHed."""
@@ -78,9 +84,11 @@ def exists(root, *parts):
 
 ENTRIES = ("topic_only", "topic_plus_data", "have_results", "have_draft", "have_reviews")
 # gates whose inputs an entry point legitimately lacks: N/A (not PENDING) while the inputs are absent; run normally once they exist
-SKIP_BY_ENTRY = {"have_results": {"G1b"}, "have_draft": {"G1b", "G2", "G3", "G3b", "G4", "G5"}, "have_reviews": {"G1b", "G2", "G3", "G3b", "G4", "G5"}}
+SKIP_BY_ENTRY = {"have_results": {"G1b", "G1c"}, "have_draft": {"G1b", "G1c", "G2", "G2m", "G3", "G3b", "G4", "G4m", "G5"}, "have_reviews": {"G1b", "G1c", "G2", "G2m", "G3", "G3b", "G4", "G4m", "G5"}}
 ENTRY_PHASE = {"topic_only": "P0", "topic_plus_data": "P0", "have_results": "P4", "have_draft": "P6", "have_reviews": "P7"}
-GATE_ORDER = ["G0", "G1", "G1b", "G2", "G3", "G3b", "G4", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G6f", "G6g", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
+METHOD_GATES = ("G1c", "G2m", "G4m")   # method track (references/method-track.md): shown only when project.paper_type == method on the research branch
+PAPER_TYPES = ("analysis", "method")
+GATE_ORDER = ["G0", "G1", "G1b", "G1c", "G2m", "G2", "G3", "G3b", "G4", "G4m", "G5", "G6", "G6b", "G6c", "G6d", "G6e", "G6f", "G6g", "G7", "G8", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
 SURVEY_GATES = ["G0", "G1", "G-S0", "G-S1", "G-S2", "G-S3", "G-S4", "G-S5", "G-S6"]
 
 def gate_key(g):
@@ -109,6 +117,26 @@ def data_rows(root, rel):
     p = os.path.join(root, rel)
     if not os.path.exists(p): return 0
     return max(len([l for l in io.open(p, encoding="utf-8-sig").read().splitlines() if l.strip()]) - 1, 0)
+
+def csv_rows(root, rel):
+    """data rows of a csv, ignoring blank lines and `#` comment lines (the method/ templates ship a commented example row)"""
+    p = os.path.join(root, rel)
+    if not os.path.exists(p): return 0
+    ls = [l for l in io.open(p, encoding="utf-8-sig").read().splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    return max(len(ls) - 1, 0)
+
+def has_confirm_run(root, runs_dir):
+    """True when any run dir's args.json says eval_split: confirm (method track: G4m waits for the first confirmation run)"""
+    import json
+    d = os.path.join(root, runs_dir)
+    if not os.path.isdir(d): return False
+    for x in os.listdir(d):
+        a = os.path.join(d, x, "args.json")
+        if x.startswith(("_", ".")) or not os.path.exists(a): continue
+        try:
+            if str((json.load(io.open(a, encoding="utf-8")) or {}).get("eval_split", "")).lower() == "confirm": return True
+        except Exception: continue
+    return False
 
 def dump_inline(d):
     import yaml
@@ -190,10 +218,12 @@ def check(root, net, write=True):
     manuscript = "paper/manuscript.md"
     survey = (st.get("branch") == "survey")
     entry = (st.get("project") or {}).get("entry") or "topic_only"
+    method = (not survey) and ((st.get("project") or {}).get("paper_type") or "analysis") == "method"
     na = SKIP_BY_ENTRY.get(entry, set())
     board = []   # (gate, status, detail)
     def rec(g, status, detail):
         if survey and g in ("G2", "G3", "G3b", "G4", "G6e", "G6f", "G6g"): return     # research-only gates are meaningless for a survey (G-S5 is the survey claim gate)
+        if g in METHOD_GATES and not method: return                                    # method-track gates exist only for project.paper_type == method
         if status == "PENDING" and g in na: status, detail = "N/A", f"entry={entry}：无此阶段产物，不要求（文件出现即照常检查）；" + detail
         if status == "CRASH": detail += "；" + "；".join(_CRASH_NOTES); _CRASH_NOTES.clear()
         board.append((g, status, detail)); print(f"[{status}] {g}: {detail}")
@@ -216,6 +246,19 @@ def check(root, net, write=True):
         mv = re.search(r"P1 判定 (no-go|go)", out)
         rec("G1b", verdict(f, out), f"gap_map/transfer_scan {f} FAIL" + (f"，判定 {mv.group(1)}" if mv else "") + ("；no-go 是合法出口，不进 P2" if mv and mv.group(1) == "no-go" else ""))
     elif not survey: rec("G1b", "PENDING", "无 literature/gap_map.md 与 transfer_scan.md（P1 两个必产物）")
+    # method track (project.paper_type == method; hidden otherwise by rec()): G1c headroom before designing, G2m dev loop + freeze, G4m one confirmation
+    mt = st.get("method") or {}; mrd = res.get("runs_dir") or aud.get("runs_dir") or "runs"
+    if method:
+        if any([(mt.get("benchmark") or {}).get("name"), (mt.get("baseline") or {}).get("name"), (mt.get("baseline") or {}).get("code"), mt.get("min_effect_basis")]):
+            rc, f, w, out = run([S("method_track.py"), "headroom"], root); m = re.search(r"G1c: (?:NO-GO|GO)\b[^\n]*", out)
+            rec("G1c", verdict(f, out), f"headroom {f} FAIL / {w} WARN" + (f"；{m.group(0)[5:]}" if m else ""))
+        else: rec("G1c", "PENDING", "state.method 未填（benchmark / baseline / min_effect）：`method_track.py init`，再按 references/method-track.md 做 M0–M3（复现基线 → 误差分解 → oracle → 便宜做法）")
+        itp = (mt.get("files") or {}).get("iterations") or "method/iterations.csv"
+        if csv_rows(root, itp) >= 1:
+            rc, f, w, out = run([S("method_track.py"), "dev-check"], root); rc2, f2, w2, out2 = run([S("method_track.py"), "ideas-check"], root)
+            fz = (mt.get("freeze") or {}).get("iteration")
+            rec("G2m", verdict(f + f2, out, out2), f"dev-check {f} FAIL / {w} WARN；ideas {f2} FAIL / {w2} WARN；K={csv_rows(root, itp)} 轮" + (f"；已冻结 {fz}" if fz else "；未冻结"))
+        else: rec("G2m", "PENDING", f"{itp} 还没有迭代记录：每次 dev 尝试先 `method_track.py log add` 再看结果（想法清单 `ideas-check`）")
     # G2
     if exists(root, "prereg.md") and not templated(root, "prereg.md", "prereg.md"):
         rc, f, w, out = run([S("prereg_check.py")], root); rec("G2", verdict(f, out), f"prereg_check {f} FAIL / {w} WARN")
@@ -240,6 +283,11 @@ def check(root, net, write=True):
             rc2, f2, w2, out2 = run([S("ablation_plan.py"), "resolve"], root)
         rec("G4", verdict(f + f2, out, out2), f"results_check {f} FAIL / {w} WARN；ablation resolve {f2} FAIL")
     else: rec("G4", "PENDING", f"无 {res.get('main_table', 'results/main.csv')}")
+    if method:
+        if has_confirm_run(root, mrd):
+            rc, f, w, out = run([S("method_track.py"), "confirm-check"], root); m = re.search(r"\b(not_confirmed|confirmed)\b", out)
+            rec("G4m", verdict(f, out), f"confirm-check {f} FAIL / {w} WARN" + (f"；{m.group(1)}" if m else ""))
+        else: rec("G4m", "PENDING", "还没有 eval_split=confirm 的 run：`method_track.py freeze` → `t2p.py lock` → 验证集只评一次")
     # G5
     if data_rows(root, "figures.csv") >= 1 and not templated(root, "figures.csv", "figures.csv"):
         rc, f, w, out = run([S("gate_check.py"), "dpi", "--manuscript", manuscript if exists(root, manuscript) else "figures.csv"], root)
@@ -334,7 +382,7 @@ def status(root):
     st = load_state(os.path.join(root, "research-state.yaml"))
     if st is None: print("无 research-state.yaml"); return 1
     ph = st.get("phase") or {}; g = {k: (v or {}) for k, v in (st.get("gates") or {}).items()}; pj = st.get("project") or {}
-    print(f"项目: {pj.get('title', '?')}  分支: {st.get('branch') or 'research'}  入口: {pj.get('entry') or 'topic_only'}")
+    print(f"项目: {pj.get('title', '?')}  分支: {st.get('branch') or 'research'}  入口: {pj.get('entry') or 'topic_only'}" + ("  类型: method（方法轨道）" if pj.get("paper_type") == "method" else ""))
     print(f"目标刊: {(st.get('target') or {}).get('venue', '?')}\n阶段: {ph.get('current', '?')}  历史: {ph.get('history', [])}")
     checked = [str(v.get("checked")) for v in g.values() if isinstance(v, dict) and v.get("checked")]
     print("上次 check: " + (max(checked) if checked else "从未 —— 下面的状态是手工填的，先跑 `t2p.py check`"))
@@ -355,7 +403,9 @@ NEXT_BY_ENTRY = {
     "have_reviews": "同 have_draft，再把审稿意见逐条整理进 paper/review_log.md（[major]/[minor] + 处置），然后 `t2p.py check`",
 }
 
-def init(root, venue, field, branch, entry="topic_only"):
+def init(root, venue, field, branch, entry="topic_only", paper_type="analysis"):
+    if paper_type == "method" and branch == "survey":
+        print("[FAIL] --paper-type method 只用于研究分支（综述没有方法轨道）"); return 1
     os.makedirs(root, exist_ok=True)
     for d in (("literature", "runs", "results", "figures", "paper", "submission") if branch == "research" else ("literature", "literature/pdf", "coding", "tables", "figures", "paper", "submission")): os.makedirs(os.path.join(root, d), exist_ok=True)
     tpl = os.path.join(SKILL, "templates")
@@ -375,8 +425,11 @@ def init(root, venue, field, branch, entry="topic_only"):
         s = re.sub(r'(?m)^  G[1-8]\w*:.*\n', '', s)
         rows = "".join(f'  {g}: {{status: pending, evidence: ""' + (', protocol_sha256: ""' if g == "G-S2" else "") + "}\n" for g in SURVEY_GATES[1:])
         s = re.sub(r'(?m)^(  G0:.*\n)', lambda m: m.group(1) + rows, s, count=1)
+    s = re.sub(r'(?m)^(  paper_type:)[^#\n]*', r'\1 %s ' % paper_type, s, count=1)
     io.open(sp, "w", encoding="utf-8").write(s)
-    print(f"工作区已建: {root}（branch={branch}, entry={entry}, phase={ENTRY_PHASE[entry]}）\n下一步: {NEXT_BY_ENTRY[entry]}")
+    print(f"工作区已建: {root}（branch={branch}, entry={entry}, paper_type={paper_type}, phase={ENTRY_PHASE[entry]}）\n下一步: {NEXT_BY_ENTRY[entry]}")
+    if paper_type == "method":
+        print("方法轨道：先读 references/method-track.md；`method_track.py init` 建 method/ 并写验证集哈希；G1c（提升空间）过之前不设计方法，G1c / G2m / G4m 三道关口在状态板上")
     return 0
 
 def routed_skills():
@@ -433,9 +486,10 @@ if __name__ == "__main__":
         if name == "init":
             p.add_argument("--venue", default=""); p.add_argument("--field", default=""); p.add_argument("--branch", choices=["research", "survey"], default="research")
             p.add_argument("--entry", choices=list(ENTRIES), default="topic_only", help="项目从哪里开始：have_draft/have_reviews 时 G1b–G5 显示 N/A 而非 PENDING")
+            p.add_argument("--paper-type", choices=list(PAPER_TYPES), default="analysis", help="method = 方法论文（多 G1c / G2m / G4m 三道关口，见 references/method-track.md）；analysis = 默认，行为不变")
     d = sub.add_parser("doctor"); d.add_argument("--skills", action="store_true", help="也列出 routing.md 路由到的外部 skill 哪些在本机可见"); d.add_argument("--project", default=".")
     a = ap.parse_args()
     if a.cmd == "doctor": sys.exit(doctor(a.skills, a.project))
     root = os.path.abspath(a.project)
     sys.exit({"status": lambda: status(root), "check": lambda: check(root, a.net, not a.no_write),
-              "init": lambda: init(root, a.venue, a.field, a.branch, a.entry), "lock": lambda: lock(root)}[a.cmd]())
+              "init": lambda: init(root, a.venue, a.field, a.branch, a.entry, a.paper_type), "lock": lambda: lock(root)}[a.cmd]())

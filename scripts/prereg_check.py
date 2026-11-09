@@ -9,6 +9,7 @@ Checks:
   5. failure criterion names a fallback claim
   6. at least one pre-stated prediction with a sign
   7. prereg.md sha256 matches research-state.yaml gates.G2.prereg_sha256 (lock), and no experiment has started before the lock
+  8. (project.paper_type: method only) the prereg carries `freeze: <sha8>` (WARN otherwise) and is not locked before state.method.freeze exists (FAIL); dev runs before the lock are normal there
 Exit 1 on any FAIL. Prints the venue norm row so the user sees what the target venue typically reports."""
 import argparse, hashlib, io, os, re, sys, csv
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
@@ -42,6 +43,15 @@ def too_short(t):
     latin = len(re.findall(r"[A-Za-z][A-Za-z0-9'\-]*", t))
     cjk = len(re.findall(CJK, t))
     return latin < 15 and cjk < 60 and table_rows(t) < 2
+
+def method_track_state(state_path):
+    """(project.paper_type, method.freeze dict) from research-state.yaml; ('analysis', {}) when the state or pyyaml is missing"""
+    try:
+        import yaml
+        st = yaml.safe_load(io.open(state_path, encoding="utf-8")) or {}
+        return str((st.get("project") or {}).get("paper_type") or "analysis"), ((st.get("method") or {}).get("freeze") or {})
+    except Exception:
+        return "analysis", {}
 
 def main():
     ap = argparse.ArgumentParser()
@@ -112,6 +122,15 @@ def main():
         locked = m.group(1) if m else None
         venue = (re.search(r"^\s*venue:\s*\"?([^\"\n]+)", st, re.M) or [None, ""])[1].strip()
         runs = re.search(r"total_runs:\s*(\d+)", st)
+        mtype, mfreeze = method_track_state(a.state)
+        if mtype == "method":   # method track: dev runs legitimately precede the lock; what must precede it is the freeze (references/method-track.md)
+            runs = None
+            fm = re.search(r"freeze\s*[:：]\s*`?([0-9a-f]{8})", md, re.I)
+            if not fm: say("WARN", "方法轨道：prereg 没有 `freeze: <sha8>`（§1 写冻结后的方法与 state.method.freeze.code_sha256 的前 8 位）")
+            elif mfreeze.get("code_sha256") and not str(mfreeze["code_sha256"]).lower().startswith(fm.group(1).lower()):
+                say("WARN", f"方法轨道：prereg 的 freeze: {fm.group(1)} 与 state.method.freeze.code_sha256 的前 8 位 {str(mfreeze['code_sha256'])[:8]} 不一致")
+            if locked and not mfreeze:
+                say("FAIL", "方法轨道先 freeze 再锁预注册：state.method.freeze 为空却已锁定 prereg（`method_track.py freeze --iteration Ixx`，再 `t2p.py lock`）")
         if locked and locked != sha:
             say("FAIL", f"prereg.md 已被修改但 state 里的锁没更新（锁 {locked[:8]}…，现 {sha[:8]}…）。改口径要在 state.experiments.convention_changes 留记录再重新锁")
         if not locked and runs and int(runs.group(1)) > 0:

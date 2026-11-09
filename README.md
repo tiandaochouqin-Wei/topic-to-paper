@@ -58,6 +58,10 @@ Claude replies with a status board (one line per gate) and a short "what I need 
 
 Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_check.py skeleton`, knowledge in `references/latex-templates.csv`), real `\textwidth` measurement with pdflatex, subfigure blocks from per-panel PDFs; SOTA/multi-dataset/ablation/seed tables with best/second-best marks and automatic provenance registration; main/ablation/seed figures from the result tables; qualitative result grids with insets; a figure plan learned from same-topic high-quality exemplars and tied to the claims (`figure_plan.py`: exemplar figures by role and width, claim-first plan, G5 check); an independent visual review of the printed figures (`figure_review.py`: renders at print size + same-role exemplars + a 7-criterion rubric for a fresh-context subagent, registered packet hashes, re-review on the redrawn figure, G5 check); a project-wide figure style registry (`figure_style.py`: one name / colour / line / marker per method, ours, role colours for ground-truth / TP / FP / missed boxes, cmap, stage names; every generator reads it, code-like labels FAIL), caption drafts generated from what each figure drew and a check of the LaTeX captions against them (`caption_draft.py`), qualitative-grid frames chosen by a stated rule with counter-examples listed (`select_samples.py`, per-cell TP / FP / FN counts in the grid); a method-overview figure traced from the model that produced the results (`make_architecture.py`: forward-hook trace, graphviz layout, TikZ source for hand polishing, and a G5 check that the figure still matches the code); a remote experiment bundle (pre-flight env check, smoke run, full matrix, collect) for the "Claude writes the scripts, you run them on the server" workflow.
 
+## Method papers
+
+The default pipeline ends in an analysis paper. For a paper that proposes a method and beats the strongest baseline on an accepted benchmark, `t2p.py init --paper-type method` turns on the method track (`references/method-track.md`, `scripts/method_track.py`): three extra gates, G1c (is there headroom before designing: oracle bound and cheap fixes), G2m (every dev attempt logged, winner's-curse bar, freeze) and G4m (one confirmation on untouched data, `not_confirmed` is a legitimate outcome). Analysis projects do not see them.
+
 ## Optional: local literature index
 
 `scripts/lit_scout.py build <papers_root> <index.sqlite>` builds an FTS5 index from a folder of PDFs plus `metadata/index.csv` (venue, year, title, local_path) so saturation counts and candidate scouting cost zero tokens. Without it, P1 uses CrossRef / arXiv / OpenAlex / Semantic Scholar directly; the skill works, it just makes more API calls. Set your own contact email in `scripts/transfer_scan.py` (`UA`) — OpenAlex and CrossRef give polite-pool rate limits to requests that identify themselves.
@@ -66,7 +70,7 @@ Generators, not just checks: a LaTeX skeleton in the venue's template (`latex_ch
 
 ```
 SKILL.md                 execution instructions for Claude (not a user manual): routing table, three rules, one index row per stage
-scripts/                 44 gate/generator scripts, all argparse, all `--help`
+scripts/                 45 gate/generator scripts, all argparse, all `--help`
 tests/                   pytest regression suite + two fixture projects (research_min, survey_min)
 templates/               research-state.yaml, prereg.md, argument.md, protocol.md, codebook.md, tables.yaml, prisma2020_checklist.csv, skeleton-{cs_conf,cs_journal,nature}.md, …
 references/              gates.md (why each gate exists), phases/P0–P8.md + S0–S6.md (per-stage detail, read on entering a stage), lessons.md, routing.md, venue-profiles.md, venue-norms.csv, figure-norms.md (which figure types each venue / family / topic uses), latex-templates.csv, acronym-norms.csv, validation-*.md

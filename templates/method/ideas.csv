@@ -1,0 +1,2 @@
+id,type,mechanism,predicted_effect,cheapest_test,kill_result,status
+#I01,data|objective|architecture|inference|training|other,"为什么这能解决 bottleneck.md 里的瓶颈（一句话，写机制不写做法）","dev 上预计提升多少（指标单位）","最便宜的验证：几个 seed / 几小时","什么结果就杀掉这个想法（写数字）",open

@@ -42,3 +42,9 @@ sha256（锁定后填，写入 research-state.yaml gates.G2.prereg_sha256）：
 
 ## 10. 事前预测
 对每个关键对照写下符号与量级。跑完后与此对照，偏离要解释。
+
+## 方法轨道补充（仅 project.paper_type: method 时填；analysis 项目删掉本节）
+先 `method_track.py freeze`，再锁本文件（`prereg_check.py` 在没有 freeze 时拒绝锁定）。
+- §1 hypothesis 写**冻结后的方法**与它瞄准的瓶颈，并写一行 `freeze: <sha8>`（sha8 = state.method.freeze.code_sha256 的前 8 位）。
+- §5 baselines：最强基线在 dev 上与本方法**同等调参预算**，用它最好的 dev 配置（method/baseline_tuning.csv）；验证集上基线只跑这一个配置。
+- §7 success：只在 confirm 划分上评测**一次**（登记的 looks 数写在这里）；最小提升 = state.method.min_effect，且超过 2 x se。验证集结果不是 confirmed 也如实报告（outcome: not_confirmed 是合法结局）。
