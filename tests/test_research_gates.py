@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Research-branch gates on tests/fixtures/research_min: the untouched copy PASSes, each named mutation FAILs the gate that owns it."""
-import json
+import json, re, subprocess
 
-from conftest import edit, lock, read, run, touch, write
+import pytest
+
+from conftest import ENV, PY, SCRIPTS, edit, lock, read, run, touch, write
 
 
 # ------------------------------------------------------------------ G1b  gap_map / transfer_scan / problem_table
@@ -344,6 +346,67 @@ def test_g7_inline_only_closure_warns(research):
     edit(research / "paper" / "review_log.md", "- R2-1 closed: convention stated in Section 4.1 and in the Table 1 caption.", "")
     r = run("review_check.py", cwd=research)
     assert r.fails == 0 and "[WARN] review:" in r.out and "R2-1" in r.out, r.out
+
+
+RR_R13 = "## Re-review R1+R3 (independent, packet 9f8e7d6c)\n- R1-1 closed: Table 2 and Section 4.4 updated."
+R11_OPEN = "- R1-1 OPEN: Table 2 still lacks seeds."
+# tpami_medimg review_log, 2026-11-08: a summary line listing the OPEN majors, a blank line, the next seat's heading and another item's
+# "closed" -> the old window (`.{0,160}?`, re.S) ran across both line breaks and G7 reported "22 条 major 全部关闭" with three OPEN
+SUMMARY_THEN_HEADING = ("## Re-review summary (round 1, packet 9f8e7d6c)\nSame seats, fresh context. Ratings: R1+R3 3, R2 4. OPEN: R1-1. New majors: none.\n\n"
+                        "## Re-review R2 (independent, packet 9f8e7d6c)\n- R2-1 closed: convention stated in Section 4.1 and in the Table 1 caption.\n\n"
+                        "## Re-review R1+R3 (independent, packet 9f8e7d6c)\n" + R11_OPEN + "\n")
+
+
+@pytest.mark.parametrize("summary", [
+    None,                                                                                   # the real pattern above
+    "Verdicts: OPEN: R1-1.\n- R1-2 closed: RMSE is defined in the abstract.",             # next line, another item closed (same section: the independent path)
+    "Still open: R1-1. Closed: R1-2.",                                                      # one line, two lists: "Closed:" labels the ids after it
+    "仍未关闭：R1-1；**已关闭**：R1-2。",
+])
+def test_g7_closing_counts_only_on_the_items_own_line(research, summary):
+    _g6(research); _no_inline_close(research)
+    log = research / "paper" / "review_log.md"
+    if summary is None:
+        s = read(log); write(log, s[:s.index("## Re-review R1+R3")] + SUMMARY_THEN_HEADING)
+    else:
+        edit(log, RR_R13, RR_R13.split("\n")[0] + "\n" + summary + "\n" + R11_OPEN)
+    r = run("review_check.py", cwd=research)
+    assert r.fails >= 1 and "全部关闭" not in r.out, r.out
+    assert re.search(r"\[FAIL\] review: 1 条 major 未在复审节关闭: L\d+ 1\. \[major\] The ablation table", r.out), r.out
+
+
+@pytest.mark.parametrize("line", ["- **R1-1** (evidence) **closed**: Table 2 and Section 4.4 updated; R2-1 is separate.",
+                                  "- R1-1 复核通过：Table 2 与 Section 4.4 已更新。",
+                                  "- R1-1 accepted: Table 2 and Section 4.4 updated.",
+                                  "- R1-1 closed, R1-2 closed: Table 2 and Section 4.4 updated."])
+def test_g7_closing_on_the_items_own_line_still_closes(research, line):
+    """control for the test above: the window is narrower, not stricter about how a same-line verdict is written"""
+    _g6(research); _no_inline_close(research)
+    edit(research / "paper" / "review_log.md", "- R1-1 closed: Table 2 and Section 4.4 updated.", line)
+    r = run("review_check.py", cwd=research)
+    assert r.fails == 0, r.out
+
+
+@pytest.mark.parametrize("line", ["- R1-1 unresolved: Table 2 still lacks seeds.",
+                                  "- R1-1 remains unacceptable: Table 2 still lacks seeds.",
+                                  "- R1-1 disclosed only in the supplement; Table 2 still lacks seeds.",
+                                  "- R1-1 non-closed: Table 2 still lacks seeds."])
+def test_g7_closing_word_inside_another_word_is_not_a_closing(research, line):
+    """2.12.1: `resolved` in unresolved, `accept` in unacceptable, `closed` in disclosed closed the item"""
+    _g6(research); _no_inline_close(research)
+    edit(research / "paper" / "review_log.md", "- R1-1 closed: Table 2 and Section 4.4 updated.", line)
+    r = run("review_check.py", cwd=research)
+    assert r.fails >= 1 and re.search(r"\[FAIL\] review: 1 条 major 未在复审节关闭: L\d+ 1\. \[major\] The ablation table", r.out), r.out
+
+
+def test_g7_runs_under_python_isolated_mode(research):
+    """`python -I review_check.py` crashed (ModuleNotFoundError: shape_check): -I leaves the script directory off sys.path"""
+    _g6(research)
+    r = subprocess.run([PY, "-I", str(SCRIPTS / "review_check.py"), "--project", str(research)], cwd=str(research.parent),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=ENV)
+    out = r.stdout + r.stderr
+    assert "Traceback" not in out and "ModuleNotFoundError" not in out, out
+    assert r.returncode == 0 and "ALL PASS" in out and "独立审稿 3 节" in out, out
 
 
 # ------------------------------------------------------------------ G8  submission package

@@ -240,4 +240,5 @@ confidence: 4
 - 每个 `[major]` 应带 `category:`（缺了 WARN，旧日志不至于全红）。四类（evidence/validity/novelty/value）major 必须由独立复审节关闭（sha8 与原审稿不同、席位对得上），否则 FAIL"作者不能自己关闭"；在作者段落用收窄词关闭 → FAIL"收窄措辞不是关闭"。validity 类还要在关闭行或处置里引用一个存在的文件路径。
 - 行内 `→ 已改 / closed / fixed` 把该条直接判为已关闭、不经复审（EAAI 真实日志依赖此行为）。**major 写 `处置: 已改 (…)`，不用箭头**，这样才逼出复审；仍用箭头时脚本给 WARN（复审节没逐条核对）。四类 major 用箭头关闭 = FAIL。
 - 复审节里没关的 major 写 `OPEN: …`。含否定的句子（`NOT closed`、`未关闭`、`尚未`）不再算关闭，但 `OPEN:` 一行里仍避免出现 closed / 关闭 / 已改 / 通过 等词，免得歧义。
+- 关闭只认同一行的 `<编号> … closed`（2.12.1）：窗口止于行尾或下一个条目编号，`Closed: R0-5, DA-3` 这种后面紧跟编号的词当列表标签。所以一行写一条判决；`R1-1 and R2-1 closed` 只关 R2-1。汇总行照常写 `OPEN: R0-2, R0-5`，不会再借下一节的 closed 被算成关闭。
 - `state.project.entry: have_reviews`（日志里是真实审稿人的意见）不要求独立节。

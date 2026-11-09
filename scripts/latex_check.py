@@ -20,13 +20,17 @@ check:  documentclass / style file matches the venue's template (WARN; FAIL when
         a table whose lines main.log reports as `Overfull \\hbox (x pt too wide)` (alignment / paragraph at lines a--b inside a table or tabular of the sources): > 2 pt WARN, > 10 pt FAIL, names the table label (provisional thresholds; a log older than the sources is not trusted);
         leftover \\todo / \\fixme / \\hl in any \\input-ed source, or todonotes loaded without [disable] (FAIL);
         algorithm environments (or state.algorithms rows): make_algorithm.py check runs inside and its FAIL/WARN lines are folded in (packages, caption/label/\\ref, source anchor, values vs the reference run, shape);
-        raw keys in the reference list: main.blg "didn't find a database entry", main.log "Citation .. undefined", a main.bbl \\bibitem whose body is just the key (FAIL; logs older than the sources are WARN, not trusted).
+        raw keys in the reference list: main.blg "didn't find a database entry", main.log "Citation .. undefined", a main.bbl \\bibitem whose body is just the key (FAIL; logs older than the sources are WARN, not trusted);
+        the compiled PDFs (main.pdf next to main.tex, supp.pdf / state.target.supp_pdf): pdf_check.py runs inside and its lines are folded in —
+        body within state.target.page_limit pages, page size, hidden text (prompt injection), Type 3 / unembedded fonts, attachments / JavaScript,
+        blind metadata / author block / links, raster dpi (see pdf_check.py; a PDF older than the sources is not trusted, WARN).
 Exit = number of FAIL lines."""
 import argparse, csv, io, os, re, shutil, subprocess, sys, tempfile
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__)); SKILL = os.path.dirname(HERE)
+if HERE not in sys.path: sys.path.insert(0, HERE)     # `python -I` leaves the script directory off sys.path; the algorithm check imports make_algorithm (2.12.1)
 TEMPLATES_CSV = os.path.join(SKILL, "references", "latex-templates.csv")
 PT_MM = 25.4 / 72.27
 FAILS = 0
@@ -321,6 +325,8 @@ def check(a):
     leftover_markers(text, pkgs_raw=re.findall(r"\\usepackage\s*(?:\[([^\]]*)\])?\s*\{([^}]+)\}", text))
     bib_artifacts(tex, files)
     table_overfull(tex, files)
+    import pdf_check                                                              # the compiled PDFs: page limit, page size, hidden text, fonts, …
+    bump(pdf_check.run_checks(root, st, tex, files, opts))
     # --- figures.csv cross-check (registration + print width)
     fp = os.path.join(root, a.figures)
     reg = {}

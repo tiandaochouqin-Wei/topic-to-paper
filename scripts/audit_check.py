@@ -12,6 +12,9 @@ Configuration lives in research-state.yaml under `audits:` (see templates/resear
     epochs_key: epochs                  # args key that says how many log entries a finished run has
     main_table_runs: []                 # run names that feed the main table; empty = every run
     leak_flags: [use_B_train, B_labels] # any truthy value in a main-table run = target-domain information in training
+    leak_flag_protocols: []             # rare: a flag that is ON by the definition of a protocol, e.g. a test subject's own prompt at deployment;
+                                        # [{runs: "selfprompt_*", flags: [box_from_heldout], reason: "..."}]; a matching run is a WARN, not a FAIL,
+                                        # only with a non-empty reason AND an experiments.convention_changes entry that names leak_flag_protocols
     split_key: clip                     # group field that train/test must not share
     split_files: {train: "", test: ""}  # optional: csv/json/txt listing group ids per split -> overlap must be empty
     min_group_size: 5                   # groups below this must be dropped, not merged (degenerate-group overflow)
@@ -27,7 +30,7 @@ Configuration lives in research-state.yaml under `audits:` (see templates/resear
 
 Every FAIL carries the run name or file:line. Exit 1 on any FAIL. Checks were calibrated on the project where all three
 incidents happened (use_B_train leak, beta gated by is_ours, frames/ vs frames_256.npy): the gate must rediscover all three."""
-import argparse, ast, csv, glob, io, json, os, re, shutil, subprocess, sys, tempfile, collections
+import argparse, ast, csv, fnmatch, glob, io, json, os, re, shutil, subprocess, sys, tempfile, collections
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
@@ -90,7 +93,7 @@ def collect_runs(cfg, root, conv=None):
     say("INFO", "runs", f"{len(runs)} 个 run 进入审计" + ("（main_table_runs 限定）" if sel else "（未指定 main_table_runs，审计全部）"))
     return runs
 
-def check_leak_flags(cfg, runs):
+def check_leak_flags(cfg, runs, conv=None):
     flags = cfg.get("leak_flags") or []
     if not flags:
         say("WARN", "leakage", "audits.leak_flags 为空：请列出所有\"目标域标签/数据进训练\"类开关"); return
@@ -98,10 +101,21 @@ def check_leak_flags(cfg, runs):
     for name, r in runs.items():
         on = [f for f in flags if truthy(r["args"].get(f))]
         if on: bad.append((name, on))
+    # tpami_medimg 2026-11-07: a protocol may switch a leak flag on by definition (each reader prompts with their own box, which the evaluation of that
+    # reader then uses); such runs stay visible as WARN and need both a stated reason and a logged convention change, else they FAIL as before
+    proto = [p for p in (cfg.get("leak_flag_protocols") or []) if isinstance(p, dict) and str(p.get("reason") or "").strip()]
+    logged = any("leak_flag_protocols" in str(c) for c in (conv or []))
     for name, on in bad:
-        say("FAIL", "leakage", f"{name}: {on} 为真 —— 目标域信息进入训练，主表不得使用")
+        hit = [p for p in proto if fnmatch.fnmatch(name, str(p.get("runs", ""))) and set(on) <= set(p.get("flags") or [])]
+        if hit and logged:
+            say("WARN", "leakage", f"{name}: {on} 为真，但属协议定义（leak_flag_protocols: {str(hit[0]['reason'])[:90]}）；convention_changes 已登记")
+        else:
+            say("FAIL", "leakage", f"{name}: {on} 为真 —— 目标域信息进入训练，主表不得使用"
+                + ("（匹配 leak_flag_protocols 但 experiments.convention_changes 未登记）" if hit else ""))
     if not bad:
         say("PASS", "leakage", f"{len(runs)} 个 run 的 {flags} 全部为 0")
+    elif all(any(fnmatch.fnmatch(n, str(p.get("runs", ""))) and set(o) <= set(p.get("flags") or []) for p in proto) for n, o in bad) and logged:
+        say("PASS", "leakage", f"{len(runs) - len(bad)} 个 run 的 {flags} 全部为 0；{len(bad)} 个 run 按登记的协议定义开启（见上方 WARN）")
 
 def read_ids(p):
     if not p or os.path.isdir(p) or not os.path.exists(p): return None
@@ -374,8 +388,9 @@ def main():
     cfg = st.get("audits") or {}
     if not cfg:
         say("FAIL", "audit", "research-state.yaml 没有 audits: 段"); sys.exit(1)
-    runs = collect_runs(cfg, root, (st.get("experiments") or {}).get("convention_changes") or [])
-    print("\n== leakage =="); check_leak_flags(cfg, runs); check_split(cfg, root); check_stats_leak(cfg, root)
+    conv = (st.get("experiments") or {}).get("convention_changes") or []
+    runs = collect_runs(cfg, root, conv)
+    print("\n== leakage =="); check_leak_flags(cfg, runs, conv); check_split(cfg, root); check_stats_leak(cfg, root)
     print("\n== effective-config =="); check_effective_config(cfg, runs, root)
     print("\n== stochastic =="); check_stochastic(cfg, runs, root)
     print("\n== silent-fallback =="); check_silent_fallback(cfg, root)

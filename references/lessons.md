@@ -49,8 +49,11 @@
 | 伪代码写的是想象中的方法，不是跑出结果的那个函数 | 凭记忆写；超参与循环结构在代码里早改过 | G6d：伪代码锚到 state.algorithms 的函数（ast），Require 里的数值对账 ref run 的 args，循环数对照函数 |
 | 引言是 1000+ 词的人名目录，贡献条目一条 4–14 个数字，标题 / 摘要 / 结论各说各的，读不出论文要回答什么问题（三个真实 CVPR 草稿，2026-10-23） | 写作清单驱动：draft_plan 把 gap_map 每行变成"点名某篇并说失效点"、把每条主张的数字强塞进贡献条目；没有任何一步要求一句主张和读者的问题 | 论点先行（G6g）：写稿前填 `paper/argument.md`（一句主张、读者的问题、一个 headline 数字、最强反对意见、引言提纲）；`argument_check.py` 查它们在标题 / 摘要 / 引言末段 / 结论里一致；Related Work 按主题成段，引言至多点名 3 篇，只有 headline 的数字进贡献条目 |
 | LaTeX 出空白页 | author 间空行 | 模板固定 |
+| CVPR 稿的局限段被一次改稿挤出 18 行到第 9 页，项目自写的页数检查照样 PASS，第二次同席位复审才发现（tpami_medimg，2026-11-08）；会议不给作者自查工具，超页直接拒稿 | 检查把「References / LLM Usage Statement」当成一个独立文本块去找，PyMuPDF 把标题和上面的正文并成一块，于是找不到标题、不判；skill 本身只有投稿清单里一条「字数/页数 ≤ 上限」，state.target.page_limit 没有任何脚本读 | G6d（2.12.1）：读 main.tex 旁编译好的 main.pdf，按行找第一个不计页标题（`page_limit_end`，默认 References / Bibliography / LLM Usage Statement / 参考文献），标题落在 page_limit+1 页时按阅读顺序数它前面的正文行，越界 FAIL 并给出第一行；合成 PDF 测试里标题同样被并进正文块 |
+| CVPR 2027 把藏起来给审稿工具看的指令（prompt injection）、署名泄露、错模板都列为直接拒稿；skill 的关口只读 .tex / manuscript.md，PDF 里实际印了什么（白字、隐形字、作者栏、元数据、附件、Type 3 字体）没人看 | 「编译出来的东西」从来不是关口的输入；项目各自写一份 pdf_check，换个项目就没了 | `pdf_check.py`（G6d 里由 latex_check 调用，也可对任意 PDF 单独跑）：隐藏文字 / 附件 / JavaScript / Type 3 → FAIL，盲审下元数据或摘要以上出现 blind_terms → FAIL，纸张尺寸对 page_size 或 \documentclass 选项；白字压在照片或有色矢量填充上算看得见（项目脚本只认照片，热力图白字会误报） |
 | 公式符号包冲突 | amssymb × newtxmath | 模板固定 |
 | 自审 major 靠收窄措辞关闭（六条里四条）、输入朝向错误扛过 10 轮自审、一个项目根本没审；没人问过「这个发现是不是已经有人知道」 | 审稿席位由写稿的同一会话带着 prereg / claims 写；作者自己判「已改」就关闭；没有价值席位 | P7：`review_packet.py` 冻结稿件，R0 / R1+R3 / R2 / DA 各一个新上下文子代理，只给 PDF 与审稿表；evidence / validity / novelty / value 类 major 只能由同一席位在改后 PDF 上独立复审关闭；validity 要引用破坏版会失败的检查输出（G7） |
+| G7 报「22 条 major 全部关闭」，其中 R0-2 / R0-6 / R2-7 当时仍是 OPEN；项目日志只好把汇总写成 `R0-2 OPEN, R0-5 OPEN, …` 绕开（tpami_medimg，2026-11-08） | 关闭判定的窗口 `<编号>.{0,160}?closed` 带 re.S，会跨行、跨标题：汇总行 `OPEN: R0-2, …, R2-7. New majors: …`，空一行，再是 `## Re-review R0 (…)` 和 `R0-1 closed: …`，结果 R0-1 的 closed 被记到了 R0-2 头上；`main()` 与 `independent_checks()` 各抄了一份这个正则 | 2.12.1：两处合成一个 `closing()`；`<编号> … closed` 只认同一行，窗口止于下一个条目编号；closed 后面紧跟编号时（`Closed: R0-5, DA-3`）算列表标签，不算前一个编号的关闭；否定词与 OPEN 规则不变。代价：`R1-1 and R2-1 closed` 只关 R2-1，所以一行只写一条判决。同轮补：英文关闭词前面不能紧挨字母或连字符，`unresolved` / `unacceptable` / `disclosed` / `non-closed` 原来也被算作关闭 |
 
 ## 工具
 
@@ -61,6 +64,7 @@
 | PubMed 取到的 DOI 是别人的 | `.//ArticleIdList` 匹配到参考文献 | 限定 PubmedData |
 | 分页模拟与真实 PDF 不符 | 只重排不绑定页首 | 页首加 break-before，判据保守 1 px |
 | 会话卡死数小时 | 超大上下文经中转超时重试 | 单会话、及时 /clear；子代理只用于 P7/S6 独立审稿 |
+| `python -I review_check.py --project …` 崩：ModuleNotFoundError: shape_check；`latex_check.py` ↔ `make_algorithm.py` 互相导入，也一样崩 | `-I` 不把脚本目录放进 sys.path；兄弟模块在函数里懒导入，`--help` 走不到这一步，test_health 发现不了 | 脚本开头把自身目录插进 sys.path（同 review_packet.py）；test_health 用 ast 查每个脚本：导入兄弟脚本之前必须已有 sys.path.insert；三个脚本各用 `-I` 完整跑一遍（2.12.1） |
 
 ## 图表（验证轮 15）
 

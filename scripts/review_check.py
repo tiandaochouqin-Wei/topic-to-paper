@@ -6,7 +6,8 @@
 Expected review_log.md structure (free text otherwise):
   items   : lines containing [major] / [minor] / [major→已自证] / **[复核通过]** … ; an item is any line with a bracketed severity or disposition tag
   dispo   : one of 复核通过 | accept | 已改 | fixed | rebut | 驳回 | partial | 部分 | 自证 | closed | 关闭 — on the same line or the next 2 lines
-  round N : a heading matching  ## .*(Re-review|第二轮|Round 2|复审)  ; inside it each earlier major must appear as closed (its id/first 12 chars + closed word)
+  round N : a heading matching  ## .*(Re-review|第二轮|Round 2|复审)  ; inside it each earlier major must appear as closed (its id/first 12 chars + closed word
+            on the same line and before the next item id: `R0-2 closed: …` / `R0-2 OPEN: …`; a closing word followed by ids is a list label)
 Checks:
   1. every [major]/[minor] item has a disposition                             -> FAIL
   2. every major is closed in a re-review section (or marked 自证/closed inline) -> FAIL
@@ -33,6 +34,8 @@ Mean rating scale: numbers are the 1-6 scale; words map reject 2 / major 3 / min
 import argparse, io, os, re, sys
 for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, which cannot print the check marks / minus signs used below
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path: sys.path.insert(0, HERE)     # `python -I` leaves the script directory off sys.path; independent_checks imports shape_check (2.12.1)
 
 FAILS = 0
 def say(st, msg):
@@ -45,6 +48,25 @@ DISPO = re.compile(r"复核通过|accept|已改|fixed|rebut|驳回|partial|部�
 NEG_I = re.compile(r"\b(?:not|isn't|never)\s+(?:yet\s+)?(?:closed|resolved|fixed|accepted)|\bstill\s+open|未(?:关闭|解决|通过|修|改|补|闭)|尚未|没有(?:关闭|解决)|仍(?:未|然未|然开放)", re.I)   # a negated closing word is not a closing
 NEG_CASE = re.compile(r"\bOPEN\b")                                                                                                    # the log format marks an unclosed major "OPEN: …"
 def negated(span): return bool(NEG_I.search(span) or NEG_CASE.search(span))
+
+CLOSE_WORD = r"(?:(?<![A-Za-z-])(?:closed|fixed|resolved|accept)|关闭|已改|通过|已补|已加)"   # an English closing word starts a word: unresolved / unacceptable / disclosed / non-closed do not close
+ITEM_REF = r"(?-i:(?<![A-Za-z0-9-])[A-Z]{1,3}\d?-(?:rr)?\d+(?![0-9]))"         # an item id (R0-2, DA-3, EIC-1, R2-rr1), case-sensitive under re.I
+# `<id> … closed` counts only on the id's own line and before the next item id; a closing word followed by ids is a list label ("Closed: R0-5, DA-3").
+# Until 2.12.1 the window was `.{0,160}?` with re.S: "OPEN: R0-2, R0-5. New majors: …", a blank line, "## Re-review R0 (…)" and "R0-1 closed: …"
+# closed R0-2 (tpami_medimg review_log, 2026-11-08: G7 reported 22 majors closed while three were OPEN).
+CLOSED = r"(?:(?!" + ITEM_REF + r")[^\n]){0,160}?" + CLOSE_WORD + r"(?![ \t*_`]*[:：]?[ \t*_`]*" + ITEM_REF + r")"
+
+def item_key(it): return re.sub(r"^\s*\d+\.\s*|\[.*?\]|\*", "", it["text"]).strip()[:12]      # item text without ordinal / tags: the handle of an item without an id
+
+def closing(text, it):
+    """the first non-negated '<id or first 12 chars> … closed' in `text` (CLOSED), from the handle to the end of its line (the reason follows the word), else ''"""
+    pats = [r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])"] if it["id"] else []
+    if item_key(it): pats.append(re.escape(item_key(it)))
+    for p in pats:
+        for mm in re.finditer(p + CLOSED, text, re.I):
+            if not negated(mm.group(0)):
+                end = text.find("\n", mm.end()); return text[mm.start():len(text) if end < 0 else end]
+    return ""
 
 RE_REVIEW = re.compile(r"^#{1,3}\s*.*(re-review|第二轮|round\s*2|复审|re-?review)", re.I | re.M)
 
@@ -148,17 +170,6 @@ def independent_checks(a, root, st, txt, lines, rr, re_review, majors, synth):
     author_rr = re_review
     for s in sorted(ind_rr, key=lambda s: -s["start"]):
         author_rr = author_rr.replace(s["text"], "")
-    def closing(text, it):
-        """the first non-negated 'id ... closed' span in `text`, extended to the end of its line (the reason follows the word), else ''"""
-        pats = []
-        if it["id"]: pats.append(r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])")
-        key = re.sub(r"^\s*\d+\.\s*|\[.*?\]|\*", "", it["text"]).strip()[:12]
-        if key: pats.append(re.escape(key))
-        for p in pats:
-            for mm in re.finditer(p + r".{0,160}?(closed|关闭|已改|fixed|resolved|通过|accept|已补|已加)", text, re.I | re.S):
-                if not negated(mm.group(0)):
-                    end = text.find("\n", mm.end()); return text[mm.start():len(text) if end < 0 else end]
-        return ""
     bad_n = 0
     for it in strict:
         who = it["id"] or f"L{it['line']}"
@@ -231,16 +242,9 @@ def main():
                       "seat": cur_seat, "sha": cur_sha, "category": cm.group(1).lower() if cm else "", "block": blk})
     majors = [it for it in items if it["sev"] == "major" and not it["in_rereview"]]; minors = [it for it in items if it["sev"] == "minor" and not it["in_rereview"]]
     open_major = []
-    CLOSED = r".{0,160}?(closed|关闭|已改|fixed|resolved|通过|accept|已补|已加)"
     for it in majors:
         if it["closed_inline"]: continue
-        key = re.sub(r"^\s*\d+\.\s*|\[.*?\]|\*", "", it["text"]).strip()[:12]      # text without ordinal/tags
-        hit = False
-        def closes(prefix): return any(not negated(mm.group(0)) for mm in re.finditer(prefix + CLOSED, re_review, re.I | re.S))
-        if re_review:
-            if it["id"] and closes(r"(?<![A-Za-z0-9-])" + re.escape(it["id"]) + r"(?![0-9])"): hit = True
-            elif key and closes(re.escape(key)): hit = True
-        if hit: it["dispo"] = True
+        if re_review and closing(re_review, it): it["dispo"] = True          # `R0-2 closed: …` on the item's own line (CLOSED)
         else: open_major.append(it)
     nod = [it for it in items if not it["dispo"]]
     if nod: say("FAIL", f"{len(nod)} 条意见无处置（同行/后两行写 复核通过|已改|rebut|partial，或在编辑综合表里按编号 R1-3 列出）: " + "; ".join(f"L{it['line']} {it['id'] or ''} {it['text'][:50]}" for it in nod[:4]))

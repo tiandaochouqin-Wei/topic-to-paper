@@ -164,6 +164,27 @@ def caption_body(txt):
     return re.sub(r"\s+", " ", re.sub(r"^\s*(?:Fig\.|Figure|FIGURE)\s*\d+\s*[.:|]?\s*", "", s)).strip()
 
 
+def printed_text(page, clip):
+    """text of a page region as printed: Word and LaTeX often draw a space as a gap between glyphs rather than as a space character,
+    so plain extraction reads "κ ≥ 1" as "κ ≥1"; a gap wider than 0.2 of the font size counts as a space"""
+    try:
+        raw = page.get_text("rawdict", clip=clip)
+    except Exception:
+        return page.get_text("text", clip=clip)
+    lines = []
+    for b in raw.get("blocks", []):
+        for ln in b.get("lines", []):
+            out, prev = [], None
+            for sp in ln.get("spans", []):
+                for ch in sp.get("chars", []):
+                    c = ch.get("c", "")
+                    if prev is not None and c != " " and out and out[-1] != " " and ch["bbox"][0] - prev > 0.2 * sp.get("size", 10):
+                        out.append(" ")
+                    out.append(c); prev = ch["bbox"][2]
+            lines.append("".join(out))
+    return "\n".join(lines)
+
+
 def caps_match(tex_cap, pdf_txt):
     """does the printed caption start like the TeX caption (commands dropped, ligatures and hyphenation tolerated)?  None when there is nothing to compare"""
     a = alnum(tex_plain(tex_cap))[:40]; b = alnum(caption_body(pdf_txt))[:40]
@@ -252,7 +273,7 @@ def pdf_caption(doc, n):
     """(page index, caption text without its label) of 'Figure n' in the compiled PDF, or None"""
     found = locate(doc, n)
     if not found: return None
-    return found[0], caption_body(doc[found[0]].get_text("text", clip=found[1]))
+    return found[0], caption_body(printed_text(doc[found[0]], found[1]))
 
 
 def raster_pages(doc, root, g):
@@ -383,8 +404,8 @@ def build_figure(root, g, doc, outdir, plan_rows, fig_rows, ex_rows):
         dst = os.path.join(outdir, f"ex{i}{os.path.splitext(e['thumb'])[1] or '.png'}"); shutil.copy2(os.path.join(root, e["thumb"]), dst); ex_abs.append(dst)
     srcs = sources_of(g)
     cap = ""
-    if found: cap = caption_body(doc[found[0]].get_text("text", clip=found[1]))
-    cap = (cap or g.get("tex_caption") or "")[:700]
+    if found: cap = caption_body(printed_text(doc[found[0]], found[1]))
+    cap = (cap or g.get("tex_caption") or "")[:3000]          # the whole caption: a reviewer checking a caption item must see all of it
     entry = {"number": g["number"], "number_source": g["number_source"], "verified": g.get("verified", "not checked"), "plan_number": g.get("plan_number", 0),
              "id": g["id"], "role": role, "caption": cap,
              "sources": [{"path": p, "sha256": sha256_of(os.path.join(root, p))} for p in srcs], "sha256": sha_of_sources(root, srcs),

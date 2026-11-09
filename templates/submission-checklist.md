@@ -23,7 +23,8 @@ Guide for Authors 日期：
 - [ ] 盲稿 grep 作者姓/单位/邮箱/基金号/"our previous"/"we previously" 为空
 - [ ] 关键词数 ≤ keyword_max
 - [ ] 参考文献数 ≤ ref_max
-- [ ] 字数/页数 ≤ 上限
+- [ ] 字数/页数 ≤ 上限（LaTeX 项目：G6d 按 state.target.page_limit 查编译后的 PDF；DOCX 项目人工核）
+- [ ] 上传的 PDF 就是 G6d 查过的那份（`pdf_check.py check --pdf <上传文件>` 无 FAIL：无隐藏文字、无 Type 3 字体、无附件 / JavaScript、盲审元数据与作者栏干净、纸张尺寸对）
 
 ## 最后
 - [ ] gate_check.py all 全绿，gate_report.md 日期为今天

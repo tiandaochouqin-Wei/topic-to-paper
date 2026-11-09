@@ -504,3 +504,18 @@ def test_consistency_rereview_on_the_same_packet_or_with_open_does_not_close(pro
 def test_figures_changed_after_the_consistency_review_warn(proj):
     sha = (_make(proj), _man(proj)["sha8"])[1]; _accept_all(proj, sha); _draw(proj / FIGS[1], bars=(9, 9, 9, 9)); r = _check(proj)
     assert r.fails == 0 and "[WARN] figure_review: 跨图一致性审稿（packet " + sha + "）之后 Fig 1 又改了" in r.out, r.out
+
+
+def test_printed_text_keeps_gap_spaces_and_whole_caption(tmp_path):
+    """a space drawn as a glyph gap (as Word does after some symbols) is a space in the packet's caption text"""
+    fitz = pytest.importorskip("fitz")
+    import importlib, sys
+    sys.path.insert(0, os.path.join(SKILL, "scripts"))
+    fr = importlib.import_module("figure_review")
+    doc = fitz.open(); page = doc.new_page(width=400, height=200)
+    page.insert_text((20, 50), "Figure 2. grey, k >=", fontsize=10)
+    w = fitz.get_text_length("Figure 2. grey, k >=", fontsize=10)
+    page.insert_text((20 + w + 3.3, 50), "1, limit", fontsize=10)      # 3.3 pt gap, no space character
+    txt = fr.printed_text(page, page.rect)
+    assert ">= 1, limit" in txt
+    assert fr.caption_body(txt).startswith("grey, k >= 1")

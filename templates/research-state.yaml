@@ -12,6 +12,10 @@ target:
   deadline: ""
   guide_file: submission/guide.txt
   page_limit: null
+  page_limit_end: ""       # G6d：编译后 PDF 从这些标题起不计页（| 分隔）；空 = References|Bibliography|LLM Usage Statement|参考文献；none = 每页都计（参考文献也算页数的刊物）
+  page_size: ""            # G6d：letter | a4 | <宽>x<高>mm；空则看 \documentclass 的 letterpaper / a4paper（CVPR / ICCV / NeurIPS / ICML / AAAI = letter）
+  supp_pdf: ""             # G6d：补充材料 PDF（相对项目根）；空则找 main.pdf 旁边的 supp.pdf
+  hidden_text_waiver: ""   # G6d：PDF 里确有正常的隐藏文字（无障碍文字层、扫描件 OCR 层）时写明原因，隐藏文字由 FAIL 降为 WARN
   word_limit: null
   abstract_word_limit: null
   keyword_max: null

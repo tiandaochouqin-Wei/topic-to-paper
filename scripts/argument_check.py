@@ -166,6 +166,8 @@ def check_recurrence(claim, ms, fam):
     # end of the paper
     if fam == "nature":
         paras = dp.paragraphs(ms.text("discussion")); hay = paras[0] if paras else ""; where = "Discussion 第一段"
+        if not hay:   # materials-journal layout (state.target.section_layout: materials): Discussion merged into Results, the paper ends with a Conclusion
+            hay = " ".join(sentences(ms.text("conclusion"))[:2]); where = "Conclusion 前两句（无 Discussion 节）"
     else:
         hay = " ".join(sentences(ms.text("conclusion"))[:2]); where = "Conclusion 前两句"
         if not hay:

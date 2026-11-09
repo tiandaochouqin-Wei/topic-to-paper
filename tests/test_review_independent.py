@@ -392,3 +392,29 @@ def test_rereview_warns_when_the_item_has_no_disposition(research):
     edit(research / LOG, "→ 已改: Section 4.4 now marks two of four cells as not resolvable (Table 2).", "")
     r = run("review_packet.py", "rereview", "--round", 1, "--items", "R1-1", cwd=research)
     assert r.returncode == 0 and "[WARN] packet: R1-1" in r.out and "no disposition recorded" in read(research / "paper" / "review_packet" / "round1" / "rereview" / "prompts" / "R1-1.md"), r.out
+
+
+def test_rereview_of_a_later_round_reads_that_rounds_items(research):
+    """round 2's items are below round 1's re-reviews in the log: the packet must take them from the round-2 block, not from round 1"""
+    _fake_pdf(research, "%PDF-1.4 v1\n"); assert run("review_packet.py", "make", cwd=research).returncode == 0
+    _fake_pdf(research, "%PDF-1.4 v2\n", keep=True); assert run("review_packet.py", "make", cwd=research).returncode == 0
+    sha2 = _manifest(research, 2)["sha8"]
+    write(research / LOG, read(research / LOG) + f"""
+## Reviewer R1+R3 (independent, packet {sha2})
+### R1 methodology
+1. [major] Round-two methods item: the held-out grid shares seeds with development. category: validity → 已改: five new seeds (Methods).
+### R3 reproducibility
+1. [major] Round-two reproducibility item: the seed list is not in the paper. category: format → 已改: Methods lists all seeds.
+
+## Reviewer R2 (independent, packet {sha2})
+### R2 Domain reviewer
+1. [minor] Round-two domain item. category: clarity → 已改: one sentence.
+""")
+    _fake_pdf(research, "%PDF-1.4 v3\n", keep=True)
+    r = run("review_packet.py", "rereview", "--round", 2, "--items", "R1-1,R3-1", cwd=research)
+    assert r.returncode == 0 and not r.crashed, r.out
+    d = research / "paper" / "review_packet" / "round2" / "rereview" / "prompts"
+    assert "Round-two methods item" in read(d / "R1-1.md") and "single-run differences" not in read(d / "R1-1.md")
+    assert "Round-two reproducibility item" in read(d / "R3-1.md") and "Methods lists all seeds" in read(d / "R3-1.md")
+    r = run("review_packet.py", "rereview", "--round", 1, "--items", "R3-1", cwd=research)
+    assert r.returncode == 1 and "找不到意见" in r.out                      # round 1 has no R3 item: the slice stops at round 1's re-reviews

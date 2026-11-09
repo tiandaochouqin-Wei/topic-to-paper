@@ -34,6 +34,7 @@ for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to GBK, w
     if hasattr(_s, "reconfigure"): _s.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__)); SKILL = os.path.dirname(HERE)
+if HERE not in sys.path: sys.path.insert(0, HERE)     # `python -I` leaves the script directory off sys.path; find_blocks / check import latex_check (2.12.1)
 NORMS_CSV = os.path.join(SKILL, "references", "algorithm-norms.csv")
 FAILS = WARNS = 0
 def say(st, msg):

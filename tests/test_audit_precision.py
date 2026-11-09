@@ -80,3 +80,21 @@ def test_split_files_configured_but_missing_says_so(research):
     r = run("audit_check.py", cwd=research)
     assert "已配但文件不存在" in r.out, r.out
     assert "未提供 split_files" not in r.out
+
+
+def test_leak_flag_protocol_exemption_needs_reason_and_logged_convention(capsys):
+    """tpami_medimg 2026-11-07: an own-box protocol switches box_from_heldout on by definition (each reader prompts with their own box). Such runs may
+    pass as WARN only with a stated reason AND a logged convention change; without either they FAIL as before, and other runs are untouched."""
+    ac = _ac()
+    runs = {"selfprompt_riga_disc": {"args": {"box_from_heldout": 1}}, "single_rater_riga_disc": {"args": {"box_from_heldout": 0}}}
+    cfg = {"leak_flags": ["box_from_heldout"], "leak_flag_protocols": [{"runs": "selfprompt_*", "flags": ["box_from_heldout"], "reason": "own box at test"}]}
+    ac.FAILS = 0; ac.check_leak_flags(cfg, runs, ["2026-11-07 leak_flag_protocols: own-box protocol"]); out = capsys.readouterr().out
+    assert ac.FAILS == 0 and "[WARN] leakage: selfprompt_riga_disc" in out and "[PASS] leakage" in out, out
+    ac.FAILS = 0; ac.check_leak_flags(cfg, runs, []); out = capsys.readouterr().out
+    assert ac.FAILS == 1 and "未登记" in out, out
+    cfg2 = {"leak_flags": ["box_from_heldout"], "leak_flag_protocols": [{"runs": "selfprompt_*", "flags": ["box_from_heldout"], "reason": ""}]}
+    ac.FAILS = 0; ac.check_leak_flags(cfg2, runs, ["leak_flag_protocols"]); out = capsys.readouterr().out
+    assert ac.FAILS == 1, out
+    runs3 = {"rec_quantile_riga_disc": {"args": {"box_from_heldout": 1}}}
+    ac.FAILS = 0; ac.check_leak_flags(cfg, runs3, ["leak_flag_protocols"]); out = capsys.readouterr().out
+    assert ac.FAILS == 1, out

@@ -11,6 +11,8 @@ Checks are the five-to-eight mechanical signatures that separate the families in
   cs_conf  : order Intro > (Related) > Method > Experiments > Conclusion; contribution list 3–5 items in Intro; Experiments has an Ablation subsection; ≥3 numbered
              equations in Method; abstract 120–220 words; intro ≤ 25 % of body; Conclusion present
   cs_journal: as cs_conf plus Related Work section present (WARN if absent), abstract ≤ 250 words, Discussion/Limitations subsection present (WARN), ≥5 equations (WARN)
+  state.target.section_layout: materials (with family nature) -- Wiley/Elsevier/ACS materials journals: Introduction -> Results and Discussion -> Conclusion,
+             Materials and Methods before Results or after the Conclusion, no separate Discussion required (replaces the order / no-Conclusion / Discussion-share rules)
 Common: body-word count vs. family median ±60 % (WARN); reference count vs. state.target.ref_max; `**Algorithm N.**` blocks vs. references/algorithm-norms.csv (WARN when the family's method
   papers mostly have pseudocode and the manuscript has a Method section but no Algorithm, or has more blocks than p90 of the papers that have any; an INFO line with the share otherwise).
 Exit = #FAIL.
@@ -66,9 +68,9 @@ def headings(md):
 
 def canon(title):
     t = re.sub(r"^\d+(\.\d+)*\.?\s*", "", title).lower()
-    for pat, name in [(r"^abstract", "abstract"), (r"introduction", "intro"), (r"related work|background|prior work", "related"), (r"^(method|methods|methodology|approach|proposed)", "method"),
+    for pat, name in [(r"^abstract", "abstract"), (r"introduction", "intro"), (r"related work|background|prior work", "related"), (r"^(method|methods|methodology|approach|proposed|materials and methods|experimental section$|experimental$)", "method"),
                       (r"experiment|^results?\b|evaluation", "results"), (r"^discussion", "discussion"), (r"limitation", "limitations"), (r"^conclusion|concluding", "conclusion"), (r"ablation", "ablation"),
-                      (r"highlights", "highlights"), (r"data availability|code availability|acknowledg|author contribution|competing|credit|declaration|funding", "backmatter")]:
+                      (r"highlights", "highlights"), (r"data availability|code availability|acknowledg|author contribution|competing|conflict of interest|ethics statement|credit|declaration|funding", "backmatter")]:
         if re.search(pat, t): return name
     return None
 
@@ -121,11 +123,25 @@ def main():
     with_stat = [p for p in stat_paras if re.search(r"\bp\s*[<=>]\s*0?\.\d|95\s*%\s*CI|confidence interval|\bn\s*=\s*\d|±|\bs\.d\.|\bs\.e\.m|seeds?\b", p, re.I)]
     disc = sec("discussion"); disc_share = words(disc) / bw if disc else 0.0
     intro_share = words(sec("intro")) / bw if sec("intro") else 0.0
-    if fam == "nature":
+    layout = str(((st or {}).get("target") or {}).get("section_layout") or "").strip().lower()
+    if fam == "nature" and layout == "materials":
+        # state.target.section_layout: materials -- Wiley / Elsevier / ACS materials and biomaterials journals (e.g. BMEMat, Adv. Mater.):
+        # Introduction, Results and Discussion, Conclusion(s), and Materials and Methods / Experimental Section either before Results or after
+        # the Conclusion; the Discussion is merged into Results (a Limitations subsection is expected). The rest of the nature profile still applies.
+        need = ["intro", "results", "conclusion", "method"]; miss = [n for n in need if n not in seq]
+        if miss: say("FAIL", f"材料类期刊稿缺章节 {miss}（Introduction → Results and Discussion → Conclusion，Materials and Methods 在 Results 前或 Conclusion 后）")
+        else:
+            i, r, c, m = (seq.index(n) for n in need)
+            ok = i < r < c and (m > c or i < m < r)
+            say("PASS" if ok else "FAIL", f"章节顺序（材料类期刊）Introduction → Results and Discussion → Conclusion，Methods 在 Results 前或 Conclusion 后：{seq}")
+        if "related" in seq: say("FAIL", "材料类期刊稿不设 Related Work 节（相关工作融进引言）")
+        if "discussion" in seq: say("WARN", "材料类期刊稿通常把 Discussion 并入 Results and Discussion")
+    if fam == "nature" and layout != "materials":
         order_ok = "results" in seq and "discussion" in seq and "method" in seq and seq.index("results") < seq.index("discussion") < seq.index("method")
         say("PASS" if order_ok else "FAIL", f"章节顺序 Results → Discussion → Methods：{seq}")
         for bad in ("related", "conclusion"):
             if bad in seq: say("FAIL", f"Nature 稿不设 {bad} 节（相关工作融进引言，结论融进 Discussion 末段）")
+    if fam == "nature":
         if contrib: say("FAIL", "引言有 contributions 列表：Nature 稿末段用一句 'Here we show …' 代替")
         if not re.search(r"\bHere,?\s+we\s+(show|report|present|demonstrate|develop|introduce|propose|describe|find|establish)", sec("intro") or prose[:6000], re.I): say("WARN", "引言末段没有 'Here we show/report …' 句")
         ab_lim = ((st or {}).get("target") or {}).get("abstract_word_limit") or 150
@@ -137,10 +153,10 @@ def main():
         if n_eq_intro_res: say("FAIL", f"引言/结果/讨论里有 {n_eq_intro_res} 个编号公式：Nature 正文不放公式，移到 Methods 或 SI")
         if sota: say("WARN", f"'state-of-the-art' 出现 {sota} 次（Nature 系 20% 用；每处回表确认作用域，scope 关口照查）")
         if abl_word: say("WARN", f"'ablation' 出现 {abl_word} 次（Nature 系 10%；写成 control experiments）")
-        say("PASS" if disc_share >= 0.12 else ("WARN" if disc_share >= 0.06 else "FAIL"), f"Discussion 占正文 {disc_share:.0%}（Nature 中位 18%；<6% FAIL，<12% WARN）")
+        if layout != "materials": say("PASS" if disc_share >= 0.12 else ("WARN" if disc_share >= 0.06 else "FAIL"), f"Discussion 占正文 {disc_share:.0%}（Nature 中位 18%；<6% FAIL，<12% WARN）")
         if stat_paras: say("PASS" if len(with_stat) / len(stat_paras) >= 0.5 else "WARN", f"Results 含数字段落中带统计（p/CI/n=/±）的 {len(with_stat)}/{len(stat_paras)}")
         if we_per_1k > 12: say("WARN", f"'we' {we_per_1k:.0f}/千词（Nature 中位 9；多用 'Here we' 与被动）")
-        if "limitations" not in seq and not re.search(r"limitation", disc, re.I): say("WARN", "Discussion 里没有 limitation 字样")
+        if "limitations" not in seq and not re.search(r"limitation", disc or (res if layout == "materials" else ""), re.I): say("WARN", "Discussion 里没有 limitation 字样")
     else:
         need = ["intro", "method", "results", "conclusion"]
         miss = [n for n in need if n not in seq]

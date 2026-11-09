@@ -200,7 +200,7 @@ def seed_means(rows, gk, pm):
     common = set.intersection(*(set(d) for d in cell.values()))
     if common == {""}: return {k: statistics.mean(d[""]) for k, d in cell.items()}, "全部行均值（无 seed 列）"
     use = common - {""} if common - {""} else None
-    out = {k: statistics.mean(statistics.mean(v) for s, v in d.items() if use is None or s in use) for k, d in cell.items()}
+    out = {k: statistics.mean([statistics.mean(v) for s, v in d.items() if use is None or s in use] or [statistics.mean(v) for v in d.values()]) for k, d in cell.items()}  # a method with no shared seed falls back to its own seeds
     if use is None: return out, "各方法 seed 无交集：按各自全部 seed 平均"
     seeds = sorted(use, key=_seed_key); extra = any(set(d) - use for d in cell.values())
     return out, f"{len(seeds)} 个共同 seed 的均值（seed {', '.join(seeds)}）" + ("；只在部分方法出现的 seed 不计" if extra else "")

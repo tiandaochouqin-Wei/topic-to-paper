@@ -11,10 +11,10 @@
 
 state.bundle (see templates/research-state.yaml):
   code_dir, entry ("python train.py --exp {run} {args}"), eval ("python eval.py --exp {runs}"), post (optional, e.g. preds dump),
-  env (requirements.txt | environment.yml), python_min, data: [{name, remote, inputs: [...]}], scheduler: bash|slurm,
-  slurm: {partition, gres, time, mem, cpus, max_parallel, modules: [], conda: ""}, smoke: {args: "--epochs 1", runs: [ref]},
+  env (requirements.txt | environment.yml), python_min, data: [{name, remote, inputs: [...]}], scheduler: bash|slurm|lsf,
+  slurm: {partition, account?, gres, time, mem, cpus, max_parallel, modules: [], conda: "" | venv: ""} | lsf: {queue, gpu, cpus, time HH:MM, mem_mb?, resreq, max_parallel, requeue_exit, guard_max_used_mb, modules, conda|venv}, smoke: {args: "--epochs 1", runs: [ref]},
   require_gpu (default true; false = CUDA absence is INFO in check_env, for CPU-only pipelines and the regression tests),
-  data[i].clip_glob: "*" = every sub-directory is a clip; "." = the data directory itself holds the inputs (no clip level)
+  data[i].clip_glob: "*" = every sub-directory is a clip; "*/*" = two levels (e.g. region/case); "." = the data directory itself holds the inputs (no clip level)
   matrix: {seeds: [...], ref: {name, args}, baselines: {name: args}, ablations: {name: args}, extra: {name: args}, seed_flag: "--seed {seed}", seeded: [names]}
 
 Bundle contents:
@@ -109,7 +109,7 @@ def make(a):
     # check_env.py
     chk = f'''# -*- coding: utf-8 -*-
 """Remote pre-flight. Exits non-zero on ANY missing piece — never let a run start half-blind."""
-import os, sys, json, shutil, subprocess, importlib, fnmatch
+import os, sys, json, shutil, subprocess, importlib, fnmatch, glob
 bad = 0
 def ok(c, msg):
     global bad
@@ -137,7 +137,7 @@ for d in DATA:   # remote 里的 ~ 与 $VAR 要在服务器上展开，否则路
 for d in DATA:
     ok(os.path.isdir(d["path"]), f"data {{d['name']}} at {{d['path']}}")
     if os.path.isdir(d["path"]):
-        subs = [d["path"]] if d["clip_glob"] in ("", ".") else ([os.path.join(d["path"], s) for s in sorted(os.listdir(d["path"])) if os.path.isdir(os.path.join(d["path"], s)) and fnmatch.fnmatch(s, d["clip_glob"])] or [d["path"]])
+        subs = [d["path"]] if d["clip_glob"] in ("", ".") else (sorted(p for p in glob.glob(os.path.join(d["path"], d["clip_glob"])) if os.path.isdir(p)) or [d["path"]])   # glob: "*/*" = two-level clips (region/case)
         ok(len(subs) > 0, f"  {{len(subs)}} clips match '{{d['clip_glob']}}'")
         for inp in d["inputs"]:
             miss = [s for s in subs[:{b.get('check_first_n', 50)}] if not os.path.exists(os.path.join(s, inp))]
@@ -198,10 +198,13 @@ echo "== done $RUN"
         sl = b.get("slurm") or {}
         mods = "\n".join(f"module load {m}" for m in (sl.get("modules") or []))
         conda = (f'source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate {sl["conda"]} || echo "conda activate {sl["conda"]} failed"') if sl.get("conda") else ""
+        if sl.get("venv"):   # plain virtualenv instead of conda (e.g. NAISS clusters: module load Python + venv)
+            conda = f'source {sl["venv"]}/bin/activate || echo "venv {sl["venv"]} activation failed"'
+        account = f"#SBATCH -A {sl['account']}\n" if sl.get("account") else ""   # clusters that bill a project (NAISS -A) refuse jobs without it
         jname = re.sub(r"[^A-Za-z0-9_.-]", "", str(st.get("project", {}).get("title", "")))[:12] or "t2p"
         sb = f"""#!/usr/bin/env bash
 #SBATCH -J {jname}
-#SBATCH -p {sl.get('partition', 'gpu')}
+{account}#SBATCH -p {sl.get('partition', 'gpu')}
 #SBATCH --gres={sl.get('gres', 'gpu:1')}
 #SBATCH -t {sl.get('time', '12:00:00')}
 #SBATCH --mem={sl.get('mem', '32G')}
@@ -244,6 +247,67 @@ for i in $(seq "$A" "$B"); do
 done
 echo "all $((B-A+1)) tasks finished"
 """)
+    elif sched == "lsf":
+        lf = b.get("lsf") or {}
+        mods = "\n".join(f"module load {m}" for m in (lf.get("modules") or []))
+        act = (f'source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate {lf["conda"]} || echo "conda activate {lf["conda"]} failed"') if lf.get("conda") else ""
+        if lf.get("venv"):
+            act = f'source {lf["venv"]}/bin/activate || echo "venv {lf["venv"]} activation failed"'
+        jname = re.sub(r"[^A-Za-z0-9_.-]", "", str(st.get("project", {}).get("title", "")))[:12] or "t2p"
+        rq = lf.get("requeue_exit", 75)
+        mem = f'\n#BSUB -R "rusage[mem={lf["mem_mb"]}]"' if lf.get("mem_mb") else ""
+        guard_mb = int(lf.get("guard_max_used_mb", 0) or 0)
+        guard = (f"# shared GPUs: if the GPU LSF handed us already has > {guard_mb} MiB in use by someone else, requeue (exit {rq}, see #BSUB -Q)\n"
+                 "USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')\n"
+                 f"for u in $USED; do if [ -n \"$u\" ] && [ \"$u\" -gt {guard_mb} ]; then echo \"gpu busy ($u MiB) -> requeue\"; sleep 120; exit {rq}; fi; done") if guard_mb else ""
+        bs = f"""#!/usr/bin/env bash
+#BSUB -J {jname}[1-{len(rows)}]%{lf.get('max_parallel', 4)}
+#BSUB -q {lf.get('queue', 'gpu')}
+#BSUB -gpu "{lf.get('gpu', 'num=1')}"
+#BSUB -n {lf.get('cpus', 8)}
+#BSUB -R "{lf.get('resreq', 'span[hosts=1]')}"{mem}
+#BSUB -Q "{rq} 1"
+#BSUB -W {lf.get('time', '12:00')}
+#BSUB -o lsf_%J_%I.out
+# one array element (LSB_JOBINDEX, 1-based) = one matrix.csv row. Finished runs (eval.json present) exit at once, so
+# re-submitting after a partial failure only runs what is missing; failures are appended to failed.txt. Dry-run without a cluster:
+#   BSUB="bash bsub_local.sh" bash run_all.sh
+set -uo pipefail
+{mods}
+{act}
+cd "${{LS_SUBCWD:-$(pwd)}}"
+PYBIN="${{PYTHON:-python}}"
+IDX=$((LSB_JOBINDEX - 1))
+LINE=$("$PYBIN" -c 'import csv, sys; r = list(csv.DictReader(open("matrix.csv", encoding="utf-8")))[int(sys.argv[1])]; print(r["run_id"], r["args"])' "$IDX")
+RUN=${{LINE%% *}}; ARGS=${{LINE#* }}
+if [ -f "{cdn}/runs/$RUN/eval.json" ]; then echo "skip $RUN (eval.json present)"; exit 0; fi
+{guard}
+"$PYBIN" check_env.py || {{ echo "FAILED $RUN (check_env on $(hostname))" >> failed.txt; exit 1; }}
+echo "element $LSB_JOBINDEX -> $RUN :: $ARGS"
+bash run_one.sh "$RUN" $ARGS || {{ echo "FAILED $RUN" >> failed.txt; exit 1; }}
+"""
+        io.open(os.path.join(out, "jobs.bsub"), "w", encoding="utf-8", newline="\n").write(bs)
+        io.open(os.path.join(out, "run_all.sh"), "w", encoding="utf-8", newline="\n").write(
+            '#!/usr/bin/env bash\n# submit the whole matrix as one LSF job array. Login nodes have no GPU, so the pre-flight here skips the CUDA check;\n'
+            '# every array element runs the full check_env.py on its compute node before training.\n'
+            'cd "$(dirname "$0")"\n"${PYTHON:-python}" check_env.py --no-gpu || exit 1\n${BSUB:-bsub} < jobs.bsub\n')
+        io.open(os.path.join(out, "bsub_local.sh"), "w", encoding="utf-8", newline="\n").write(r"""#!/usr/bin/env bash
+# Serial emulator of `bsub < jobs.bsub` for a job array: runs every element one after another in this shell, with the
+# LSB_* variables the script reads, and writes lsf_<job>_<index>.out like the real thing. For dry runs on a workstation
+# and for the regression suite; it is NOT LSF (no queue, no GPU allocation, no run limit, exit 75 is not requeued).
+#   BSUB="bash bsub_local.sh" bash run_all.sh
+set -u
+S="${1:-}"
+if [ -z "$S" ]; then T=$(mktemp); cat > "$T"; S="$T"; fi   # `bsub < jobs.bsub` feeds the script on stdin
+RANGE=$(grep -m1 -oE '^#BSUB -J [^[]*\[[0-9]+-[0-9]+\]' "$S" | grep -oE '[0-9]+-[0-9]+')
+A=${RANGE%-*}; B=${RANGE#*-}
+export LS_SUBCWD="$(pwd)" LSB_JOBID=$$
+echo "Job <$$> is submitted to queue (local emulation: elements $A-$B run serially)"
+for i in $(seq "$A" "$B"); do
+  LSB_JOBINDEX=$i bash "$S" > "lsf_${LSB_JOBID}_${i}.out" 2>&1 || echo "element $i exited non-zero (lsf_${LSB_JOBID}_${i}.out)"
+done
+echo "all $((B-A+1)) elements finished"
+""")
     else:
         lines = ["#!/usr/bin/env bash", "# full matrix, sequential. Already-finished runs (eval.json present) are skipped so this is restartable.", "set -uo pipefail", 'cd "$(dirname "$0")"', '"${PYTHON:-python}" check_env.py || exit 1']
         for r in rows:
@@ -256,7 +320,7 @@ echo "all $((B-A+1)) tasks finished"
 cd "$(dirname "$0")"
 D=results_$(date +%Y%m%d_%H%M)
 FILES=()
-for f in manifest.json matrix.csv smoke_report.txt failed.txt slurm_*.out; do [ -e "$f" ] && FILES+=("$f"); done
+for f in manifest.json matrix.csv smoke_report.txt failed.txt slurm_*.out lsf_*.out; do [ -e "$f" ] && FILES+=("$f"); done
 while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 \\( -name args.json -o -name log.json -o -name eval.json -o -name hardware.json -o -name manifest.json -o -name stats.npz -o -name stats.json -o -name train.log -o -name eval.log -o -name 'split*' \\) 2>/dev/null)
 while IFS= read -r f; do FILES+=("$f"); done < <(find {cdn}/runs -maxdepth 2 -type d -name preds 2>/dev/null)
 tar czf "$D.tar.gz" "${{FILES[@]}}"
@@ -272,9 +336,9 @@ ls -la "$D.tar.gz"; echo "send $D.tar.gz back ($(find {cdn}/runs -maxdepth 2 -na
 
 按顺序：
 1. 建环境：`pip install -r {cdn}/{env}`（或 conda env create -f）；`python` 不是 3 的机器先 `export PYTHON=python3`
-2. `python check_env.py{' --no-gpu' if sched == 'slurm' else ''}` —— 任何 MISS 都不要往下跑，把输出发回来{'（登录节点无 GPU，--no-gpu 跳过显卡项；作业内会再查）' if sched == 'slurm' else ''}
-3. {'`srun -p ' + str((b.get('slurm') or {}).get('partition', 'gpu')) + ' --gres=' + str((b.get('slurm') or {}).get('gres', 'gpu:1')) + ' --pty bash smoke.sh`（要在计算节点上跑）' if sched == 'slurm' else '`bash smoke.sh`'} —— 几分钟；把 `smoke_report.txt` 发回来，我确认后再跑全量
-4. `bash run_all.sh` —— {len(rows)} 个 run（{'sbatch 数组作业，一个 task 一个 run；`squeue -u $USER` 看进度，`slurm_*.out` 看日志；中途失败就再跑一次 run_all.sh，已完成的 run 自动跳过，失败的在 failed.txt' if sched == 'slurm' else '顺序跑，可中断重跑，已完成的 run 自动跳过，失败的在 failed.txt'}）
+2. `python check_env.py{' --no-gpu' if sched in ('slurm', 'lsf') else ''}` —— 任何 MISS 都不要往下跑，把输出发回来{'（登录节点无 GPU，--no-gpu 跳过显卡项；作业内会再查）' if sched in ('slurm', 'lsf') else ''}
+3. {'`srun ' + (('-A ' + str((b.get('slurm') or {}).get('account')) + ' ') if (b.get('slurm') or {}).get('account') else '') + '-p ' + str((b.get('slurm') or {}).get('partition', 'gpu')) + ' --gres=' + str((b.get('slurm') or {}).get('gres', 'gpu:1')) + ' --pty bash smoke.sh`（要在计算节点上跑）' if sched == 'slurm' else ('`bsub -q ' + str((b.get('lsf') or {}).get('queue', 'gpu')) + ' -gpu "' + str((b.get('lsf') or {}).get('gpu', 'num=1')) + '" -n ' + str((b.get('lsf') or {}).get('cpus', 8)) + ' -W 02:00 -o smoke_%J.out bash smoke.sh`（gpu 队列作业；`bjobs` 等它结束后看 smoke_%J.out）' if sched == 'lsf' else '`bash smoke.sh`')} —— 几分钟；把 `smoke_report.txt` 发回来，我确认后再跑全量
+4. `bash run_all.sh` —— {len(rows)} 个 run（{'sbatch 数组作业，一个 task 一个 run；`squeue -u $USER` 看进度，`slurm_*.out` 看日志；中途失败就再跑一次 run_all.sh，已完成的 run 自动跳过，失败的在 failed.txt' if sched == 'slurm' else 'bsub 数组作业，一个元素一个 run；`bjobs -A` 看进度，`lsf_*.out` 看日志；中途失败就再跑一次 run_all.sh，已完成的 run 自动跳过，失败的在 failed.txt' if sched == 'lsf' else '顺序跑，可中断重跑，已完成的 run 自动跳过，失败的在 failed.txt'}）
 5. `bash collect.sh` —— 把生成的 `results_*.tar.gz` 发回来（不含 checkpoint）；回来后我跑 `bundle.py ingest` + `tables`
 
 矩阵（matrix.csv）：ref {sum(1 for r in rows if r['role']=='ref')} / baselines {sum(1 for r in rows if r['role']=='baseline')} / ablations {sum(1 for r in rows if r['role']=='ablation')} / extra {sum(1 for r in rows if r['role']=='extra')}，seeds {(b.get('matrix') or {}).get('seeds')}
@@ -375,6 +439,8 @@ def tables(a):
     mx = os.path.join(root, a.matrix) if a.matrix else os.path.join(root, "bundle", "matrix.csv")
     rows = list(csv.DictReader(open(mx, encoding="utf-8"))) if os.path.exists(mx) else [{"run_id": d, "role": "?", "name": d, "seed": ""} for d in sorted(os.listdir(runs_dir))]
     man_p = os.path.join(root, "bundle", "manifest.json"); man = json.load(open(man_p)) if os.path.exists(man_p) else None
+    # sibling bundle variants (bundle_arr/ = same code, other scheduler; deviation logged in research-state convention_changes) are accepted too
+    variant_files = [json.load(open(os.path.join(root, d, "manifest.json"))).get("files") for d in sorted(os.listdir(root)) if d.startswith("bundle_") and os.path.exists(os.path.join(root, d, "manifest.json"))]
     main, abl, skipped = [], [], []
     for r in rows:
         d = os.path.join(runs_dir, r["run_id"]); ev = os.path.join(d, "eval.json")
@@ -383,7 +449,7 @@ def tables(a):
         if e.get("_tainted"): skipped.append((r["run_id"], "_tainted")); continue
         if man and os.path.exists(os.path.join(d, "manifest.json")):
             rm = json.load(open(os.path.join(d, "manifest.json")))
-            if rm.get("files") != man.get("files"): skipped.append((r["run_id"], "manifest differs: code changed between bundle and run")); continue
+            if rm.get("files") != man.get("files") and rm.get("files") not in variant_files: skipped.append((r["run_id"], "manifest differs: code changed between bundle and run")); continue
         hw = ""
         hp = os.path.join(d, "hardware.json")
         if os.path.exists(hp): hw = json.load(open(hp)).get("hardware", "")
@@ -464,7 +530,8 @@ def ingest(a):
     print(f"{n_side} 个包级文件 -> {os.path.relpath(side, root)}/（smoke_report / failed.txt / slurm_*.out / matrix.csv" + (f"；烟测 run {sorted(smoke_seen)} 也放这里，不进 runs/" if smoke_seen else "") + "）")
     man_p = os.path.join(root, "bundle", "manifest.json"); got_p = os.path.join(side, "manifest.json")
     if os.path.exists(man_p) and os.path.exists(got_p):
-        same = json.load(open(man_p)).get("files") == json.load(open(got_p)).get("files")
+        gotf = json.load(open(got_p)).get("files")
+        same = json.load(open(man_p)).get("files") == gotf or any(os.path.exists(os.path.join(root, d, "manifest.json")) and json.load(open(os.path.join(root, d, "manifest.json"))).get("files") == gotf for d in os.listdir(root) if d.startswith("bundle_"))
         say("PASS" if same else "FAIL", "ingest", "返回的 manifest.json 与本地实验包一致" if same else "返回的 manifest.json 与本地实验包不一致：服务器上改过代码，tables 会拒绝每个 run")
     print("\n" + ("ALL PASS" if FAILS == 0 else f"{FAILS} FAIL") + "；下一步 `bundle.py tables`"); sys.exit(0 if FAILS == 0 else 1)
 

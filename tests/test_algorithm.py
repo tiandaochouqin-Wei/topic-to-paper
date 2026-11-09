@@ -3,9 +3,12 @@
 import csv
 import io
 import re
+import subprocess
 import sys
 
-from conftest import SCRIPTS, edit, read, run, touch, write
+import pytest
+
+from conftest import ENV, PY, SCRIPTS, edit, read, run, touch, write
 
 sys.path.insert(0, str(SCRIPTS))
 import make_algorithm as ma  # noqa: E402
@@ -56,6 +59,15 @@ def test_no_algorithm_no_algorithm_lines(research):
     edit(_p(research, MAIN), "Algorithm~\\ref{alg:train} summarises the training procedure.", "")
     r = run("latex_check.py", "check", cwd=research)
     assert r.fails == 0 and "algorithm:" not in r.out, r.out
+
+
+@pytest.mark.parametrize("script", ["make_algorithm.py", "latex_check.py"])
+def test_algorithm_checks_run_under_python_isolated_mode(research, script):
+    """2.12.1: the two scripts import each other inside functions, and `python -I` leaves the script directory off sys.path -> ModuleNotFoundError"""
+    r = subprocess.run([PY, "-I", str(SCRIPTS / script), "check"], cwd=str(research), capture_output=True, text=True, encoding="utf-8", errors="replace", env=ENV)
+    out = r.stdout + r.stderr
+    assert "Traceback" not in out and "ModuleNotFoundError" not in out, out
+    assert "[PASS] algorithm: alg:train" in out and not re.search(r"^\[FAIL\]", out, re.M), out
 
 
 # ------------------------------------------------------------------ skeleton

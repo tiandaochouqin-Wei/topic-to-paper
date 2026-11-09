@@ -76,7 +76,7 @@ def drive(proj, scheduler):
     assert "\r" not in open(b / "matrix.csv", "rb").read().decode(), "matrix.csv must be LF-only: the Slurm job reads it on Linux"
     # ---- remote side: pre-flight, smoke, full matrix, collect — the user's four commands, in order
     env = {**ENV, "PYTHON": PY}
-    r = subprocess.run([PY, "check_env.py"] + (["--no-gpu"] if scheduler == "slurm" else []), cwd=str(b), capture_output=True, text=True, encoding="utf-8", env=env); assert r.returncode == 0 and "ENV OK" in r.stdout, r.stdout + r.stderr
+    r = subprocess.run([PY, "check_env.py"] + (["--no-gpu"] if scheduler in ("slurm", "lsf") else []), cwd=str(b), capture_output=True, text=True, encoding="utf-8", env=env); assert r.returncode == 0 and "ENV OK" in r.stdout, r.stdout + r.stderr
     r = sh(b / "smoke.sh", cwd=b, env=env); assert r.returncode == 0 and "SMOKE DONE" in r.out, r.out
     assert (b / "smoke_report.txt").exists() and (b / "code" / "runs" / "_smoke_ours" / "eval.json").exists(), r.out
     if scheduler == "slurm":
@@ -88,6 +88,14 @@ def drive(proj, scheduler):
         # restart: every task must skip at once
         r = sh(b / "run_all.sh", cwd=b, env={**env, "SBATCH": f"{BASH} sbatch_local.sh"}); assert r.returncode == 0
         assert sum("skip " in read(o) for o in b.glob("slurm_*_*.out")) >= 11, "re-submission must skip finished runs"
+    elif scheduler == "lsf":
+        assert (b / "jobs.bsub").exists() and (b / "bsub_local.sh").exists()
+        r = sh(b / "run_all.sh", cwd=b, env={**env, "BSUB": f"{BASH} bsub_local.sh"}); assert r.returncode == 0 and "is submitted" in r.out, r.out
+        outs = sorted(b.glob("lsf_*_*.out")); assert len(outs) == 11, [o.name for o in outs]
+        assert all("== done" in read(o) for o in outs), [(o.name, read(o)[-300:]) for o in outs if "== done" not in read(o)]
+        assert not (b / "failed.txt").exists(), read(b / "failed.txt")
+        r = sh(b / "run_all.sh", cwd=b, env={**env, "BSUB": f"{BASH} bsub_local.sh"}); assert r.returncode == 0
+        assert sum("skip " in read(o) for o in b.glob("lsf_*_*.out")) >= 11, "re-submission must skip finished runs"
     else:
         r = sh(b / "run_all.sh", cwd=b, env=env); assert r.returncode == 0 and "ALL DONE" in r.out, r.out
         assert not (b / "failed.txt").exists(), read(b / "failed.txt")
@@ -111,7 +119,7 @@ def drive(proj, scheduler):
     return b
 
 
-@pytest.mark.parametrize("scheduler", ["bash", "slurm"])
+@pytest.mark.parametrize("scheduler", ["bash", "slurm", "lsf"])
 def test_fresh_project_p3_to_p5_through_the_bundle(tmp_path, scheduler):
     proj = fresh_project(tmp_path, scheduler)
     drive(proj, scheduler)

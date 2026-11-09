@@ -140,14 +140,23 @@ def cmd_make(a):
           f"把每个子代理返回的审稿原文贴在 paper/review_log.md 的 `## Reviewer <席位> (independent, packet {sha8})` 之下。"
           f"稿子在审稿期间不能改（改了 sha 就对不上）。")
 
-def log_items(root):
-    """{item id -> (item text, disposition)} from the first-round part of paper/review_log.md (ids as review_check.py builds them)"""
+def log_items(root, sha8=""):
+    """{item id -> (item text, disposition)} from one round's reviews in paper/review_log.md (ids as review_check.py builds them).
+    With sha8 (the round's packet) the slice starts at the first `## Reviewer … (independent, packet <sha8>)` heading and ends at the
+    next re-review heading after it, so a later round's items are read instead of the first round's; without it, the first round."""
     lp = os.path.join(root, "paper", "review_log.md")
     if not os.path.exists(lp): die("paper/review_log.md 不存在：先把独立审稿贴进日志并写处置")
     lines = io.open(lp, encoding="utf-8").read().splitlines()
-    rr = next((i for i, l in enumerate(lines) if re.match(r"^#{1,3}\s*.*(re-review|第二轮|复审)", l, re.I)), len(lines))
+    is_rr = lambda l: re.match(r"^#{1,3}\s*.*(re-review|第二轮|复审)", l, re.I)
+    start = 0
+    if sha8:
+        start = next((i for i, l in enumerate(lines) if (m := HEAD_IND.match(l)) and m.group("sha").lower() == sha8.lower()), -1)
+        if start < 0:
+            say("WARN", f"review_log.md 里没有 packet {sha8} 的独立审稿标题（## Reviewer <席位> (independent, packet {sha8})）：按第一轮的意见打包"); start = 0
+    rr = next((i for i, l in enumerate(lines) if i > start and is_rr(l)), len(lines))
     synth = {}; cur = ""; out = {}
     for i, l in enumerate(lines[:rr]):
+        if i < start: continue
         hi = HEAD_IND.match(l)
         if hi: tk = seats_of(hi.group("seat")); cur = tk[0] if tk else ""
         else:
@@ -179,7 +188,7 @@ def cmd_rereview(a):
     orig = json.load(io.open(mp, encoding="utf-8")); st = load_state(root)
     ids = [x.strip() for x in (a.items or "").split(",") if x.strip()]
     if not ids: die("--items R0-1,R2-3 必填")
-    items = log_items(root); miss = [i for i in ids if i not in items]
+    items = log_items(root, orig.get("sha8", "")); miss = [i for i in ids if i not in items]
     if miss: die(f"review_log.md 里找不到意见 {miss}（编号 = 席位-序号，如 R0-1）")
     kind, src = pick_source(root, a); sha = sha256_of(src)
     if sha == orig.get("sha256") and not a.allow_same: die(f"稿件与 round{a.round} 的 packet 相同（sha {sha[:8]}）：复审要在改后版本上做；先改稿并重新编译（确要照样复审加 --allow-same）")
