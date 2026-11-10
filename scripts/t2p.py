@@ -250,7 +250,7 @@ def check(root, net, write=True):
     mt = st.get("method") or {}; mrd = res.get("runs_dir") or aud.get("runs_dir") or "runs"
     if method:
         if any([(mt.get("benchmark") or {}).get("name"), (mt.get("baseline") or {}).get("name"), (mt.get("baseline") or {}).get("code"), mt.get("min_effect_basis")]):
-            rc, f, w, out = run([S("method_track.py"), "headroom"], root); m = re.search(r"G1c: (?:NO-GO|GO)\b[^\n]*", out)
+            rc, f, w, out = run([S("method_track.py"), "headroom"], root); m = re.search(r"G1c: (?:NO-GO|INVALID|GO)\b[^\n]*", out)
             rec("G1c", verdict(f, out), f"headroom {f} FAIL / {w} WARN" + (f"；{m.group(0)[5:]}" if m else ""))
         else: rec("G1c", "PENDING", "state.method 未填（benchmark / baseline / min_effect）：`method_track.py init`，再按 references/method-track.md 做 M0–M3（复现基线 → 误差分解 → oracle → 便宜做法）")
         itp = (mt.get("files") or {}).get("iterations") or "method/iterations.csv"

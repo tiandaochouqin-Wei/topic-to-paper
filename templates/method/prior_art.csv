@@ -1,0 +1,2 @@
+idea,query,source,date,work,year,ref,overlap,difference,searched_by
+#I01,"机制的词 / 目标问题的词 / 别的领域会怎么叫它（每个想法 ≥3 条不同查询，≥2 个来源）",arXiv|Google Scholar|Semantic Scholar|会议论文集,2026-01-01,"相近工作的标题（这条查询什么也没找到就留空，仍然写这一行）",2025,"10.xxxx/… 或 arXiv:2301.01234 或 https://…（必须来自检索结果，不凭记忆）",same_mechanism|same_goal|related|none,"overlap 是 same_mechanism / same_goal 时必填：一句话，和你的想法差在哪",independent|self

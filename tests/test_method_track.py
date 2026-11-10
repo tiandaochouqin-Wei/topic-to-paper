@@ -45,11 +45,12 @@ method:                                   # 方法轨道
     confirm: {tag: confirm, files: [data/confirm/c.txt], sha256: ""}   # sha256 由 init 写
   headroom:
     k_sd: 3
-    oracle: {desc: "GT routing", run_glob: "runs/oracle_dev_s*", key: ""}
+    oracle: {desc: "GT routing", run_glob: "runs/oracle_dev_s*", key: "", applied: "train+test", sanity: {setting: "night failures injected on dev, oracle told where", why: "the injected failure is the only limiting factor", baseline_glob: "runs/san_base_s*", oracle_glob: "runs/san_orc_s*", key: ""}}
     cheap_fixes:
       - {name: augmentation, run_glob: "runs/aug_dev_s*", key: ""}
       - {name: longer_training, run_glob: "runs/long_dev_s*", key: ""}
   budget: {max_iters: 30, stall: 5, iter_hours: 2}
+  prior_art: {min_queries: 3, min_works: 3, independent_waiver: ""}
   files: {bottleneck: method/bottleneck.md, ideas: method/ideas.csv, iterations: method/iterations.csv, tuning: method/baseline_tuning.csv}
   components:
     - {name: module_A, ablation_glob: "runs/i04_noA_s*"}
@@ -110,13 +111,58 @@ def M(p, *args):
     return run("method_track.py", *args, cwd=p)
 
 
-def log_add(p, i, runs, decision=None, hyp="假设", change="改动"):
+def log_add(p, i, runs, decision=None, hyp="假设", change="改动", idea=None):
     a = ["log", "add", "--id", i, "--hypothesis", hyp, "--change", change, "--runs", runs]
     if decision:
         a += ["--decision", decision]
+    if idea:
+        a += ["--idea", idea]
     r = M(p, *a)
     assert r.fails == 0 and not r.crashed, r.out
     return r
+
+
+# ---- prior-art record ("查撞车"): ideas N1 (differs) and N2..N4 (clear) carry a full record; N5 is still open and has none
+def prior_rows(idea, base, closest_first=False):
+    rows = []
+    for k, (q, s) in enumerate([("mechanism words", "arXiv"), ("goal words", "Google Scholar"), ("other field words", "arXiv")]):
+        rows.append(dict(idea=idea, query=f"{idea} {q}", source=s, date="2026-11-10", work=f"Prior work {idea}-{k}", year="2024",
+                         ref=f"2301.{base * 10 + k:05d}", overlap="related", difference="", searched_by="independent" if k == 2 else "self"))
+    if closest_first:
+        rows[0].update(overlap="same_goal", difference="uses a fixed gate instead of a learned one")
+    return rows
+
+
+def write_ideas(p, verdicts=None):
+    verdicts = verdicts or {"N1": ("differs", "2301.00010"), "N2": ("clear", ""), "N3": ("clear", ""), "N4": ("clear", ""), "N5": ("", "")}
+    rows = [dict(id=f"N{k}", type=t, mechanism="m", predicted_effect="+1", cheapest_test="1 seed", kill_result="<0.2", status="open",
+                 prior_art=verdicts[f"N{k}"][0], closest_work=verdicts[f"N{k}"][1])
+            for k, t in enumerate(["data", "objective", "architecture", "inference", "training"], 1)]
+    mt.write_csv_rows(str(p / "method" / "ideas.csv"), mt.IDEA_COLS, rows)
+
+
+def write_prior(p):
+    rows = prior_rows("N1", 1, closest_first=True) + prior_rows("N2", 2) + prior_rows("N3", 3) + prior_rows("N4", 4)
+    mt.write_csv_rows(str(p / "method" / "prior_art.csv"), mt.PRIOR_COLS, rows)
+
+
+def edit_csv(p, name, cols, fn):
+    path = str(p / "method" / name)
+    rows, _ = mt.read_csv_rows(path)
+    fn(rows)
+    mt.write_csv_rows(path, cols, rows)
+
+
+def edit_ideas(p, fn):
+    edit_csv(p, "ideas.csv", mt.IDEA_COLS, fn)
+
+
+def edit_prior(p, fn):
+    edit_csv(p, "prior_art.csv", mt.PRIOR_COLS, fn)
+
+
+def n1_rows(rows):
+    return [r for r in rows if r["idea"] == "N1"]
 
 
 def code_sha(p):
@@ -152,6 +198,8 @@ def base_dir(tmp_path_factory):
     mkgroup(p, "oracle_dev_s", 58.0, role="oracle", method="oracle")
     mkgroup(p, "aug_dev_s", 51.5, role="cheap_fix", method="aug")
     mkgroup(p, "long_dev_s", 53.0, role="cheap_fix", method="long")
+    mkgroup(p, "san_base_s", 50.0, split="sanity", role="baseline", method="BaseNet")      # oracle self-check: known-answer case, the oracle must win
+    mkgroup(p, "san_orc_s", 55.0, split="sanity", role="oracle", method="oracle")
     for i, (m_, dec) in enumerate([(50.5, "drop"), (52.0, "revise"), (51.5, "drop"), (54.0, "keep")], 1):
         mkgroup(p, f"i0{i}_s", m_, iteration=f"I0{i}")
     mkgroup(p, "i04_noA_s", 52.0, role="ablation", method="ours-noA", iteration="I04")
@@ -161,11 +209,10 @@ def base_dir(tmp_path_factory):
     write(p / "method" / "bottleneck.md", BOTTLENECK)
     write(p / "method" / "baseline_tuning.csv",
           "method,trial,config,dev_metric\nBaseNet,published_config,default,49.8\n" + "".join(f"BaseNet,{k},cfg{k},{49.5 + k * 0.1:.1f}\n" for k in range(1, 7)))
-    write(p / "method" / "ideas.csv",
-          "id,type,mechanism,predicted_effect,cheapest_test,kill_result,status\n" + "".join(
-              f"N{k},{t},m,+1,1 seed,<0.2,open\n" for k, t in enumerate(["data", "objective", "architecture", "inference", "training"], 1)))
-    for i, dec in enumerate(["drop", "revise", "drop", "keep"], 1):
-        log_add(p, f"I0{i}", f"runs/i0{i}_s*", dec)
+    write_ideas(p)
+    write_prior(p)
+    for i, (dec, idea) in enumerate([("drop", "N2"), ("revise", "N3"), ("drop", "N4"), ("keep", "N1")], 1):
+        log_add(p, f"I0{i}", f"runs/i0{i}_s*", dec, idea=idea)
     return p
 
 
@@ -328,8 +375,11 @@ def test_g1c_cheap_fix_without_runs(proj):
 def test_g1c_lower_is_better_metric(proj):
     # same project with an error metric: oracle LOWER than the baseline is the headroom
     mut(proj, lambda st: st["results"].__setitem__("primary_direction", "lower"))
+    rm(proj, "san_orc_s*")
+    mkgroup(proj, "san_orc_s", 45.0, split="sanity", role="oracle", method="oracle")        # on the known-answer case the oracle is LOWER = better
     r = M(proj, "headroom")
     bad(r, "理想地解决它反而更差")   # higher numbers are now worse
+    assert "oracle 自检通过" in r.out and "NO-GO" in r.out
 
 
 def test_g1c_unknown_direction(proj):
@@ -409,8 +459,10 @@ def test_init_creates_templates_and_registers_the_hash(tmp_path, base_dir):
     mut(p, lambda st: st["method"]["splits"]["confirm"].__setitem__("files", ["data/confirm"]))   # a directory expands to its files
     r = M(p, "init")
     ok(r, "splits.confirm.sha256 =")
-    for fn in ("bottleneck.md", "ideas.csv", "iterations.csv", "baseline_tuning.csv"):
+    for fn in ("bottleneck.md", "ideas.csv", "iterations.csv", "baseline_tuning.csv", "prior_art.csv"):
         assert (p / "method" / fn).exists()
+    assert read(p / "method" / "prior_art.csv").splitlines()[0] == ",".join(mt.PRIOR_COLS)
+    assert mt.read_csv_rows(str(p / "method" / "prior_art.csv"))[0] == []      # only the commented example row: no records yet
     exp = hashlib.sha256(b"confirm c\n" + b"x").hexdigest()
     assert state(p)["method"]["splits"]["confirm"]["sha256"] == exp
 
@@ -476,7 +528,7 @@ def test_ideas_warn_few_and_one_type(proj):
 
 
 def test_ideas_warn_missing_kill_result(proj):
-    edit(proj / "method" / "ideas.csv", "N1,data,m,+1,1 seed,<0.2,open", "N1,data,m,+1,1 seed,,open")
+    edit_ideas(proj, lambda rows: rows[0].__setitem__("kill_result", ""))
     r = M(proj, "ideas-check")
     assert r.returncode == 0 and "想法 N1: 缺 kill_result" in r.out, r.out
 
@@ -651,7 +703,7 @@ def test_freeze_refused_once_the_confirm_set_was_evaluated(fro):
 def test_refreeze_before_any_confirm_run_is_allowed(fro):
     write(fro / "code" / "model.py", "def forward(x):\n    return x * 3\n")
     mkgroup(fro, "i05_s", 54.5, iteration="I05")
-    log_add(fro, "I05", "runs/i05_s*", "keep")
+    log_add(fro, "I05", "runs/i05_s*", "keep", idea="N1")
     ok(M(fro, "freeze", "--iteration", "I05"))
     assert state(fro)["method"]["freeze"]["iteration"] == "I05"
 
@@ -701,7 +753,9 @@ def test_g2m_single_attempt_has_no_selection_bias(tmp_path):
     mkgroup(p, "base_dev_s", 50.0, role="baseline", method="BaseNet")
     mkgroup(p, "i01_s", 53.0, iteration="I01")
     ok(M(p, "init"))
-    log_add(p, "I01", "runs/i01_s*", "keep")
+    write_ideas(p)
+    write_prior(p)
+    log_add(p, "I01", "runs/i01_s*", "keep", idea="N1")
     ok(M(p, "freeze", "--iteration", "I01"))
     assert state(p)["method"]["freeze"]["bias"] == 0
 
@@ -920,6 +974,13 @@ def test_status_one_screen(fro):
         assert s in r.out, r.out
 
 
+def test_status_has_a_prior_art_line(proj):
+    r = M(proj, "status")
+    assert "查撞车     4 / 5 个想法有结论，其中 done 0 个" in r.out, r.out
+    edit_ideas(proj, lambda rows: rows[1].__setitem__("prior_art", "done"))
+    assert "其中 done 1 个" in M(proj, "status").out
+
+
 def test_exit_code_is_nonzero_on_fail(proj):
     mut(proj, lambda st: st["method"]["benchmark"].__setitem__("name", ""))
     assert M(proj, "headroom").returncode == 1
@@ -931,3 +992,584 @@ def test_every_subcommand_answers_help_under_a_gbk_console():
     import subprocess
     r = subprocess.run([sys.executable, str(SCRIPTS / "method_track.py"), "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=GBK_ENV)
     assert r.returncode == 0 and "headroom" in r.stdout
+
+
+# ------------------------------------------------------------------ prior art ("查撞车"): the record of one idea
+def freeze_i04(p):
+    return M(p, "freeze", "--iteration", "I04")
+
+
+def refused(r, needle):
+    bad(r, needle)
+    assert "拒绝 freeze" in r.out and "冻结之前查撞车" in r.out, r.out
+
+
+def test_prior_clean_record_passes_everywhere(proj):
+    ctx = mt.Ctx(str(proj))
+    assert all(mt.prior_findings(ctx, f"N{k}") == [] for k in (1, 2, 3, 4))
+    r = M(proj, "ideas-check")
+    ok(r, "[PASS] G2m: 查撞车：4 个进入 dev 循环的想法")
+    assert "先查撞车" not in r.out
+    ok(freeze_i04(proj))
+    assert state(proj)["method"]["freeze"]["iteration"] == "I04"
+
+
+def test_prior_too_few_queries(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("query", "same words") for r in n1_rows(rows)])
+    refused(freeze_i04(proj), "不同的查询 1/3")
+    assert state(proj)["method"]["freeze"] == {}
+
+
+def test_prior_query_dedup_ignores_case_and_spaces(proj):
+    def f(rows):
+        for r, q in zip(n1_rows(rows), ["Mechanism  Words", "mechanism words", " MECHANISM words "]):
+            r["query"] = q
+    edit_prior(proj, f)
+    refused(freeze_i04(proj), "不同的查询 1/3")
+
+
+def test_prior_one_source_only(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("source", "arXiv") for r in n1_rows(rows)])
+    refused(freeze_i04(proj), "不同的来源 1/2")
+
+
+def test_prior_three_queries_message_names_the_three_kinds(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("query", "x") for r in n1_rows(rows)])
+    r = freeze_i04(proj)
+    assert "「机制的词」「目标问题的词」「别的领域会怎么叫它」" in r.out, r.out
+
+
+def test_prior_fewer_than_three_valid_refs(proj):
+    def f(rows):
+        for r in n1_rows(rows)[1:]:
+            r["work"] = r["ref"] = ""            # a query that found nothing: one row with an empty work
+    edit_prior(proj, f)
+    r = freeze_i04(proj)
+    refused(r, "只有 1 个带有效 ref 的相近工作（要求 ≥3）")
+    assert "搜不到相近工作通常说明搜得不对，不说明没人做过" in r.out
+
+
+def test_prior_duplicate_refs_count_once(proj):
+    def f(rows):
+        for r, ref in zip(n1_rows(rows), ["2301.00010", "arXiv:2301.00010", "2301.00010v2"]):
+            r["ref"] = ref
+    edit_prior(proj, f)
+    refused(freeze_i04(proj), "只有 1 个带有效 ref")
+
+
+@pytest.mark.parametrize("ref", ["", "see my notes", "arXiv:23.1", "doi:10.1/x", "10.12/short"])
+def test_prior_invalid_ref_is_named(proj, ref):
+    edit_prior(proj, lambda rows: n1_rows(rows)[1].__setitem__("ref", ref))
+    r = freeze_i04(proj)
+    refused(r, "ref 缺失或格式不对")
+    assert "Prior work N1-1" in r.out, r.out
+
+
+@pytest.mark.parametrize("ref", ["10.1109/CVPR.2024.01234", "arXiv:2301.01234", "2301.01234", "2301.01234v3", "https://openreview.net/forum?id=abc"])
+def test_prior_valid_ref_forms(proj, ref):
+    edit_prior(proj, lambda rows: n1_rows(rows)[1].__setitem__("ref", ref))
+    ok(freeze_i04(proj))
+
+
+def test_prior_invalid_ref_is_reported_even_when_three_others_are_valid(proj):
+    edit_prior(proj, lambda rows: rows.append(dict(idea="N1", query="N1 more", source="arXiv", work="Broken entry", ref="", overlap="related", searched_by="self")))
+    r = freeze_i04(proj)
+    refused(r, "ref 缺失或格式不对")
+    assert "Broken entry" in r.out
+
+
+@pytest.mark.parametrize("ov", ["same_mechanism", "same_goal"])
+def test_prior_overlap_without_difference(proj, ov):
+    edit_prior(proj, lambda rows: n1_rows(rows)[1].update(overlap=ov, difference=""))
+    refused(freeze_i04(proj), "必须写 difference")
+
+
+def test_prior_unknown_overlap_value_is_reported(proj):
+    edit_prior(proj, lambda rows: n1_rows(rows)[1].__setitem__("overlap", "kind_of_similar"))
+    refused(freeze_i04(proj), "overlap 只能是 same_mechanism | same_goal | related | none")
+
+
+def test_prior_verdict_missing(proj):
+    edit_ideas(proj, lambda rows: rows[0].__setitem__("prior_art", ""))
+    refused(freeze_i04(proj), "prior_art 还没有结论")
+
+
+def test_prior_verdict_not_in_vocabulary(proj):
+    edit_ideas(proj, lambda rows: rows[0].__setitem__("prior_art", "probably fine"))
+    refused(freeze_i04(proj), "只能是 clear | differs | done")
+
+
+def test_prior_same_mechanism_work_and_verdict_clear(proj):
+    edit_prior(proj, lambda rows: [r.update(overlap="same_mechanism", difference="uses a gate") for r in rows if r["idea"] == "N2"][:1])
+    r = M(proj, "ideas-check")
+    assert r.fails == 0 and r.returncode == 0 and "[WARN] G2m: 先查撞车再花算力：想法 N2: 有同机制的已有工作，结论不能是 clear" in r.out, r.out
+    assert "查撞车：4 个进入" not in r.out
+
+
+def test_prior_verdict_done_while_the_idea_is_not_abandoned(proj):
+    edit_ideas(proj, lambda rows: rows[1].__setitem__("prior_art", "done"))
+    r = M(proj, "ideas-check")
+    assert r.fails == 0 and "想法 N2: 已有工作做过：放弃这个想法，或把那篇工作复现成基线（它就是最强基线的候选）" in r.out, r.out
+
+
+@pytest.mark.parametrize("status", ["dropped", "Killed", "drop", "KILL"])
+def test_prior_verdict_done_and_abandoned_is_fine(proj, status):
+    edit_ideas(proj, lambda rows: rows[1].update(prior_art="done", status=status))
+    r = M(proj, "ideas-check")
+    assert r.fails == 0 and "已有工作做过" not in r.out and "[PASS] G2m: 查撞车：4 个进入" in r.out, r.out
+
+
+@pytest.mark.parametrize("status", ["dropped", "killed"])
+def test_freeze_refuses_an_idea_that_was_abandoned_as_done(proj, status):
+    edit_ideas(proj, lambda rows: rows[0].update(prior_art="done", status=status))
+    refused(freeze_i04(proj), "不能冻结成你的方法")
+
+
+def test_prior_differs_needs_closest_work(proj):
+    edit_ideas(proj, lambda rows: rows[0].__setitem__("closest_work", ""))
+    refused(freeze_i04(proj), "结论是 differs 就要在 closest_work 写最接近那篇工作的 ref")
+
+
+def test_prior_closest_work_must_be_a_ref_of_the_record(proj):
+    edit_ideas(proj, lambda rows: rows[0].__setitem__("closest_work", "2301.99999"))
+    refused(freeze_i04(proj), "closest_work = 2301.99999 不是 prior_art.csv 里这个想法任何一行的 ref")
+    edit_ideas(proj, lambda rows: rows[0].__setitem__("closest_work", "arXiv:2301.00011v2"))      # another row, other spelling of the same id
+    ok(freeze_i04(proj))
+
+
+def test_prior_unknown_idea_code(proj):
+    assert [c for c, _ in mt.prior_findings(mt.Ctx(str(proj)), "N9")] == ["unknown"]
+
+
+def test_prior_self_only_fails_at_freeze(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("searched_by", "self") for r in rows])
+    r = freeze_i04(proj)
+    refused(r, "只有自己查的记录：让一个新上下文的子代理只拿机制一句话和任务名再查一遍")
+    assert [c for c, _ in mt.prior_findings(mt.Ctx(str(proj)), "N1")] == ["self_only"]
+
+
+def test_prior_self_only_is_a_warning_with_a_waiver(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("searched_by", "self") for r in rows])
+    mut(proj, lambda st: st["method"]["prior_art"].__setitem__("independent_waiver", "no subagent budget this week, reviewer will search"))
+    r = freeze_i04(proj)
+    ok(r)
+    assert "[WARN] G2m: 冻结之前查撞车：想法 N1: 只有自己查的记录" in r.out and "no subagent budget this week" in r.out, r.out
+    assert state(proj)["method"]["freeze"]["iteration"] == "I04"
+
+
+def test_prior_waiver_does_not_excuse_other_findings(proj):
+    edit_prior(proj, lambda rows: [r.update(searched_by="self", source="arXiv") for r in n1_rows(rows)])
+    mut(proj, lambda st: st["method"]["prior_art"].__setitem__("independent_waiver", "no subagent"))
+    refused(freeze_i04(proj), "不同的来源 1/2")
+
+
+def test_prior_thresholds_come_from_the_state(proj):
+    mut(proj, lambda st: st["method"]["prior_art"].update(min_queries=4))
+    refused(freeze_i04(proj), "不同的查询 3/4")
+    mut(proj, lambda st: st["method"]["prior_art"].update(min_queries=2, min_works=2))
+    edit_prior(proj, lambda rows: [r.__setitem__("query", "q") for r in n1_rows(rows)[2:]])
+    ok(freeze_i04(proj))
+
+
+def test_prior_missing_file_is_a_failure_at_freeze(proj):
+    (proj / "method" / "prior_art.csv").unlink()
+    refused(freeze_i04(proj), "不同的查询 0/3")
+
+
+def test_prior_default_path_when_the_state_has_no_files_entry():
+    d = mt.mfiles({"files": {"ideas": "x/ideas.csv"}})
+    assert d["prior_art"] == "method/prior_art.csv" and d["ideas"] == "x/ideas.csv" and mt.mfiles({})["prior_art"] == "method/prior_art.csv"
+    assert mt.mfiles({"files": {"prior_art": "pa/records.csv"}})["prior_art"] == "pa/records.csv"
+
+
+def test_prior_custom_path_is_honoured(proj):
+    shutil.move(str(proj / "method" / "prior_art.csv"), str(proj / "method" / "records.csv"))
+    mut(proj, lambda st: st["method"]["files"].__setitem__("prior_art", "method/records.csv"))
+    ok(freeze_i04(proj))
+
+
+# ---- where it is called
+def test_prior_freeze_refuses_an_iteration_without_idea(proj):
+    mkgroup(proj, "i05_s", 55.0, iteration="I05")
+    log_add(proj, "I05", "runs/i05_s*", "keep")
+    r = M(proj, "freeze", "--iteration", "I05")
+    bad(r, "迭代 I05 没有 idea")
+    assert "冻结之前查撞车" in r.out and state(proj)["method"]["freeze"] == {}
+
+
+def test_prior_freeze_refuses_an_idea_missing_from_ideas_csv(proj):
+    _rewrite_iter(proj, lambda rows: rows[3].__setitem__("idea", "N9"))
+    refused(freeze_i04(proj), "想法 N9 不在 method/ideas.csv 里")
+
+
+def test_prior_log_add_without_idea_warns_and_logs(proj):
+    mkgroup(proj, "i05_s", 53.0, iteration="I05")
+    r = M(proj, "log", "add", "--id", "I05", "--hypothesis", "h", "--change", "c", "--runs", "runs/i05_s*")
+    assert r.fails == 0 and r.returncode == 0 and not r.crashed, r.out
+    assert "[WARN] G2m: 这一轮在试 ideas.csv 里的哪个想法？加 --idea" in r.out, r.out
+    rows = mt.read_csv_rows(str(proj / "method" / "iterations.csv"))[0]
+    assert len(rows) == 5 and rows[-1]["id"] == "I05" and rows[-1]["idea"] == ""
+
+
+def test_prior_log_add_with_unknown_idea_refuses(proj):
+    mkgroup(proj, "i05_s", 53.0, iteration="I05")
+    r = M(proj, "log", "add", "--id", "I05", "--idea", "N9", "--hypothesis", "h", "--change", "c", "--runs", "runs/i05_s*")
+    bad(r, "想法 N9 不在 method/ideas.csv 里")
+    assert len(mt.read_csv_rows(str(proj / "method" / "iterations.csv"))[0]) == 4
+
+
+def test_prior_log_add_with_findings_warns_but_logs(proj):
+    mkgroup(proj, "i05_s", 53.0, iteration="I05")
+    r = M(proj, "log", "add", "--id", "I05", "--idea", "N5", "--hypothesis", "h", "--change", "c", "--runs", "runs/i05_s*")
+    assert r.fails == 0 and r.returncode == 0 and not r.crashed, r.out
+    assert "[WARN] G2m: 先查撞车再花算力：想法 N5: 查撞车记录不够" in r.out and "还没有结论" in r.out and "只有自己查的记录" in r.out, r.out
+    rows = mt.read_csv_rows(str(proj / "method" / "iterations.csv"))[0]
+    assert len(rows) == 5 and rows[-1]["idea"] == "N5"
+
+
+def test_prior_log_add_with_a_clean_idea_prints_no_prior_art_warning(proj):
+    mkgroup(proj, "i05_s", 53.0, iteration="I05")
+    r = log_add(proj, "I05", "runs/i05_s*", "drop", idea="N2")
+    assert "先查撞车" not in r.out and "加 --idea" not in r.out, r.out
+
+
+def test_prior_log_update_keeps_the_idea_of_the_row(proj):
+    r = log_add(proj, "I04", "runs/i04_s*", "keep")
+    assert "加 --idea" not in r.out
+    assert mt.read_csv_rows(str(proj / "method" / "iterations.csv"))[0][3]["idea"] == "N1"
+    log_add(proj, "I04", "runs/i04_s*", "keep", idea="N2")           # --idea on an update replaces it
+    assert mt.read_csv_rows(str(proj / "method" / "iterations.csv"))[0][3]["idea"] == "N2"
+
+
+def test_prior_ideas_check_ignores_open_ideas_without_iterations(proj):
+    r = M(proj, "ideas-check")
+    assert "N5" not in r.out, r.out
+
+
+def test_prior_ideas_check_checks_ideas_that_are_running(proj):
+    edit_ideas(proj, lambda rows: rows[4].__setitem__("status", "running"))
+    r = M(proj, "ideas-check")
+    assert r.fails == 0 and "[WARN] G2m: 先查撞车再花算力：想法 N5: 查撞车记录不够" in r.out, r.out
+
+
+def test_prior_ideas_check_checks_ideas_referenced_by_an_iteration(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("searched_by", "self") for r in n1_rows(rows)])
+    r = M(proj, "ideas-check")
+    assert r.returncode == 0 and "想法 N1: 只有自己查的记录" in r.out and "想法 N2" not in r.out, r.out
+
+
+def test_prior_ideas_check_with_nothing_started_is_an_info_line(proj):
+    mt.write_csv_rows(str(proj / "method" / "iterations.csv"), mt.ITER_COLS, [])
+    r = M(proj, "ideas-check")
+    assert r.returncode == 0 and "[INFO] G2m: 查撞车：还没有想法进入 dev 循环" in r.out, r.out
+
+
+def test_prior_dev_check_before_freeze_warns_for_keep_rows(proj):
+    edit_prior(proj, lambda rows: [r.__setitem__("searched_by", "self") for r in n1_rows(rows)])
+    r = M(proj, "dev-check")
+    assert r.fails == 0 and "[WARN] G2m: 迭代 I04 冻结前先查撞车：想法 N1: 只有自己查的记录" in r.out, r.out
+    edit_prior(proj, lambda rows: [r.__setitem__("searched_by", "self") for r in rows if r["idea"] == "N2"])
+    assert "想法 N2" not in M(proj, "dev-check").out                    # I01 (N2) is not a keep row: only keep rows are looked at
+
+
+def test_prior_dev_check_before_freeze_warns_for_a_keep_row_without_idea(proj):
+    mkgroup(proj, "i05_s", 55.0, iteration="I05")
+    log_add(proj, "I05", "runs/i05_s*", "keep")
+    r = M(proj, "dev-check")
+    assert r.fails == 0 and "[WARN] G2m: 迭代 I05 是 keep 但没有 idea" in r.out, r.out
+
+
+def test_prior_dev_check_after_freeze_passes_and_lists_the_overlapping_works(fro):
+    r = M(fro, "dev-check")
+    ok(r, "[PASS] G2m: 查撞车：想法 N1 的记录齐全")
+    assert "[INFO] G2m: 论文的相关工作与对比表要正面交代：Prior work N1-0 (2301.00010)" in r.out, r.out
+
+
+def test_prior_dev_check_after_freeze_reports_a_record_broken_later(fro):
+    edit_prior(fro, lambda rows: [r.__setitem__("searched_by", "self") for r in n1_rows(rows)])
+    r = M(fro, "dev-check")
+    bad(r, "冻结的迭代 I04（想法 N1）查撞车：想法 N1: 只有自己查的记录")
+    assert "论文的相关工作与对比表要正面交代" in r.out
+
+
+def test_prior_dev_check_after_freeze_honours_the_waiver(fro):
+    edit_prior(fro, lambda rows: [r.__setitem__("searched_by", "self") for r in n1_rows(rows)])
+    mut(fro, lambda st: st["method"]["prior_art"].__setitem__("independent_waiver", "no subagent"))
+    r = M(fro, "dev-check")
+    ok(r, "[WARN] G2m: 冻结的迭代 I04（想法 N1）查撞车：想法 N1: 只有自己查的记录")
+
+
+def test_prior_dev_check_after_freeze_fails_when_the_frozen_iteration_lost_its_idea(fro):
+    _rewrite_iter(fro, lambda rows: rows[3].__setitem__("idea", ""))
+    bad(M(fro, "dev-check"), "冻结的迭代 I04 没有 idea")
+
+
+def test_prior_old_iterations_csv_without_the_idea_column_still_loads(proj):
+    edit_csv(proj, "iterations.csv", [c for c in mt.ITER_COLS if c != "idea"], lambda rows: None)
+    assert "idea" not in read(proj / "method" / "iterations.csv").splitlines()[0].split(",")
+    r = M(proj, "dev-check")
+    assert r.fails == 0 and "[WARN] G2m: 迭代 I04 是 keep 但没有 idea" in r.out, r.out
+    mkgroup(proj, "i05_s", 53.0, iteration="I05")
+    log_add(proj, "I05", "runs/i05_s*", "drop", idea="N5")
+    rows = mt.read_csv_rows(str(proj / "method" / "iterations.csv"))[0]
+    assert "idea" in read(proj / "method" / "iterations.csv").splitlines()[0].split(",")
+    assert [r["id"] for r in rows] == ["I01", "I02", "I03", "I04", "I05"] and [r["idea"] for r in rows] == ["", "", "", "", "N5"]
+    assert rows[3]["decision"] == "keep" and float(rows[3]["gain"]) == pytest.approx(4.0)
+
+
+def test_prior_old_ideas_csv_without_the_new_columns_still_loads(proj):
+    write(proj / "method" / "ideas.csv", "id,type,mechanism,predicted_effect,cheapest_test,kill_result,status\n" + "".join(
+        f"N{k},{t},m,+1,1 seed,<0.2,open\n" for k, t in enumerate(["data", "objective", "architecture", "inference", "training"], 1)))
+    r = M(proj, "ideas-check")
+    assert r.fails == 0 and r.returncode == 0 and not r.crashed and "prior_art 还没有结论" in r.out, r.out
+
+
+def test_prior_commented_example_row_is_not_a_record(tmp_path):
+    p = tmp_path / "p"
+    p.mkdir()
+    shutil.copy(os.path.join(mt.SKILL, "templates", "method", "prior_art.csv"), p / "x.csv")
+    assert mt.read_csv_rows(str(p / "x.csv"))[0] == []
+
+
+# ------------------------------------------------------------------ oracle self-check and the third verdict
+def set_oracle(p, mean, n=3):
+    rm(p, "oracle_dev_s*")
+    mkgroup(p, "oracle_dev_s", mean, role="oracle", method="oracle", n=n)
+
+
+def set_sanity(p, oracle_mean=None, base_mean=None, n_o=3, n_b=3):
+    if oracle_mean is not None:
+        rm(p, "san_orc_s*")
+        mkgroup(p, "san_orc_s", oracle_mean, split="sanity", role="oracle", method="oracle", n=n_o)
+    if base_mean is not None:
+        rm(p, "san_base_s*")
+        mkgroup(p, "san_base_s", base_mean, split="sanity", role="baseline", method="BaseNet", n=n_b)
+
+
+def no_sanity(p):
+    mut(p, lambda st: st["method"]["headroom"]["oracle"].__setitem__("sanity", {}))
+
+
+def invalid(r):
+    assert r.returncode == 1 and not r.crashed, r.out
+    assert "[FAIL] G1c: INVALID (" in r.out and "NO-GO" not in r.out and "G1c: GO" not in r.out, r.out
+    assert "oracle 未通过自检或未自检，结论不能读成\"瓶颈没有提升空间\"：修好 oracle 再跑 headroom)" in r.out, r.out
+    assert r.out.rstrip().splitlines()[-1].startswith("[FAIL] G1c: INVALID (")             # the verdict is the last line
+
+
+def test_oracle_sanity_pass_keeps_go_without_a_warning(proj):
+    r = M(proj, "headroom")
+    ok(r, "[PASS] G1c: GO (headroom H = 8.0000")
+    assert "oracle sanity = pass" in r.out and "oracle 没做过自检" not in r.out and "[WARN]" not in r.out, r.out
+    assert "[PASS] G1c: oracle 自检通过：在已知答案的情形（night failures injected on dev, oracle t）里 oracle 比基线好 G_s = 5.0000 ≥ 1.5000" in r.out, r.out
+
+
+def test_oracle_sanity_missing_with_large_h_is_go_with_a_warning(proj):
+    no_sanity(proj)
+    r = M(proj, "headroom")
+    ok(r, "[PASS] G1c: GO (")
+    assert "oracle sanity = missing" in r.out and "[WARN] G1c: oracle 没做过自检：H 是正的所以影响小，仍建议补 headroom.oracle.sanity" in r.out, r.out
+
+
+def test_oracle_sanity_block_absent_is_missing(proj):
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"].pop("sanity"))
+    ok(M(proj, "headroom"), "oracle sanity = missing")
+
+
+def test_oracle_no_sanity_and_worse_than_baseline_is_invalid(proj):
+    no_sanity(proj)
+    set_oracle(proj, 48.0)
+    r = M(proj, "headroom")
+    invalid(r)
+    assert "oracle 比基线差（oracle 48.0000 vs 基线 50.0000，H = -2.0000），但 oracle 没做过自检：分不清是瓶颈判断错了还是 oracle 构造错了" in r.out, r.out
+    assert "先在已知答案的情形里证明这个 oracle 会赢（headroom.oracle.sanity），再读这个 H" in r.out
+    assert "理想地解决它反而更差" not in r.out and "只在推理时加" not in r.out and "oracle sanity = missing" in r.out
+
+
+def test_oracle_test_only_adds_the_most_common_cause(proj):
+    no_sanity(proj)
+    set_oracle(proj, 48.0)
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"].__setitem__("applied", "test_only"))
+    r = M(proj, "headroom")
+    invalid(r)
+    assert "这个 oracle 只在推理时加、模型训练时没见过它，这是 oracle 不涨反跌最常见的原因：做一个训练时也给 oracle 信号的版本（applied: train+test）" in r.out, r.out
+
+
+def test_oracle_no_sanity_and_small_headroom_is_invalid(proj):
+    no_sanity(proj)
+    set_oracle(proj, 50.8)
+    r = M(proj, "headroom")
+    invalid(r)
+    assert "提升空间不足（H = 0.8000 < 1.5000），但 oracle 没做过自检" in r.out and "瞄准的瓶颈没有提升空间" not in r.out, r.out
+
+
+def test_oracle_no_sanity_h_exactly_zero_is_still_invalid(proj):
+    no_sanity(proj)
+    set_oracle(proj, 50.0)
+    invalid(M(proj, "headroom"))
+
+
+def test_oracle_with_a_passing_sanity_keeps_the_old_messages_and_no_go(proj):
+    set_oracle(proj, 48.0)
+    r = M(proj, "headroom")
+    bad(r, "瞄准的瓶颈判断错了：理想地解决它反而更差")
+    assert "[FAIL] G1c: NO-GO (" in r.out and "INVALID" not in r.out and "oracle sanity = pass" in r.out, r.out
+    set_oracle(proj, 50.8)
+    r = M(proj, "headroom")
+    bad(r, "瞄准的瓶颈没有提升空间（oracle 只比基线好 H = 0.8000")
+    assert "[FAIL] G1c: NO-GO (" in r.out and "INVALID" not in r.out
+
+
+def test_oracle_failed_sanity_is_invalid_even_with_a_large_headroom(proj):
+    set_sanity(proj, oracle_mean=49.0)
+    rm(proj, "aug_dev_s*")
+    mkgroup(proj, "aug_dev_s", 57.0, role="cheap_fix", method="aug")             # would be "no foothold" if the residual were evaluated
+    r = M(proj, "headroom")
+    invalid(r)
+    assert "[FAIL] G1c: oracle 自检没过：在本该赢的情形里也没赢（oracle 49.0000 vs 基线 50.0000，G_s = -1.0000 < 1.5000）" in r.out, r.out
+    assert "oracle 的构造有问题（常见：模型训练时没见过 oracle 给的信号；oracle 信息接错了位置），先修 oracle，下面的 H 不能用" in r.out
+    assert "[INFO] G1c: 提升空间：oracle 58.0000 vs 基线 50.0000，H = 8.0000 ≥ 1.5000" in r.out and "oracle 自检没过：不能当证据" in r.out
+    assert "[PASS] G1c: 提升空间" not in r.out
+    assert "oracle sanity = fail" in r.out
+
+
+def test_oracle_failed_sanity_skips_the_cheap_fix_residual(proj):
+    set_sanity(proj, oracle_mean=49.0)
+    rm(proj, "aug_dev_s*")
+    mkgroup(proj, "aug_dev_s", 57.0, role="cheap_fix", method="aug")
+    r = M(proj, "headroom")
+    assert "便宜做法 augmentation: 提升 +7.0000，占提升空间 88%" in r.out and "便宜做法 longer_training: 提升 +3.0000" in r.out      # the per-fix INFO lines stay
+    assert "已经拿走" not in r.out and "方法没有立足点" not in r.out and "剩余空间 R" not in r.out, r.out
+    assert "residual after cheap fixes R = nan" in r.out
+
+
+def test_oracle_failed_sanity_with_a_negative_h_is_info_only(proj):
+    set_sanity(proj, oracle_mean=49.0)
+    set_oracle(proj, 48.0)
+    r = M(proj, "headroom")
+    invalid(r)
+    assert "[INFO] G1c: H = -2.0000 不可用：oracle 自检没过" in r.out and "理想地解决它反而更差" not in r.out, r.out
+
+
+def test_oracle_sanity_gain_below_the_threshold_fails(proj):
+    set_sanity(proj, oracle_mean=51.0)                                           # G_s = 1.0 < max(min_effect 1, 3 x 0.5) = 1.5
+    invalid(M(proj, "headroom"))
+
+
+@pytest.mark.parametrize("field,needle", [("why", "oracle 自检的 why 为空"), ("setting", "oracle 自检的 setting 为空")])
+def test_oracle_sanity_needs_setting_and_why(proj, field, needle):
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"]["sanity"].__setitem__(field, ""))
+    r = M(proj, "headroom")
+    assert needle in r.out, r.out
+    invalid(r)
+
+
+def test_oracle_sanity_one_seed_on_a_side_fails(proj):
+    set_sanity(proj, oracle_mean=55.0, n_o=1)
+    r = M(proj, "headroom")
+    assert "[FAIL] G1c: oracle 自检每边至少 2 个 seed（现在基线 3 个、oracle 1 个" in r.out, r.out
+    invalid(r)
+    set_sanity(proj, oracle_mean=55.0, n_o=3, base_mean=50.0, n_b=1)
+    assert "基线 1 个、oracle 3 个" in M(proj, "headroom").out
+
+
+def test_oracle_sanity_two_seeds_is_a_warning(proj):
+    set_sanity(proj, oracle_mean=55.0, n_o=2)
+    r = M(proj, "headroom")
+    ok(r, "[PASS] G1c: GO (")
+    assert "[WARN] G1c: oracle 自检只有 2 个 seed 的一边（基线 3 个、oracle 2 个）：补到 ≥3 个" in r.out and "oracle sanity = pass" in r.out, r.out
+
+
+def test_oracle_sanity_with_both_globs_empty_is_missing(proj):
+    def f(st):
+        st["method"]["headroom"]["oracle"]["sanity"].update(baseline_glob="", oracle_glob="")
+    mut(proj, f)
+    ok(M(proj, "headroom"), "oracle sanity = missing")
+
+
+def test_oracle_sanity_with_one_glob_empty_fails(proj):
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"]["sanity"].__setitem__("oracle_glob", ""))
+    r = M(proj, "headroom")
+    assert "oracle 自检每边至少 2 个 seed" in r.out, r.out
+    invalid(r)
+
+
+def test_oracle_sanity_has_its_own_metric_key(proj):
+    for d in (proj / "runs").glob("san_*"):
+        write(d / "eval.json", json.dumps({"metrics": {"ap": 0.0}, "other": {"score": 55.0 if "orc" in d.name else 50.0}}))
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"]["sanity"].__setitem__("key", "other.score"))
+    ok(M(proj, "headroom"), "oracle sanity = pass")
+
+
+def test_oracle_applied_other_value_fails_and_empty_warns(proj):
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"].__setitem__("applied", "both"))
+    bad(M(proj, "headroom"), "headroom.oracle.applied = 'both'：只能是 train+test | test_only")
+    mut(proj, lambda st: st["method"]["headroom"]["oracle"].__setitem__("applied", ""))
+    r = M(proj, "headroom")
+    ok(r, "[PASS] G1c: GO (")
+    assert "[WARN] G1c: headroom.oracle.applied 为空：写 train+test" in r.out and "test_only" in r.out, r.out
+
+
+def test_oracle_sanity_runs_are_neither_dev_baselines_nor_confirm_runs(proj):
+    mkgroup(proj, "san_base2_s", 10.0, split="sanity", role="baseline", method="BaseNet")     # not matched by baseline_glob, must not leak into the dev baseline
+    r = M(proj, "headroom")
+    ok(r, "H = 8.0000")
+    assert "基线复现 50.0000" in r.out and "冻结前没有任何 confirm 评测" in r.out, r.out
+    d = M(proj, "dev-check")
+    ok(d, "所有 dev 的 ours/ablation run 都属于某个迭代行（4 轮），没有未标注的 run")
+    assert "未登记" not in d.out and "没有 eval_split/role" not in d.out
+
+
+def test_oracle_sanity_run_with_a_role_is_not_untagged_but_one_without_is(proj):
+    d = proj / "runs" / "san_half"
+    d.mkdir()
+    write(d / "args.json", json.dumps({"eval_split": "sanity", "seed": 0}))
+    write(d / "eval.json", json.dumps({"metrics": {"ap": 1.0}}))
+    bad(M(proj, "dev-check"), "run 没有 eval_split/role")
+
+
+def test_oracle_sanity_in_the_frozen_project_changes_nothing(fro):
+    ok(M(fro, "dev-check"))
+    add_confirm(fro)
+    mut(fro, lambda st: st["method"].__setitem__("outcome", "confirmed"))
+    ok(M(fro, "confirm-check"), "验证集看了 1 次，登记 1 次")
+
+
+def test_oracle_lower_is_better_sanity_and_go(proj):
+    mut(proj, lambda st: st["results"].__setitem__("primary_direction", "lower"))
+    set_sanity(proj, oracle_mean=45.0)
+    set_oracle(proj, 42.0)
+    r = M(proj, "headroom")
+    ok(r, "[PASS] G1c: GO (")
+    assert "G_s = 5.0000" in r.out and "oracle sanity = pass" in r.out, r.out
+    set_sanity(proj, oracle_mean=55.0)                                           # higher = worse now: the oracle loses on the known-answer case
+    invalid(M(proj, "headroom"))
+
+
+def test_oracle_invalid_shows_on_status(proj):
+    no_sanity(proj)
+    set_oracle(proj, 48.0)
+    r = M(proj, "status")
+    assert r.returncode == 0 and "G1c        INVALID (" in r.out, r.out
+
+
+def test_oracle_invalid_comes_with_the_other_failures_but_is_the_verdict(proj):
+    no_sanity(proj)
+    set_oracle(proj, 48.0)
+    mut(proj, lambda st: st["method"]["baseline"].__setitem__("code", ""))
+    r = M(proj, "headroom")
+    assert "method.baseline.code 为空" in r.out
+    invalid(r)
+
+
+def test_t2p_board_pattern_matches_all_three_verdicts():
+    import re
+    src = read(SCRIPTS / "t2p.py")
+    m = re.search(r'm = re\.search\(r"(G1c: [^"]+)", out\)', src)
+    assert m, "the verdict regex in t2p.py moved"
+    pat = re.compile(m.group(1))
+    for line, word in (("[PASS] G1c: GO (headroom H = 8.0000, oracle sanity = pass)", "GO"),
+                       ("[FAIL] G1c: NO-GO (headroom H = 0.8000; 1 项未过)", "NO-GO"),
+                       ("[FAIL] G1c: INVALID (headroom H = nan; oracle 未通过自检)", "INVALID")):
+        mm = pat.search(line)
+        assert mm and mm.group(0)[5:].startswith(word), line

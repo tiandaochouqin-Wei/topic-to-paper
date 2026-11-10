@@ -257,10 +257,11 @@ method:                                   # 方法轨道
     confirm: {tag: confirm, files: [], sha256: ""}   # 验证集（官方 test 或留出集）：冻结前不许评测；sha256 由 `method_track.py init` 写
   headroom:
     k_sd: 3                               # 提升空间要 >= k_sd x 基线 seed s.d. 且 >= min_effect
-    oracle: {desc: "", run_glob: "", key: ""}          # 把瞄准的瓶颈"理想地解决"之后的上界（GT 路由、oracle 选择、域内上界…），dev 上评测
+    oracle: {desc: "", run_glob: "", key: "", applied: "", sanity: {setting: "", why: "", baseline_glob: "", oracle_glob: "", key: ""}}   # 把瞄准的瓶颈"理想地解决"之后的上界（GT 路由、oracle 选择、域内上界…），dev 上评测。applied = train+test（模型训练时也给 oracle 信号）| test_only（只在推理时注入已训好的基线）。sanity = 只用 dev 数据造的"已知答案"情形（瓶颈必然是限制因素），oracle 在那里必须赢；run 标 eval_split=sanity + role=baseline|oracle。没自检或没过，oracle 比基线差时判 INVALID，不判 NO-GO
     cheap_fixes: []                       # [{name: "数据增强", run_glob: "runs/aug_dev_s*", key: ""}, ...] 最便宜的替代做法，至少 2 个
   budget: {max_iters: 30, stall: 5, iter_hours: null, extension: ""}   # 迭代预算；连续 stall 轮没有超过噪声的提升就该停或换方向；一轮 dev 实验的小时数
-  files: {bottleneck: method/bottleneck.md, ideas: method/ideas.csv, iterations: method/iterations.csv, tuning: method/baseline_tuning.csv}
+  files: {bottleneck: method/bottleneck.md, ideas: method/ideas.csv, iterations: method/iterations.csv, tuning: method/baseline_tuning.csv, prior_art: method/prior_art.csv}
+  prior_art: {min_queries: 3, min_works: 3, independent_waiver: ""}   # 查撞车（method/prior_art.csv）：每个想法 ≥ min_queries 条不同查询、≥ min_works 个带有效 ref 的相近工作；independent_waiver 非空 = 没做独立子代理检索，写明理由（freeze 时只把"只有自己查的记录"从 FAIL 降为 WARN）
   components: []                          # [{name, ablation_glob}]：G2m 只读这个列表（空 = WARN，不解析 prereg §6）；逐个检查去掉后 dev 上是否掉点（与 prereg §6 一致）
   mechanism: {}                           # {desc, run_glob | file, key, expect: "+"|"-"|">=x"}：提升"因为什么"的可检验预测
   freeze: {}                              # `method_track.py freeze` 写：date, iteration, code_sha256, dev_gain, se_gain, k_iters, bias, gain_adj

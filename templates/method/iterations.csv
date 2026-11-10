@@ -1,2 +1,2 @@
-id,date,hypothesis,change,runs,n_seeds,dev_mean,dev_sd,baseline_mean,gain,se_gain,best_so_far,decision,note,code_sha256
-#I01,2026-01-01,"假设：…（每轮先写假设再跑）","改了什么（一行）","runs/i01_s*",3,0,0,0,0,0,0,keep|drop|revise,"数字由 method_track.py log add 从 run 目录算，不手填",
+id,idea,date,hypothesis,change,runs,n_seeds,dev_mean,dev_sd,baseline_mean,gain,se_gain,best_so_far,decision,note,code_sha256
+#I01,N01,2026-01-01,"假设：…（每轮先写假设再跑）","改了什么（一行）","runs/i01_s*",3,0,0,0,0,0,0,keep|drop|revise,"数字由 method_track.py log add 从 run 目录算，不手填",

@@ -4,7 +4,7 @@
   python method_track.py init          [--project .] [--force]
   python method_track.py headroom      [--project .]                       G1c 方法可行性与提升空间
   python method_track.py ideas-check   [--project .]                       想法清单（只 WARN）
-  python method_track.py log add --id I07 --hypothesis "…" --change "…" --runs "runs/i07_s*" [--decision keep|drop|revise] [--note …]
+  python method_track.py log add --id I07 --idea N3 --hypothesis "…" --change "…" --runs "runs/i07_s*" [--decision keep|drop|revise] [--note …]
   python method_track.py dev-check     [--project .]                       G2m 开发迭代与冻结
   python method_track.py freeze --iteration I12 [--project .]
   python method_track.py confirm-check [--project .] [--prereg prereg.md]  G4m 验证
@@ -16,8 +16,8 @@ targeted bottleneck leave room, and do the cheapest alternatives already take it
 denominator, so the best of K attempts is not read as an effect), (3) a freeze, (4) ONE confirmation on data nobody evaluated.
 
 State: research-state.yaml `method:` block (templates/research-state.yaml). Runs: results.runs_dir/<id>/args.json carries
-`eval_split: dev|confirm`, `role: baseline|oracle|cheap_fix|ours|ablation|tuning`, `method`, `seed`, `iteration: I07` (ours/ablation), `code_sha256`
-(confirm runs); the metric is read from results.eval_file through results.metric_map[primary_metric] (or a dotted `key`).
+`eval_split: dev|confirm|sanity`, `role: baseline|oracle|cheap_fix|ours|ablation|tuning`, `method`, `seed`, `iteration: I07` (ours/ablation), `code_sha256`
+(confirm runs); `sanity` = the known-answer case (dev data only) on which the oracle must win (role baseline / oracle; headroom.oracle.sanity), it is neither a dev nor a confirm run; the metric is read from results.eval_file through results.metric_map[primary_metric] (or a dotted `key`).
 `code_sha256` = sha256 over the bytes of every *.py under audits.code_dirs (default [code]), sorted by path, line ends normalised to LF.
 Output lines: `[PASS|WARN|FAIL|INFO] G1c|G2m|G4m: …`; exit 1 when any FAIL.
 Known leaks (stated in references/method-track.md): eval_split / role are self-reported; the winner's-curse bar assumes the K attempts are independent."""
@@ -28,11 +28,17 @@ HERE = os.path.dirname(os.path.abspath(__file__)); SKILL = os.path.dirname(HERE)
 sys.path.insert(0, HERE); import metric_direction as mdir
 
 NAN = float("nan")
-ITER_COLS = ["id", "date", "hypothesis", "change", "runs", "n_seeds", "dev_mean", "dev_sd", "baseline_mean", "gain", "se_gain", "best_so_far", "decision", "note", "code_sha256"]
-IDEA_COLS = ["id", "type", "mechanism", "predicted_effect", "cheapest_test", "kill_result", "status"]
+ITER_COLS = ["id", "idea", "date", "hypothesis", "change", "runs", "n_seeds", "dev_mean", "dev_sd", "baseline_mean", "gain", "se_gain", "best_so_far", "decision", "note", "code_sha256"]
+IDEA_COLS = ["id", "type", "mechanism", "predicted_effect", "cheapest_test", "kill_result", "status", "prior_art", "closest_work"]
+PRIOR_COLS = ["idea", "query", "source", "date", "work", "year", "ref", "overlap", "difference", "searched_by"]
 IDEA_TYPES = {"data", "objective", "architecture", "inference", "training", "other"}
 ROLES = ("baseline", "oracle", "cheap_fix", "ours", "ablation", "tuning")
-TEMPLATES = ("bottleneck.md", "ideas.csv", "iterations.csv", "baseline_tuning.csv")
+TEMPLATES = ("bottleneck.md", "ideas.csv", "iterations.csv", "baseline_tuning.csv", "prior_art.csv")
+TEMPLATE_KEY = {"bottleneck.md": "bottleneck", "ideas.csv": "ideas", "iterations.csv": "iterations", "baseline_tuning.csv": "tuning", "prior_art.csv": "prior_art"}
+ABANDONED = {"dropped", "killed", "drop", "kill"}
+VERDICTS = ("clear", "differs", "done")
+OVERLAPS = ("same_mechanism", "same_goal", "related", "none")
+REF_PATS = (r"10\.\d{4,9}/\S+", r"(?:arxiv:)?\d{4}\.\d{4,5}(?:v\d+)?", r"https?://\S+")
 
 class Rep:
     """prints `[ST] gate: msg` and counts FAILs; quiet=True collects without printing (freeze re-uses dev-check items 1-4)"""
@@ -157,7 +163,7 @@ def write_csv_rows(p, cols, rows):
         for r in rows: w.writerow({c: r.get(c, "") for c in cols})
 
 def mfiles(m):
-    d = {"bottleneck": "method/bottleneck.md", "ideas": "method/ideas.csv", "iterations": "method/iterations.csv", "tuning": "method/baseline_tuning.csv"}
+    d = {"bottleneck": "method/bottleneck.md", "ideas": "method/ideas.csv", "iterations": "method/iterations.csv", "tuning": "method/baseline_tuning.csv", "prior_art": "method/prior_art.csv"}
     d.update({k: v for k, v in (m.get("files") or {}).items() if v}); return d
 
 def code_dirs(st): return (st.get("audits") or {}).get("code_dirs") or ["code"]
@@ -320,7 +326,7 @@ def cmd_init(root, force):
     if not need_state(R, ctx, "init"): return R.fails
     m, sp = ctx.m, os.path.join(root, "research-state.yaml")
     for fn in TEMPLATES:
-        dst = os.path.join(root, ctx.files[{"bottleneck.md": "bottleneck", "ideas.csv": "ideas", "iterations.csv": "iterations", "baseline_tuning.csv": "tuning"}[fn]])
+        dst = os.path.join(root, ctx.files[TEMPLATE_KEY[fn]])
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if os.path.exists(dst): R.say("INFO", f"{rel(dst, root)} 已存在，保留"); continue
         shutil.copy(os.path.join(SKILL, "templates", "method", fn), dst); R.say("PASS", f"建 {rel(dst, root)}")
@@ -333,8 +339,9 @@ def cmd_init(root, force):
         R.say("FAIL", f"splits.confirm.sha256 已登记且与现在的文件不同（{old[:12]}… vs {new[:12]}…）：验证集被改过；确认是有意换新验证集再加 --force"); return R.fails
     state_set(sp, ["splits", "confirm", "sha256"], new)
     R.say("PASS", f"splits.confirm.sha256 = {new}（{len(expand_files(root, cf))} 个文件）")
-    print("\n下一步：\n  1. 填 method/bottleneck.md（瞄准的瓶颈 / 证据文件 / 占基线误差的比例）\n  2. 复现最强基线 ≥3 seeds、跑 oracle 与 ≥2 个便宜做法（dev 集，args.json 带 eval_split / role）\n"
-          "  3. python method_track.py headroom   # G1c：GO 才开始设计方法\n  4. 填 method/ideas.csv，`ideas-check`；然后 dev 迭代，每轮 `log add`，`dev-check`")
+    print("\n下一步：\n  1. 填 method/bottleneck.md（瞄准的瓶颈 / 证据文件 / 占基线误差的比例）\n  2. 复现最强基线 ≥3 seeds、跑 oracle（再做 oracle 自检：eval_split=sanity）与 ≥2 个便宜做法（dev 集，args.json 带 eval_split / role）\n"
+          "  3. python method_track.py headroom   # G1c：GO 才开始设计方法（INVALID = oracle 没通过自检，先修 oracle）\n"
+          "  4. 填 method/ideas.csv，每个想法进 dev 循环之前先查撞车（method/prior_art.csv，`ideas-check`）；然后 dev 迭代，每轮 `log add --idea`，`dev-check`")
     return R.fails
 
 # ------------------------------------------------------------------ G1c
@@ -375,6 +382,8 @@ def cmd_headroom(root):
     orc = hr.get("oracle") or {}; okey = orc.get("key") or key
     ors = sel(ctx.runs, ctx.root, role="oracle", split="dev", pat=orc.get("run_glob") or "")
     o = NAN; H = NAN
+    sstat, slines = oracle_sanity(ctx, orc, k_sd)       # the oracle is an instrument: it has to win where the answer is known before H can be read
+    oracle_invalid = sstat == "fail"
     if not ors:
         R.say("FAIL", f"没有 oracle dev run（headroom.oracle.run_glob = {orc.get('run_glob') or '未登记'}，要求 role=oracle, eval_split=dev）：先量出理想解决瓶颈后的上界")
     elif len(bx) >= 2:
@@ -383,9 +392,23 @@ def cmd_headroom(root):
         else:
             o = mean(ox); H = gain(o, b, dirn); nums.update(o=o, H=H)
             if len(ox) < 3: R.say("WARN", f"oracle 只有 {len(ox)} 个 seed（基线 {len(bx)} 个）：提升空间是拿来和 seed 噪声比的，补到 ≥3 个再信这个 H")   # fusion replay: 2 oracle seeds
-            if H < 0: R.say("FAIL", f"瞄准的瓶颈判断错了：理想地解决它反而更差（oracle {o:.4f} vs 基线 {b:.4f}，H = {H:+.4f}）。这个方向做不出方法论文，改瓶颈或转分析")
-            elif H < thr: R.say("FAIL", f"瞄准的瓶颈没有提升空间（oracle 只比基线好 H = {H:.4f} < max(min_effect {ctx.min_effect:g}, {k_sd:g}×sd_b {zero(sd_b):.4f}) = {thr:.4f}）：这个方向做不出方法论文，改瓶颈或转分析")
-            else: R.say("PASS", f"提升空间：oracle {o:.4f} vs 基线 {b:.4f}，H = {H:.4f} ≥ {thr:.4f}（n_oracle={len(ox)}）")
+            applied = str(orc.get("applied") or "").strip(); fix = "先在已知答案的情形里证明这个 oracle 会赢（headroom.oracle.sanity），再读这个 H"
+            tail = "。这个 oracle 只在推理时加、模型训练时没见过它，这是 oracle 不涨反跌最常见的原因：做一个训练时也给 oracle 信号的版本（applied: train+test）" if applied == "test_only" else ""
+            if H >= thr:
+                if sstat == "fail": R.say("INFO", f"提升空间：oracle {o:.4f} vs 基线 {b:.4f}，H = {H:.4f} ≥ {thr:.4f}（n_oracle={len(ox)}），但 oracle 自检没过：不能当证据")
+                else: R.say("PASS", f"提升空间：oracle {o:.4f} vs 基线 {b:.4f}，H = {H:.4f} ≥ {thr:.4f}（n_oracle={len(ox)}）")
+                if sstat == "missing": R.say("WARN", "oracle 没做过自检：H 是正的所以影响小，仍建议补 headroom.oracle.sanity（已知答案的情形里 oracle 必须赢）")
+            elif sstat == "fail": R.say("INFO", f"H = {H:+.4f} 不可用：oracle 自检没过")
+            elif sstat == "missing":
+                oracle_invalid = True
+                if H < 0: R.say("FAIL", f"oracle 比基线差（oracle {o:.4f} vs 基线 {b:.4f}，H = {H:+.4f}），但 oracle 没做过自检：分不清是瓶颈判断错了还是 oracle 构造错了。{fix}{tail}")
+                else: R.say("FAIL", f"提升空间不足（H = {H:.4f} < {thr:.4f}），但 oracle 没做过自检：分不清是瓶颈没有提升空间还是 oracle 构造错了。{fix}{tail}")
+            elif H < 0: R.say("FAIL", f"瞄准的瓶颈判断错了：理想地解决它反而更差（oracle {o:.4f} vs 基线 {b:.4f}，H = {H:+.4f}）。这个方向做不出方法论文，改瓶颈或转分析")
+            else: R.say("FAIL", f"瞄准的瓶颈没有提升空间（oracle 只比基线好 H = {H:.4f} < max(min_effect {ctx.min_effect:g}, {k_sd:g}×sd_b {zero(sd_b):.4f}) = {thr:.4f}）：这个方向做不出方法论文，改瓶颈或转分析")
+    for st_, msg in slines: R.say(st_, msg)
+    ap = str(orc.get("applied") or "").strip()
+    if not ap: R.say("WARN", "headroom.oracle.applied 为空：写 train+test（模型训练时也给 oracle 信号）或 test_only（只在推理时注入已训好的基线）")
+    elif ap not in ("train+test", "test_only"): R.say("FAIL", f"headroom.oracle.applied = {ap!r}：只能是 train+test | test_only")
     # 4. cheap fixes
     cfx = hr.get("cheap_fixes") or []
     if len(cfx) < 2: R.say("FAIL", f"便宜做法只登记了 {len(cfx)} 个（要求 ≥2：数据增强、更长训练、换大骨干……最便宜的替代做法）")
@@ -400,7 +423,8 @@ def cmd_headroom(root):
         gains.sort(key=lambda t: -t[1]); best_name, best_g = gains[0][0], gains[0][1]
         for nm, g, n in gains:
             R.say("INFO", f"便宜做法 {nm}: 提升 {g:+.4f}" + (f"，占提升空间 {g / H * 100:.0f}%" if H > 0 else "") + f"（n={n}）")
-        if H >= thr:
+        if oracle_invalid: R.say("INFO", "oracle 未通过自检或未自检，H 不可用，不核对便宜做法后的剩余空间")
+        elif H >= thr:
             Rr = H - best_g; nums.update(R=Rr)
             if Rr < thr: R.say("FAIL", f"便宜做法 {best_name} 已经拿走 {best_g / H * 100:.0f}% 的提升空间，剩 R = {Rr:.4f} < {thr:.4f}：方法没有立足点（把 {best_name} 当成强基线重新算，或换瓶颈）")
             else: R.say("PASS", f"便宜做法之后的剩余空间 R = {Rr:.4f} ≥ {thr:.4f}（最强便宜做法 {best_name} 拿走 {best_g / H * 100:.0f}%）")
@@ -433,14 +457,117 @@ def cmd_headroom(root):
         if not re.search(r"\d", fl["占基线误差的比例"]): bad.append("没有占基线误差的比例（数）")
         if bad: R.say("FAIL", f"{ctx.files['bottleneck']}：" + "；".join(bad))
         else: R.say("PASS", f"{ctx.files['bottleneck']}：瓶颈、证据文件 {ev[0]}、占基线误差 {fl['占基线误差的比例'][:30]}")
-    return _verdict_g1c(R, nums, thr, ctx)
+    return _verdict_g1c(R, nums, thr, ctx, oracle_invalid, sstat)
 
-def _verdict_g1c(R, nums, thr=None, ctx=None):
+def oracle_sanity(ctx, orc, k_sd):
+    """known-answer check of the oracle (headroom.oracle.sanity, runs with eval_split=sanity): -> (status 'missing'|'pass'|'fail', [(level, msg)]).
+    A case built from dev data where the targeted bottleneck certainly limits the baseline: an oracle that works must win there."""
+    sn = orc.get("sanity") if isinstance(orc.get("sanity"), dict) else {}
+    bg, og = str(sn.get("baseline_glob") or "").strip(), str(sn.get("oracle_glob") or "").strip()
+    if not bg and not og: return "missing", []
+    out, setting, why = [], str(sn.get("setting") or "").strip(), str(sn.get("why") or "").strip()
+    if not setting: out.append(("FAIL", "oracle 自检的 setting 为空：写出已知答案的情形是怎么造的（例如：故意注入失败、并告诉 oracle 它在哪）"))
+    if not why: out.append(("FAIL", "oracle 自检的 why 为空：用一句话写为什么 oracle 在这个情形里必须赢"))
+    if out: return "fail", out
+    key = sn.get("key") or orc.get("key") or ctx.key
+    bx = vals(sel(ctx.runs, ctx.root, role="baseline", split="sanity", pat=bg), key); ox = vals(sel(ctx.runs, ctx.root, role="oracle", split="sanity", pat=og), key)
+    if len(bx) < 2 or len(ox) < 2:
+        return "fail", [("FAIL", f"oracle 自检每边至少 2 个 seed（现在基线 {len(bx)} 个、oracle {len(ox)} 个；role=baseline / oracle，eval_split=sanity）")]
+    if len(bx) == 2 or len(ox) == 2: out.append(("WARN", f"oracle 自检只有 2 个 seed 的一边（基线 {len(bx)} 个、oracle {len(ox)} 个）：补到 ≥3 个"))
+    gs = gain(mean(ox), mean(bx), ctx.dirn); thr_s = max(ctx.min_effect, k_sd * zero(sd(bx)))
+    if gs >= thr_s: return "pass", [("PASS", f"oracle 自检通过：在已知答案的情形（{setting[:40]}）里 oracle 比基线好 G_s = {gs:.4f} ≥ {thr_s:.4f}")] + out
+    return "fail", [("FAIL", f"oracle 自检没过：在本该赢的情形里也没赢（oracle {mean(ox):.4f} vs 基线 {mean(bx):.4f}，G_s = {gs:+.4f} < {thr_s:.4f}）。oracle 的构造有问题（常见：模型训练时没见过 oracle 给的信号；oracle 信息接错了位置），先修 oracle，下面的 H 不能用")] + out
+
+def _verdict_g1c(R, nums, thr=None, ctx=None, invalid=False, sanity="missing"):
     nums = nums or {}
-    desc = (f"headroom H = {f(nums.get('H'))}, residual after cheap fixes R = {f(nums.get('R'))}, noise sd_b = {f(nums.get('sd_b'))}, min_effect = {ctx.min_effect:g}" if ctx else "方向未知，数字未算")
-    if R.fails == 0: R.say("PASS", f"GO ({desc})")
+    desc = (f"headroom H = {f(nums.get('H'))}, residual after cheap fixes R = {f(nums.get('R'))}, noise sd_b = {f(nums.get('sd_b'))}, min_effect = {ctx.min_effect:g}, oracle sanity = {sanity}" if ctx else "方向未知，数字未算")
+    if invalid: R.say("FAIL", f"INVALID ({desc}；oracle 未通过自检或未自检，结论不能读成\"瓶颈没有提升空间\"：修好 oracle 再跑 headroom)")
+    elif R.fails == 0: R.say("PASS", f"GO ({desc})")
     else: R.say("FAIL", f"NO-GO ({desc}；{R.fails} 项未过)")
     return R.fails
+
+# ------------------------------------------------------------------ prior art ("查撞车")
+def _s(v): return str(v if v is not None else "").strip()
+def _qn(v): return " ".join(_s(v).casefold().split())
+def ref_ok(v): return any(re.fullmatch(p, _s(v), re.I) for p in REF_PATS)
+
+def ref_key(v):
+    """ref for comparing: case-folded, 'arXiv:' and an arXiv version suffix dropped (arXiv:2301.01234v2 == 2301.01234)"""
+    k = _s(v).casefold(); k = re.sub(r"^arxiv:", "", k)
+    return re.sub(r"^(\d{4}\.\d{4,5})v\d+$", r"\1", k)
+
+def idea_rows(ctx):
+    rows, _ = read_csv_rows(ctx.path("ideas")) if ctx.files.get("ideas") else (None, [])
+    return rows
+
+def prior_rows(ctx, idea_id):
+    rows, _ = read_csv_rows(ctx.path("prior_art"))
+    return [r for r in (rows or []) if _s(r.get("idea")) == idea_id]
+
+def abandoned(idea): return _s(idea.get("status")).casefold() in ABANDONED
+
+def prior_overlap_works(ctx, idea_id):
+    """['title (ref)', ...] of the works recorded as same_mechanism / same_goal for this idea"""
+    out = []
+    for r in prior_rows(ctx, idea_id):
+        if _s(r.get("overlap")) in ("same_mechanism", "same_goal") and _s(r.get("work")):
+            t = f"{_s(r.get('work'))} ({_s(r.get('ref')) or '无 ref'})"
+            if t not in out: out.append(t)
+    return out
+
+def prior_findings(ctx, idea_id):
+    """prior-art record of one idea -> [(code, msg)] (no printing; the callers choose the level). [] = the record holds.
+    The script checks the record's shape, not whether a paper exists: every ref has to come from a search result."""
+    pa = ctx.m.get("prior_art") or {}
+    try: min_q, min_w = int(pa.get("min_queries") or 3), int(pa.get("min_works") or 3)
+    except (TypeError, ValueError): min_q, min_w = 3, 3
+    idea = next((r for r in (idea_rows(ctx) or []) if _s(r.get("id")) == idea_id), None)
+    if idea is None: return [("unknown", f"想法 {idea_id} 不在 {ctx.files['ideas']} 里")]
+    rows, out = prior_rows(ctx, idea_id), []
+    qs = {_qn(r.get("query")) for r in rows} - {""}; srcs = {_qn(r.get("source")) for r in rows} - {""}
+    if len(qs) < min_q or len(srcs) < 2:
+        out.append(("queries", f"想法 {idea_id}: 查撞车记录不够（不同的查询 {len(qs)}/{min_q}，不同的来源 {len(srcs)}/2；缺 {max(min_q - len(qs), 0)} 条查询、{max(2 - len(srcs), 0)} 个来源）。"
+                                f"三条查询分别用「机制的词」「目标问题的词」「别的领域会怎么叫它」，每条都记进 {ctx.files['prior_art']}"))
+    withwork = [r for r in rows if _s(r.get("work"))]
+    good = {ref_key(r.get("ref")) for r in withwork if ref_ok(r.get("ref"))}
+    badref = [_s(r.get("work"))[:40] for r in withwork if not ref_ok(r.get("ref"))]
+    if len(good) < min_w:
+        out.append(("works", f"想法 {idea_id}: 只有 {len(good)} 个带有效 ref 的相近工作（要求 ≥{min_w}）：搜不到相近工作通常说明搜得不对，不说明没人做过" + (f"；ref 缺失或格式不对（要 DOI / arXiv id / http(s) 链接）：{'；'.join(badref[:3])}" if badref else "")))
+    elif badref:
+        out.append(("ref", f"想法 {idea_id}: ref 缺失或格式不对（要 DOI / arXiv id / http(s) 链接）：{'；'.join(badref[:3])}"))
+    nod = [_s(r.get("work"))[:40] or _s(r.get("query"))[:40] for r in rows if _s(r.get("overlap")) in ("same_mechanism", "same_goal") and not _s(r.get("difference"))]
+    if nod: out.append(("difference", f"想法 {idea_id}: overlap 是 same_mechanism / same_goal 的工作必须写 difference（一句话：和你的想法差在哪）：{'；'.join(nod[:3])}"))
+    oddo = sorted({_s(r.get("overlap")) or "（空）" for r in rows if _s(r.get("overlap")) not in OVERLAPS and (_s(r.get("work")) or _s(r.get("overlap")))})
+    if oddo: out.append(("overlap", f"想法 {idea_id}: overlap 只能是 {' | '.join(OVERLAPS)}，现在有 {oddo}"))
+    v = _s(idea.get("prior_art")).casefold()
+    if not v: out.append(("verdict", f"想法 {idea_id}: ideas.csv 的 prior_art 还没有结论（clear | differs | done）"))
+    elif v not in VERDICTS: out.append(("verdict", f"想法 {idea_id}: ideas.csv 的 prior_art = {v!r}，只能是 clear | differs | done"))
+    if v == "clear" and any(_s(r.get("overlap")) == "same_mechanism" for r in rows):
+        out.append(("consistency", f"想法 {idea_id}: 有同机制的已有工作，结论不能是 clear"))
+    if v == "done" and not abandoned(idea):
+        out.append(("consistency", f"想法 {idea_id}: 已有工作做过：放弃这个想法，或把那篇工作复现成基线（它就是最强基线的候选）"))
+    if v == "differs":
+        cw = _s(idea.get("closest_work"))
+        if not cw: out.append(("closest", f"想法 {idea_id}: 结论是 differs 就要在 closest_work 写最接近那篇工作的 ref"))
+        elif ref_key(cw) not in {ref_key(r.get("ref")) for r in rows if _s(r.get("ref"))}:
+            out.append(("closest", f"想法 {idea_id}: closest_work = {cw} 不是 prior_art.csv 里这个想法任何一行的 ref"))
+    if not any(_qn(r.get("searched_by")) == "independent" for r in rows):
+        out.append(("self_only", f"想法 {idea_id}: 只有自己查的记录：让一个新上下文的子代理只拿机制一句话和任务名再查一遍（searched_by = independent）"))
+    return out
+
+def prior_gate(R, ctx, idea_id, pre, fail=True):
+    """print prior_findings of one idea; fail=True -> FAIL (self_only -> WARN when method.prior_art.independent_waiver is a non-empty string), else WARN. Returns the number of findings."""
+    n = 0; waiver = _s((ctx.m.get("prior_art") or {}).get("independent_waiver"))
+    for code, msg in prior_findings(ctx, idea_id):
+        if code == "self_only" and fail and waiver: R.say("WARN", f"{pre}{msg}；按 prior_art.independent_waiver 豁免：{waiver[:60]}")
+        else:
+            R.say("FAIL" if fail else "WARN", f"{pre}{msg}")
+        n += 1
+    if fail:      # freeze standard: the method being frozen cannot be an idea that was given up or that prior work already did
+        idea = next((r for r in (idea_rows(ctx) or []) if _s(r.get("id")) == idea_id), None)
+        if idea is not None and (abandoned(idea) or _s(idea.get("prior_art")).casefold() == "done"):
+            R.say("FAIL", f"{pre}想法 {idea_id} 已放弃或已有工作做过（status = {_s(idea.get('status')) or '空'}，prior_art = {_s(idea.get('prior_art')) or '空'}）：不能冻结成你的方法"); n += 1
+    return n
 
 # ------------------------------------------------------------------ ideas
 def cmd_ideas(root):
@@ -458,6 +585,13 @@ def cmd_ideas(root):
         miss = [c for c in ("mechanism", "cheapest_test", "kill_result") if not str(r.get(c) or "").strip()]
         if miss: R.say("WARN", f"想法 {r.get('id')}: 缺 {'/'.join(miss)}（没有 kill_result 的想法永远不会被杀死）"); bad = True
     if not bad: R.say("PASS", f"ideas.csv：{len(rows)} 个想法、{len(types)} 类，每个都有 mechanism / cheapest_test / kill_result")
+    # 查撞车：只查已被迭代行引用的想法，或状态不是 空 / open / 已放弃 的想法（还是 open 的不查）
+    used = ({_s(r.get("idea")) for r in (iter_rows(ctx) or [])} - {""}) if os.path.exists(ctx.path("iterations")) else set()
+    todo = [_s(r.get("id")) for r in rows if _s(r.get("id")) in used or (_s(r.get("status")).casefold() not in ("", "open") and not abandoned(r))]
+    todo += sorted(used - {_s(r.get("id")) for r in rows})
+    nf = sum(prior_gate(R, ctx, i, "先查撞车再花算力：", fail=False) for i in todo)
+    if todo and not nf: R.say("PASS", f"查撞车：{len(todo)} 个进入 dev 循环的想法（{', '.join(todo[:6])}）记录齐全")
+    elif not todo: R.say("INFO", "查撞车：还没有想法进入 dev 循环（status 不是 open、或被迭代行引用的想法才检查）")
     return 0
 
 # ------------------------------------------------------------------ iterations
@@ -486,13 +620,17 @@ def cmd_log_add(root, a):
     if not need_state(R, ctx, "log"): return R.fails
     if not need_direction(R, ctx): return R.fails
     if not re.match(r"^[A-Za-z]\w*$", a.id): R.say("FAIL", f"id {a.id!r}：用 I07 这样的短 id"); return R.fails
+    idea = _s(a.idea)
+    if idea and any(c == "unknown" for c, _ in prior_findings(ctx, idea)):
+        R.say("FAIL", f"想法 {idea} 不在 {ctx.files['ideas']} 里：先把它登记进 ideas.csv（带机制、kill_result），再 `log add --idea`"); return R.fails
     row = dict(id=a.id, hypothesis=a.hypothesis, change=a.change, runs=a.runs)
     s = iter_stats(ctx, row)
     if not s["runs"]:
         R.say("FAIL", f"{a.runs} 匹配不到 role=ours, eval_split=dev 的 run：先跑完再登记；数字从 run 目录算，不手填"); return R.fails
     p = ctx.path("iterations"); rows = iter_rows(ctx) or []
     old = next((r for r in rows if r.get("id") == a.id), None)
-    row.update(date=datetime.date.today().isoformat(), n_seeds=seeds_of(s["runs"]), dev_mean=f(s["mean"], 6), dev_sd="" if isn(s["sd"]) else f(s["sd"], 6),
+    idea = idea or _s((old or {}).get("idea"))      # an update without --idea keeps the idea the row already has
+    row.update(idea=idea, date=datetime.date.today().isoformat(), n_seeds=seeds_of(s["runs"]), dev_mean=f(s["mean"], 6), dev_sd="" if isn(s["sd"]) else f(s["sd"], 6),
                baseline_mean=f(s["b"], 6), gain=f(s["gain"], 6), se_gain="" if isn(s["se"]) else f(s["se"], 6),
                decision=a.decision or (old or {}).get("decision", ""), note=a.note if a.note is not None else (old or {}).get("note", ""), code_sha256=code_sha(root, ctx.st))
     if old is not None: rows[rows.index(old)] = row
@@ -503,6 +641,8 @@ def cmd_log_add(root, a):
     R.say("PASS", f"{a.id}: n={s['n']} seeds，dev {s['mean']:.4f} ± {zero(s['sd']):.4f} vs 基线 {s['b']:.4f}，gain {s['gain']:+.4f}（se {zero(s['se']):.4f}），best_so_far {ser[[r['id'] for r, *_ in ser].index(a.id)][2]:+.4f}；共 {len(rows)} 轮，code {row['code_sha256'][:8]}"
           + ("（更新了已有行）" if old is not None else ""))
     if not row["decision"]: R.say("INFO", "decision 还空着：下一轮开始前补 keep / drop / revise")
+    if not idea: R.say("WARN", "这一轮在试 ideas.csv 里的哪个想法？加 --idea（冻结前每个 keep 的迭代都要有想法和查撞车记录）")
+    else: prior_gate(R, ctx, idea, "先查撞车再花算力：", fail=False)      # never blocks the log: a blocked log teaches people not to log
     return 0
 
 # ------------------------------------------------------------------ G2m
@@ -547,6 +687,10 @@ def cmd_dev(root):
     dev_items_1_4(R, ctx)
     fz = m.get("freeze") or {}
     if not fz:
+        for r in iter_rows(ctx) or []:      # 查撞车：freeze 会把这些变成 FAIL，现在先 WARN
+            if str(r.get("decision") or "").strip().lower() != "keep": continue
+            if not _s(r.get("idea")): R.say("WARN", f"迭代 {r.get('id')} 是 keep 但没有 idea：`log add --id {r.get('id')} --idea <想法 id> …`（冻结要求有想法和查撞车记录）")
+            else: prior_gate(R, ctx, _s(r.get("idea")), f"迭代 {r.get('id')} 冻结前先查撞车：", fail=False)
         R.say("INFO", "尚未 freeze：迭代中。选定最优轮后 `method_track.py freeze --iteration Ixx`")
         return R.fails
     rows = iter_rows(ctx) or []; K = len(rows)
@@ -618,6 +762,14 @@ def cmd_dev(root):
     cur = code_sha(root, ctx.st)
     if cur != fz.get("code_sha256"): R.say("FAIL", f"冻结后代码改过（现 {cur[:8]} vs 冻结 {str(fz.get('code_sha256'))[:8]}）：重新登记一轮迭代并重新 freeze")
     else: R.say("PASS", f"代码与冻结时一致（{cur[:8]}）")
+    # 5g 查撞车：冻结的迭代，同 freeze 的标准（记录后来被改坏了会再报）
+    if row is not None:
+        idea = _s(row.get("idea"))
+        if not idea: R.say("FAIL", f"冻结的迭代 {row['id']} 没有 idea：没法核对查撞车记录（log add --idea）")
+        else:
+            if prior_gate(R, ctx, idea, f"冻结的迭代 {row['id']}（想法 {idea}）查撞车：") == 0: R.say("PASS", f"查撞车：想法 {idea} 的记录齐全")
+            ov = prior_overlap_works(ctx, idea)
+            if ov: R.say("INFO", "论文的相关工作与对比表要正面交代：" + "; ".join(ov))
     return R.fails
 
 # ------------------------------------------------------------------ freeze
@@ -634,6 +786,10 @@ def cmd_freeze(root, it):
     rows = iter_rows(ctx) or []; row = next((r for r in rows if r.get("id") == it), None)
     if row is None: R.say("FAIL", f"迭代 {it} 不在 {ctx.files['iterations']}"); return R.fails
     if str(row.get("decision") or "").strip().lower() != "keep": R.say("FAIL", f"迭代 {it} 的 decision 不是 keep：先 `log add --id {it} … --decision keep`"); return R.fails
+    idea = _s(row.get("idea"))
+    if not idea: R.say("FAIL", f"迭代 {it} 没有 idea：冻结之前查撞车，冻结后才发现撞车，验证集就白烧了（`log add --id {it} --idea <想法 id> …`，并在 {ctx.files['prior_art']} 记录）"); return R.fails
+    prior_gate(R, ctx, idea, "冻结之前查撞车：")
+    if R.fails: R.say("FAIL", f"想法 {idea} 的查撞车记录未过，拒绝 freeze：冻结后才发现撞车，验证集就白烧了"); return R.fails
     s = iter_stats(ctx, row); K = len(rows)
     if s["n"] < 1: R.say("FAIL", f"迭代 {it} 没有 dev run"); return R.fails
     bias = 0.0 if K < 2 else zero(s["se"]) * math.sqrt(2 * math.log(K)); adj = s["gain"] - bias
@@ -733,7 +889,7 @@ def cmd_status(root):
     import contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf): cmd_headroom(root)
-    verdict = next((l for l in buf.getvalue().splitlines() if "G1c: GO" in l or "G1c: NO-GO" in l), "?")
+    verdict = next((l for l in buf.getvalue().splitlines() if "G1c: GO" in l or "G1c: NO-GO" in l or "G1c: INVALID" in l), "?")
     rows = (iter_rows(ctx) or []) if os.path.exists(ctx.path("iterations")) and ctx.dirn else []
     ser = best_series(ctx, rows) if rows and ctx.dirn else []
     best = max([b for _, _, b, _ in ser if not isn(b)] or [NAN]); fz = m.get("freeze") or {}
@@ -741,6 +897,9 @@ def cmd_status(root):
     print(f"== method track: {os.path.basename(root)} ==")
     print(f"G1c        {verdict.split('G1c: ')[-1]}")
     print(f"迭代       K = {len(rows)}（预算 {(m.get('budget') or {}).get('max_iters')}），最好 dev gain {f(best)}，min_effect {ctx.min_effect:g}")
+    irows = (idea_rows(ctx) or []) if os.path.exists(ctx.path("ideas")) else []
+    vs = [_s(r.get("prior_art")).casefold() for r in irows]
+    print(f"查撞车     {len([v for v in vs if v])} / {len(irows)} 个想法有结论，其中 done {vs.count('done')} 个")
     print(f"冻结       " + (f"{fz.get('iteration')} @ {fz.get('date')}，code {str(fz.get('code_sha256'))[:8]}，gain_adj {fz.get('gain_adj')}" if fz else "未冻结"))
     print(f"验证集     confirm run {len([r for r in ctx.runs if r.split == 'confirm'])} 个，看过 {len(cm.get('looks') or [])} 次 / 登记 {cm.get('registered_looks')}")
     print(f"结论       {m.get('outcome') or '（未定）'}")
@@ -753,6 +912,7 @@ def main():
         p = sub.add_parser(n); p.add_argument("--project", default=".")
         if n == "init": p.add_argument("--force", action="store_true")
         if n == "freeze": p.add_argument("--iteration", required=True)
+        if n == "log": p.add_argument("--idea", default="")
         if n == "confirm-check": p.add_argument("--prereg", default="prereg.md")
         if n == "log":
             p.add_argument("action", choices=["add"]); p.add_argument("--id", required=True); p.add_argument("--hypothesis", required=True); p.add_argument("--change", required=True)
